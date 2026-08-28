@@ -1,39 +1,78 @@
-import type { Agent, AgentRun, Message, SystemInfo } from "./types";
+import type {
+  Agent,
+  AgentRun,
+  AuthConfiguration,
+  AuthorizationDecision,
+  HumanPrincipal,
+  Message,
+  ProtectedResourceRead,
+  ProtectedResourceSummary,
+  SystemInfo,
+} from "./types";
 
 export class ApiError extends Error {
   constructor(
     message: string,
     public readonly status: number,
+    public readonly code: string | null = null,
+    public readonly decision: AuthorizationDecision | null = null,
+    public readonly details: unknown = null,
   ) {
     super(message);
+    this.name = "ApiError";
   }
 }
 
-let authToken = "";
+let legacyToken = "";
 
-export function setAuthToken(token: string): void {
-  authToken = token.trim();
+export function setLegacyToken(token: string): void {
+  legacyToken = token.trim();
 }
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const headers = {
     ...(options?.body ? { "Content-Type": "application/json" } : {}),
-    ...(authToken ? { Authorization: "Bearer " + authToken } : {}),
+    ...(legacyToken ? { Authorization: "Bearer " + legacyToken } : {}),
     ...options?.headers,
   };
   const response = await fetch(url, {
     ...options,
     headers,
+    credentials: "same-origin",
   });
-  const data = (await response.json().catch(() => ({}))) as T & { error?: string };
+  const data = (await response.json().catch(() => ({}))) as T & {
+    error?: string;
+    code?: string;
+    decision?: AuthorizationDecision;
+    details?: unknown;
+  };
   if (!response.ok) {
-    throw new ApiError(data.error ?? "Request failed", response.status);
+    throw new ApiError(
+      data.error ?? "Request failed",
+      response.status,
+      data.code ?? null,
+      data.decision ?? null,
+      data.details ?? null,
+    );
   }
   return data;
 }
 
 export const api = {
-  auth: () => request<{ required: boolean }>("/api/auth"),
+  auth: () => request<AuthConfiguration>("/api/auth"),
+  login: (email: string, password?: string) =>
+    request<{ principal: HumanPrincipal }>("/api/auth/login", {
+      method: "POST",
+      body: JSON.stringify({
+        email,
+        ...(password === undefined ? {} : { password }),
+      }),
+    }),
+  logout: () =>
+    request<Record<string, never>>("/api/auth/logout", {
+      method: "POST",
+    }),
+  me: () => request<{ principal: HumanPrincipal }>("/api/me"),
   system: () => request<SystemInfo>("/api/system"),
   listAgents: () => request<{ agents: Agent[] }>("/api/agents"),
   createAgent: (body: {
@@ -78,4 +117,15 @@ export const api = {
       },
     ),
   run: (id: string) => request<{ run: AgentRun }>("/api/runs/" + id),
+  resources: () =>
+    request<{ resources: ProtectedResourceSummary[] }>("/api/resources"),
+  readResource: (agentId: string, resourceId: string) =>
+    request<ProtectedResourceRead>(
+      "/api/agents/" + agentId + "/resources/" + resourceId + "/read",
+      { method: "POST" },
+    ),
+  authorizationDecisions: (limit = 50) =>
+    request<{ decisions: AuthorizationDecision[] }>(
+      "/api/authorization-decisions?limit=" + encodeURIComponent(String(limit)),
+    ),
 };

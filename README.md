@@ -1,16 +1,17 @@
-# Volc Agent Launchpad
+# Agent Trust Gateway
 
-A minimal Agent platform for three-day middleware hackathons. It provides Agent
-CRUD, a browser Playground, persistent workspaces, and Codex CLI backed by the
-Volcengine Ark Responses API.
+A Human Identity + User → Agent authorization middleware built on the Volc
+Agent Launchpad starter kit. The existing Agent CRUD, browser Playground,
+persistent workspaces, and Codex/Ark Runtime remain intact.
 
 Run it locally with Docker, Colima, or rootless Podman, or deploy it to
 Volcengine ECS.
 
-> [!WARNING]
-> This is a single-user proof of concept. It intentionally has no identity,
-> tracing, audit, or hardened sandbox middleware. Do not use production data or
-> credentials. See [SECURITY.md](SECURITY.md).
+> [!NOTE]
+> This is a hackathon proof of concept with synthetic protected resources. The
+> authorization boundary is real and server-enforced, but the Runtime container
+> is not presented as hardened multi-tenant isolation. See
+> [SECURITY.md](SECURITY.md).
 
 ## Screenshots
 
@@ -25,6 +26,10 @@ Volcengine ECS.
 ## Features
 
 - React and TypeScript Web UI
+- Finance, HR, and Research login identities
+- Server-side Human → Agent ownership enforcement on every Agent/Run route
+- Owner-scoped protected file gateway with visible `ALLOW` / `DENY` decisions
+- HttpOnly sessions, append-only audit evidence, and a Supabase Auth/RLS adapter
 - Agent create, edit, start, stop, delete, and multi-turn chat
 - Fastify control plane with asynchronous Run state
 - Persistent Agent workspaces and Codex sessions
@@ -39,6 +44,19 @@ Volcengine ECS.
 - A Volcengine Ark API key and endpoint that supports the Responses API
 
 Codex CLI is included in the Runtime image and is not required on the host.
+
+To test only login, ownership, protected files, and the audit UI, Node.js is
+enough—no model key or container engine is required:
+
+```powershell
+npm ci
+$env:AUTH_MODE="demo"
+$env:HOST="127.0.0.1"
+npm run dev
+```
+
+Open <http://localhost:5173>, choose Finance, HR, or Research, create an Agent,
+then use **Access & audit** to demonstrate allowed and denied file reads.
 
 ## Local browser SOP
 
@@ -70,6 +88,7 @@ Skip this step when already working from the repository root.
 ```bash
 ARK_API_KEY=your-ark-api-key \
 ARK_MODEL=ep-your-endpoint-id \
+AUTH_MODE=demo \
 npm run poc
 ```
 
@@ -202,7 +221,13 @@ cp deploy/volcengine/terraform.tfvars.example \
 | `ARK_API_KEY` | Required | Ark model API key. |
 | `ARK_MODEL` | Required | Responses-capable endpoint or model ID. |
 | `ARK_BASE_URL` | Beijing v3 endpoint | Ark OpenAI-compatible API URL. |
-| `APP_AUTH_TOKEN` | Empty on loopback | Shared demo token; use 24+ random characters remotely. |
+| `APP_AUTH_TOKEN` | Empty on loopback | Shared perimeter token for `AUTH_MODE=legacy`. |
+| `AUTH_MODE` | `demo` | `demo`, `supabase`, or baseline-compatible `legacy`. |
+| `AUTH_SESSION_SECRET` | Ephemeral | Optional 32+ character key for restart-stable demo sessions. |
+| `AUTH_COOKIE_SECURE` | `false` | Set `true` behind HTTPS. |
+| `SUPABASE_URL` | Empty | Required for Supabase Auth and policy storage. |
+| `SUPABASE_PUBLISHABLE_KEY` | Empty | Current public API key; legacy anon key is accepted. |
+| `SUPABASE_SECRET_KEY` | Empty | Backend-only key; legacy service-role key is accepted. |
 | `RUNTIME_PROVIDER` | `local-process` | `container` for disposable local Runtime containers. |
 | `CODEX_SANDBOX_MODE` | `workspace-write` | Codex inner sandbox mode. |
 | `CODEX_TIMEOUT_MS` | `600000` | Maximum duration of one turn. |
@@ -214,7 +239,10 @@ See [.env.example](.env.example) for all Runtime and resource-limit options.
 
 ```mermaid
 flowchart LR
-    UI["React Web UI"] --> API["Fastify control plane"]
+    UI["React Web UI"] --> Auth["Identity + authorization middleware"]
+    Auth --> API["Fastify control plane"]
+    Auth --> Policy["Protected resources + audit decisions"]
+    Policy --> Supabase["Local fixtures or Supabase + RLS"]
     API --> Store["JSON metadata and Agent workspaces"]
     API --> Runtime{"Runtime provider"}
     Runtime -->|Local POC| Container["Disposable Docker / Colima / Podman container"]

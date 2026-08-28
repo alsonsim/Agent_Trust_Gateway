@@ -1,6 +1,6 @@
 # Security policy
 
-Volc Agent Launchpad is a hackathon proof of concept. Only the latest revision
+Agent Trust Gateway is a hackathon proof of concept. Only the latest revision
 on the default branch is supported.
 
 ## Report a vulnerability
@@ -11,8 +11,10 @@ credentials, personal data, or exploit details in an issue.
 
 ## Known limitations
 
-- Shared demo token; no user identity, authorization, RBAC, or tenant isolation
-- No CSRF protection
+- Passwordless demo identities are loopback-only fixtures, not production auth
+- Supabase sessions are not automatically refreshed in this hackathon POC
+- SameSite=Strict cookies reduce CSRF exposure, but there is no separate CSRF token
+- Local JSON metadata remains a single-process store
 - No per-Agent container boundary in ECS mode
 - Ordinary local containers, not hardened multi-tenant sandboxes
 - Broad outbound network access
@@ -23,7 +25,9 @@ credentials, personal data, or exploit details in an issue.
 ## Safe use
 
 - Use a dedicated development machine or disposable ECS instance.
-- Use a scoped, revocable Ark key and a unique `APP_AUTH_TOKEN`.
+- Use Supabase mode, HTTPS, `AUTH_COOKIE_SECURE=true`, and scoped provider keys
+  for any network-accessible demo. Keep the Supabase secret key server-side.
+- Use `APP_AUTH_TOKEN` only for the explicitly selected legacy compatibility mode.
 - Keep local use on loopback and restrict ECS Web and SSH CIDRs.
 - Add HTTPS before sending the shared token over an untrusted network.
 - Never mount production data or provide Volcengine account AK/SK to Agents.

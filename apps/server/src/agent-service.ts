@@ -46,10 +46,11 @@ export class AgentService {
     });
   }
 
-  listAgents(): Agent[] {
-    return this.store
-      .snapshot()
-      .agents.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  listAgents(ownerId?: string): Agent[] {
+    const agents = this.store.snapshot().agents;
+    return agents
+      .filter((agent) => ownerId === undefined || agent.ownerId === ownerId)
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
   }
 
   getAgent(id: string): Agent {
@@ -60,11 +61,12 @@ export class AgentService {
     return agent;
   }
 
-  async createAgent(input: CreateAgentInput): Promise<Agent> {
+  async createAgent(ownerId: string, input: CreateAgentInput): Promise<Agent> {
     const timestamp = now();
     const id = randomUUID();
     const agent: Agent = {
       id,
+      ownerId,
       name: input.name.trim(),
       description: input.description?.trim() ?? "",
       instructions: input.instructions?.trim() ?? "",

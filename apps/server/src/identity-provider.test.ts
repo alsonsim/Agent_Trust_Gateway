@@ -1,0 +1,86 @@
+import { describe, expect, it, vi } from "vitest";
+import {
+  DemoIdentityProvider,
+  SupabaseIdentityProvider,
+} from "./identity-provider.js";
+
+describe("identity providers", () => {
+  it("issues a signed demo identity and rejects tampering", async () => {
+    const provider = new DemoIdentityProvider({
+      host: "127.0.0.1",
+      signingKey: "a-test-signing-key-that-is-at-least-32-bytes",
+      tokenTtlSeconds: 600,
+    });
+    const session = await provider.signIn({ email: "Finance@agent-gateway.local" });
+    await expect(provider.verifyAccessToken(session.accessToken)).resolves.toMatchObject({
+      displayName: "Finance",
+      department: "finance",
+    });
+    const [header, body, signature] = session.accessToken.split(".");
+    const tamperedSignature =
+      (signature?.startsWith("A") ? "B" : "A") + signature!.slice(1);
+    const tampered = `${header}.${body}.${tamperedSignature}`;
+    await expect(provider.verifyAccessToken(tampered)).rejects.toMatchObject({
+      statusCode: 401,
+    });
+    await expect(
+      provider.signIn({ email: "unknown@agent-gateway.local" }),
+    ).rejects.toMatchObject({ statusCode: 401 });
+  });
+
+  it("loads the authoritative Supabase profile after validating the token", async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ access_token: "signed-access-token", expires_in: 3_600 }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            id: "33333333-3333-4333-8333-333333333333",
+            email: "research@agent-gateway.local",
+            user_metadata: { department: "finance" },
+          }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify([
+            {
+              id: "33333333-3333-4333-8333-333333333333",
+              display_name: "Research",
+              department: "research",
+            },
+          ]),
+          { status: 200 },
+        ),
+      );
+    const provider = new SupabaseIdentityProvider({
+      supabaseUrl: "http://127.0.0.1:54321",
+      anonKey: "anon-key",
+      serviceRoleKey: "server-secret-key",
+      fetchImpl: fetchMock,
+    });
+    const session = await provider.signIn({
+      email: "research@agent-gateway.local",
+      password: "not-logged",
+    });
+    expect(session.principal.department).toBe("research");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls[2]?.[0].toString()).toContain("/rest/v1/profiles");
+  });
+
+  it("keeps demo identity off non-loopback hosts unless explicitly enabled", () => {
+    expect(
+      () =>
+        new DemoIdentityProvider({
+          host: "0.0.0.0",
+          signingKey: "a-test-signing-key-that-is-at-least-32-bytes",
+        }),
+    ).toThrow(/loopback/);
+  });
+});

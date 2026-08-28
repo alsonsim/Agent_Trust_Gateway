@@ -1,6 +1,11 @@
 import { mkdir, writeFile } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
 import path from "node:path";
 import { z } from "zod";
+
+const booleanEnvironmentValue = z
+  .enum(["true", "false"])
+  .transform((value) => value === "true");
 
 const envSchema = z.object({
   HOST: z.string().default("0.0.0.0"),
@@ -38,6 +43,16 @@ const envSchema = z.object({
     .max(128)
     .regex(/^[A-Za-z0-9._~-]*$/, "APP_AUTH_TOKEN must use URL-safe characters")
     .optional(),
+  AUTH_MODE: z.enum(["demo", "supabase", "legacy"]).default("demo"),
+  AUTH_SESSION_SECRET: z.string().trim().min(32).optional(),
+  AUTH_SESSION_TTL_SECONDS: z.coerce.number().int().min(300).max(86_400).default(28_800),
+  AUTH_COOKIE_SECURE: booleanEnvironmentValue.default(false),
+  ALLOW_INSECURE_DEMO_AUTH: booleanEnvironmentValue.default(false),
+  SUPABASE_URL: z.string().url().optional(),
+  SUPABASE_PUBLISHABLE_KEY: z.string().trim().min(1).optional(),
+  SUPABASE_ANON_KEY: z.string().trim().min(1).optional(),
+  SUPABASE_SECRET_KEY: z.string().trim().min(1).optional(),
+  SUPABASE_SERVICE_ROLE_KEY: z.string().trim().min(1).optional(),
   ARK_API_KEY: z.string().optional(),
   ARK_MODEL: z.string().optional(),
   ARK_BASE_URL: z
@@ -54,9 +69,28 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
   const authToken = env.APP_AUTH_TOKEN?.trim() ?? "";
   const loopbackHosts = new Set(["127.0.0.1", "::1", "localhost"]);
   if (env.NODE_ENV === "production" && !loopbackHosts.has(env.HOST)) {
-    if (authToken.length < 24 || authToken.startsWith("replace-")) {
+    if (
+      env.AUTH_MODE === "legacy" &&
+      (authToken.length < 24 || authToken.startsWith("replace-"))
+    ) {
       throw new Error(
         "APP_AUTH_TOKEN must contain at least 24 characters for a non-loopback production server",
+      );
+    }
+    if (env.AUTH_MODE === "demo" && !env.ALLOW_INSECURE_DEMO_AUTH) {
+      throw new Error(
+        "AUTH_MODE=demo is loopback-only. Use Supabase or explicitly set ALLOW_INSECURE_DEMO_AUTH=true for a disposable demo.",
+      );
+    }
+  }
+  const supabaseSecretKey =
+    env.SUPABASE_SECRET_KEY?.trim() ?? env.SUPABASE_SERVICE_ROLE_KEY?.trim() ?? "";
+  const supabasePublicKey =
+    env.SUPABASE_PUBLISHABLE_KEY?.trim() ?? env.SUPABASE_ANON_KEY?.trim() ?? "";
+  if (env.AUTH_MODE === "supabase") {
+    if (!env.SUPABASE_URL || !supabasePublicKey || !supabaseSecretKey) {
+      throw new Error(
+        "AUTH_MODE=supabase requires SUPABASE_URL, a publishable/anon key, and a secret/service-role key",
       );
     }
   }
@@ -84,6 +118,15 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     containerUser: env.CONTAINER_USER?.trim() || defaultContainerUser,
     runtimeInstanceId: env.RUNTIME_INSTANCE_ID,
     authToken,
+    authMode: env.AUTH_MODE,
+    authSessionSecret:
+      env.AUTH_SESSION_SECRET?.trim() ?? randomBytes(32).toString("base64url"),
+    authSessionTtlSeconds: env.AUTH_SESSION_TTL_SECONDS,
+    authCookieSecure: env.AUTH_COOKIE_SECURE,
+    allowInsecureDemoAuth: env.ALLOW_INSECURE_DEMO_AUTH,
+    supabaseUrl: env.SUPABASE_URL?.replace(/\/+$/, "") ?? "",
+    supabasePublicKey,
+    supabaseSecretKey,
     arkApiKey: env.ARK_API_KEY?.trim() ?? "",
     arkModel: env.ARK_MODEL?.trim() ?? "",
     arkBaseUrl: env.ARK_BASE_URL.replace(/\/+$/, ""),

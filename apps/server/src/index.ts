@@ -2,8 +2,18 @@ import path from "node:path";
 import { AgentService } from "./agent-service.js";
 import { createApp } from "./app.js";
 import { loadConfig, writeCodexConfig } from "./config.js";
+import {
+  DemoIdentityProvider,
+  isLoopbackHost,
+  SupabaseIdentityProvider,
+} from "./identity-provider.js";
 import { createRunner } from "./runner-factory.js";
+import {
+  LocalSecurityRepository,
+  SupabaseSecurityRepository,
+} from "./security-repository.js";
 import { JsonStore } from "./store.js";
+import { TrustGateway } from "./trust-gateway.js";
 import { WorkspaceManager } from "./workspace.js";
 
 const config = loadConfig();
@@ -15,7 +25,35 @@ const runner = createRunner(config);
 const service = new AgentService(config, store, workspaces, runner);
 await service.initialize();
 
-const app = await createApp(config, service);
+const identityProvider =
+  config.authMode === "supabase"
+    ? new SupabaseIdentityProvider({
+        supabaseUrl: config.supabaseUrl,
+        anonKey: config.supabasePublicKey,
+        serviceRoleKey: config.supabaseSecretKey,
+      })
+    : new DemoIdentityProvider({
+        host: config.host,
+        allowNonLoopback:
+          config.authMode === "legacy" ||
+          config.nodeEnv !== "production" ||
+          config.allowInsecureDemoAuth ||
+          isLoopbackHost(config.host),
+        signingKey: config.authSessionSecret,
+        tokenTtlSeconds: config.authSessionTtlSeconds,
+      });
+const securityRepository =
+  config.authMode === "supabase"
+    ? new SupabaseSecurityRepository(
+        config.supabaseUrl,
+        config.supabasePublicKey,
+        config.supabaseSecretKey,
+      )
+    : new LocalSecurityRepository(store, config.dataDirectory);
+await securityRepository.initialize();
+const gateway = new TrustGateway(identityProvider, securityRepository, service);
+
+const app = await createApp(config, service, gateway);
 
 const shutdown = async (signal: string) => {
   app.log.info({ signal }, "Shutting down");

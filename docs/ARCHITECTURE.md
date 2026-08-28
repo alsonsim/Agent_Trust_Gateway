@@ -1,13 +1,19 @@
 # Architecture
 
-Volc Agent Launchpad is a single-node control plane for hackathon use.
+Agent Trust Gateway is a single-node control plane with an identity and
+authorization middleware boundary for hackathon use.
 
 ```mermaid
 flowchart LR
-    UI["React Web UI"] --> API["Fastify API"]
+    UI["React Web UI"] --> AuthN["Authentication middleware"]
+    AuthN --> AuthZ["Human → Agent authorization"]
+    AuthZ --> API["Fastify API"]
     API --> Service["AgentService"]
     Service --> Store["JSON store"]
     Service --> Workspace["Agent workspace"]
+    AuthZ --> Resource["Protected resource policy"]
+    Resource --> Evidence["ALLOW / DENY evidence"]
+    Resource --> Supabase["Local fixtures or Supabase RLS"]
     Service --> Runner{"AgentRunner"}
     Runner -->|Local POC| Container["Disposable Runtime container"]
     Runner -->|ECS| Process["Codex child process"]
@@ -19,13 +25,22 @@ flowchart LR
 
 ### Web UI
 
-Lists Agents, manages lifecycle actions, submits prompts, and polls asynchronous
-Runs. It never receives the Ark API key.
+Authenticates Finance, HR, or Research; lists only owned Agents; manages the
+unchanged lifecycle and Playground; and displays backend-produced policy
+decisions. It never receives Ark or Supabase server keys.
 
 ### Fastify API
 
-Validates requests, protects remote demos with a shared bearer token, and
-serves the compiled Web UI. The token is not user identity or authorization.
+Validates requests, resolves an HttpOnly session to a human principal, and
+checks stored Agent ownership before every Agent/message/Run operation. A
+legacy shared-token mode remains available only for starter-kit compatibility.
+
+### TrustGateway
+
+Derives the Agent principal from the stored Agent, compares human/Agent/resource
+ownership, fails closed before protected content is returned, and persists
+attributed `ALLOW`/`DENY` evidence. The same policy contract uses local
+synthetic files in demo mode or Supabase Auth, tables, and RLS in Supabase mode.
 
 ### AgentService
 

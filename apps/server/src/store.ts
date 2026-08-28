@@ -1,13 +1,56 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { Database } from "./types.js";
+import { DEFAULT_LEGACY_OWNER_ID, type Agent, type Database } from "./types.js";
 
 const emptyDatabase = (): Database => ({
-  version: 1,
+  version: 2,
   agents: [],
   messages: [],
   runs: [],
+  protectedResources: [],
+  authorizationDecisions: [],
 });
+
+interface LegacyDatabase {
+  version: 1;
+  agents: Array<Omit<Agent, "ownerId"> & { ownerId?: string }>;
+  messages: Database["messages"];
+  runs: Database["runs"];
+}
+
+function parseDatabase(raw: string): { database: Database; migrated: boolean } {
+  const parsed = JSON.parse(raw) as Partial<Database> | LegacyDatabase;
+  if (!Array.isArray(parsed.agents)) {
+    throw new Error("Unsupported database format");
+  }
+  if (parsed.version === 1) {
+    const legacy = parsed as LegacyDatabase;
+    return {
+      migrated: true,
+      database: {
+        version: 2,
+        agents: legacy.agents.map((agent) => ({
+          ...agent,
+          ownerId: agent.ownerId || DEFAULT_LEGACY_OWNER_ID,
+        })),
+        messages: Array.isArray(legacy.messages) ? legacy.messages : [],
+        runs: Array.isArray(legacy.runs) ? legacy.runs : [],
+        protectedResources: [],
+        authorizationDecisions: [],
+      },
+    };
+  }
+  if (
+    parsed.version !== 2 ||
+    !Array.isArray(parsed.messages) ||
+    !Array.isArray(parsed.runs) ||
+    !Array.isArray(parsed.protectedResources) ||
+    !Array.isArray(parsed.authorizationDecisions)
+  ) {
+    throw new Error("Unsupported database format");
+  }
+  return { database: parsed as Database, migrated: false };
+}
 
 export class JsonStore {
   private data: Database = emptyDatabase();
@@ -19,11 +62,9 @@ export class JsonStore {
     await mkdir(path.dirname(this.filePath), { recursive: true });
     try {
       const raw = await readFile(this.filePath, "utf8");
-      const parsed = JSON.parse(raw) as Database;
-      if (parsed.version !== 1 || !Array.isArray(parsed.agents)) {
-        throw new Error("Unsupported database format");
-      }
-      this.data = parsed;
+      const { database, migrated } = parseDatabase(raw);
+      this.data = database;
+      if (migrated) await this.persist(database);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         throw error;

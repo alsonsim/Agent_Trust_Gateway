@@ -1,9 +1,24 @@
 export type AgentStatus = "ready" | "busy" | "stopped" | "error";
 export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 export type MessageRole = "user" | "assistant";
+export type Department = "finance" | "hr" | "research";
+export type AuthorizationDecisionValue = "allow" | "deny";
+export type AuthorizationAction =
+  | "agent.create"
+  | "agent.read"
+  | "agent.update"
+  | "agent.delete"
+  | "agent.start"
+  | "agent.stop"
+  | "agent.invoke"
+  | "run.read"
+  | "resource.read";
+
+export const DEFAULT_LEGACY_OWNER_ID = "11111111-1111-4111-8111-111111111111";
 
 export interface Agent {
   id: string;
+  ownerId: string;
   name: string;
   description: string;
   instructions: string;
@@ -43,11 +58,49 @@ export interface AgentRun {
   createdAt: string;
 }
 
+export interface ProtectedResource {
+  id: string;
+  ownerId: string;
+  ownerDepartment: Department;
+  name: string;
+  description: string;
+  fileName: string;
+  storageKey: string;
+  createdAt: string;
+}
+
+export interface ProtectedResourceSummary extends Omit<ProtectedResource, "storageKey"> {
+  ownedByCurrentUser: boolean;
+}
+
+export interface AuthorizationDecision {
+  id: string;
+  requestId: string;
+  humanUserId: string;
+  humanEmail: string;
+  humanDepartment: Department;
+  agentId: string | null;
+  agentName: string | null;
+  action: AuthorizationAction;
+  targetType: "agent" | "run" | "resource";
+  targetId: string;
+  targetLabel: string;
+  decision: AuthorizationDecisionValue;
+  reasonCode:
+    | "OWNER_MATCH"
+    | "HUMAN_AGENT_OWNER_MISMATCH"
+    | "AGENT_RESOURCE_OWNER_MISMATCH";
+  reason: string;
+  createdAt: string;
+}
+
 export interface Database {
-  version: 1;
+  version: 2;
   agents: Agent[];
   messages: Message[];
   runs: AgentRun[];
+  protectedResources: ProtectedResource[];
+  authorizationDecisions: AuthorizationDecision[];
 }
 
 export interface CreateAgentInput {

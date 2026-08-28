@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -15,6 +15,46 @@ afterEach(async () => {
 });
 
 describe("JsonStore", () => {
+  it("migrates legacy single-user state to an owned version 2 database", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "launchpad-store-migration-test-"));
+    temporaryDirectories.push(root);
+    const databasePath = path.join(root, "db.json");
+    const timestamp = new Date().toISOString();
+    await writeFile(
+      databasePath,
+      JSON.stringify({
+        version: 1,
+        agents: [
+          {
+            id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            name: "Legacy Agent",
+            description: "",
+            instructions: "",
+            status: "ready",
+            workspacePath: path.join(root, "workspace"),
+            codexThreadId: null,
+            lastError: null,
+            createdAt: timestamp,
+            updatedAt: timestamp,
+          },
+        ],
+        messages: [],
+        runs: [],
+      }),
+      "utf8",
+    );
+    const store = new JsonStore(databasePath);
+    await store.initialize();
+    expect(store.snapshot()).toMatchObject({
+      version: 2,
+      agents: [
+        { ownerId: "11111111-1111-4111-8111-111111111111" },
+      ],
+      protectedResources: [],
+      authorizationDecisions: [],
+    });
+  });
+
   it("does not publish a mutation in memory when persistence fails", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "launchpad-store-test-"));
     temporaryDirectories.push(root);

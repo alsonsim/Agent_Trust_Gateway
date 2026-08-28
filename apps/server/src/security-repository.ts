@@ -269,8 +269,9 @@ export class SupabaseSecurityRepository implements SecurityRepository {
     if (!response.ok) {
       throw new HttpError(503, "Supabase security repository is unavailable");
     }
-    if (response.status === 204) return undefined as T;
-    return (await response.json()) as T;
+    const responseBody = await response.text();
+    if (!responseBody) return undefined as T;
+    return JSON.parse(responseBody) as T;
   }
 }
 

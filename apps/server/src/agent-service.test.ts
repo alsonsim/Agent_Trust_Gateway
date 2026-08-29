@@ -135,4 +135,42 @@ describe("Agent lifecycle", () => {
     finish({ output: "done", threadId: "thread", usage: null });
     await expect.poll(() => service.getRun(run.id).status).toBe("completed");
   });
+
+  it("revokes an active Agent, cancels its run, and rejects future dispatch", async () => {
+    let calls = 0;
+    let cancelCalls = 0;
+    let rejectRun!: (error: Error) => void;
+    const pending = new Promise<RunnerResult>((_resolve, reject) => {
+      rejectRun = reject;
+    });
+    const service = await makeService({
+      run: () => {
+        calls += 1;
+        return pending;
+      },
+      cancel: async () => {
+        cancelCalls += 1;
+        rejectRun(new Error("cancelled by revocation"));
+        return true;
+      },
+      isAvailable: async () => true,
+    });
+    const agent = await service.createAgent(DEFAULT_LEGACY_OWNER_ID, { name: "Revocable" });
+    await service.sendMessage(agent.id, "first action");
+    await expect.poll(() => calls).toBe(1);
+    await service.revokeAgent(agent.id);
+
+    expect(calls).toBe(1);
+    expect(cancelCalls).toBeGreaterThan(0);
+    expect(service.getAgent(agent.id)).toMatchObject({
+      status: "stopped",
+      revokedAt: expect.any(String),
+    });
+    await expect(service.startAgent(agent.id)).rejects.toMatchObject({ statusCode: 403 });
+    await expect(service.sendMessage(agent.id, "second action")).rejects.toMatchObject({
+      statusCode: 403,
+      code: "AGENT_REVOKED",
+    });
+    expect(calls).toBe(1);
+  });
 });

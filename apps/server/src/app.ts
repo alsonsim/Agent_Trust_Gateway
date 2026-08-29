@@ -47,6 +47,9 @@ const updateAgentBody = createAgentBody.partial().refine(
 const messageBody = z.object({
   content: z.string().trim().min(1).max(50_000),
 });
+const workspaceFileReadBody = z.object({
+  path: z.string().trim().min(1).max(1_024),
+});
 const loginBody = z.object({
   email: z.string().trim().email().max(320),
   password: z.string().max(4_096).optional(),
@@ -200,6 +203,11 @@ export async function createApp(
     return { agent: await service.stopAgent(id) };
   });
 
+  app.post("/api/agents/:id/revoke", async (request) => {
+    const { id } = agentIdParams.parse(request.params);
+    return gateway.revokeAgent(requirePrincipal(request), id, String(request.id));
+  });
+
   app.get("/api/agents/:id/messages", async (request) => {
     const { id } = agentIdParams.parse(request.params);
     await authorizeAgent(request, id, "agent.read");
@@ -216,7 +224,13 @@ export async function createApp(
     const { id } = agentIdParams.parse(request.params);
     await authorizeAgent(request, id, "agent.invoke", true);
     const body = messageBody.parse(request.body);
-    const result = await service.sendMessage(id, body.content);
+    const principal = requirePrincipal(request);
+    const result = await service.sendMessage(id, body.content, {
+      humanUserId: principal.id,
+      humanEmail: principal.email,
+      humanDepartment: principal.department,
+      requestId: String(request.id),
+    });
     return reply.code(202).send(result);
   });
 
@@ -250,6 +264,17 @@ export async function createApp(
       },
       decision: result.decision,
     };
+  });
+
+  app.post("/api/agents/:id/files/read", async (request) => {
+    const { id } = agentIdParams.parse(request.params);
+    const body = workspaceFileReadBody.parse(request.body);
+    return gateway.readWorkspaceFile(
+      requirePrincipal(request),
+      id,
+      body.path,
+      String(request.id),
+    );
   });
 
   app.get("/api/authorization-decisions", async (request) => {
@@ -308,7 +333,8 @@ export async function createApp(
     return reply.code(statusCode).send({
       error: appError.message,
       ...(error instanceof HttpError && error.code ? { code: error.code } : {}),
-      ...(error instanceof HttpError && error.code === "AUTHORIZATION_DENIED"
+      ...(error instanceof HttpError &&
+      (error.code === "AUTHORIZATION_DENIED" || error.code === "RUNTIME_ACTION_DENIED")
         ? { decision: error.details }
         : {}),
       ...(validationError ? { details: error.issues } : {}),

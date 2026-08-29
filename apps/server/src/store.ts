@@ -32,6 +32,7 @@ function parseDatabase(raw: string): { database: Database; migrated: boolean } {
         agents: legacy.agents.map((agent) => ({
           ...agent,
           ownerId: agent.ownerId || DEFAULT_LEGACY_OWNER_ID,
+          revokedAt: null,
         })),
         messages: Array.isArray(legacy.messages) ? legacy.messages : [],
         runs: Array.isArray(legacy.runs) ? legacy.runs : [],
@@ -49,7 +50,15 @@ function parseDatabase(raw: string): { database: Database; migrated: boolean } {
   ) {
     throw new Error("Unsupported database format");
   }
-  return { database: parsed as Database, migrated: false };
+  const database = parsed as Database;
+  const agents = database.agents.map((agent) => ({
+    ...agent,
+    revokedAt: agent.revokedAt ?? null,
+  }));
+  return {
+    database: { ...database, agents },
+    migrated: database.agents.some((agent) => agent.revokedAt === undefined),
+  };
 }
 
 export class JsonStore {

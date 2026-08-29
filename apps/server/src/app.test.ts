@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -7,13 +7,17 @@ import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { DemoIdentityProvider } from "./identity-provider.js";
 import { LocalSecurityRepository, RESOURCE_FIXTURES } from "./security-repository.js";
+import { RuntimeActionFirewall } from "./runtime-action-firewall.js";
 import { JsonStore } from "./store.js";
 import { TrustGateway } from "./trust-gateway.js";
 import type { AgentRunner, RunnerRequest, RunnerResult } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
 
 class FakeRunner implements AgentRunner {
+  readonly requests: RunnerRequest[] = [];
+
   async run(request: RunnerRequest): Promise<RunnerResult> {
+    this.requests.push(request);
     return {
       output: "Completed: " + request.prompt,
       threadId: request.threadId ?? "test-thread",
@@ -55,14 +59,16 @@ async function makeHarness(overrides: NodeJS.ProcessEnv = {}) {
     ...overrides,
   });
   const store = new JsonStore(path.join(root, "data", "launchpad.json"));
+  const repository = new LocalSecurityRepository(store, config.dataDirectory);
+  const runner = new FakeRunner();
   const service = new AgentService(
     config,
     store,
     new WorkspaceManager(path.join(root, "workspaces")),
-    new FakeRunner(),
+    runner,
+    new RuntimeActionFirewall(repository),
   );
   await service.initialize();
-  const repository = new LocalSecurityRepository(store, config.dataDirectory);
   await repository.initialize();
   const identity = new DemoIdentityProvider({
     host: "127.0.0.1",
@@ -71,7 +77,7 @@ async function makeHarness(overrides: NodeJS.ProcessEnv = {}) {
   });
   const gateway = new TrustGateway(identity, repository, service);
   const app = await createApp(config, service, gateway);
-  return { app, config, service };
+  return { app, config, service, runner };
 }
 
 async function login(app: Awaited<ReturnType<typeof createApp>>, email: string) {
@@ -185,6 +191,84 @@ describe("HTTP identity and authorization boundary", () => {
     await app.close();
   });
 
+  it("authorizes workspace file reads and records denied secret and traversal attempts", async () => {
+    const { app, service } = await makeHarness();
+    const cookie = await login(app, "finance@agent-gateway.local");
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/agents",
+      headers: { cookie },
+      payload: { name: "Finance Agent" },
+    });
+    const agentId = created.json().agent.id as string;
+    const workspacePath = service.getAgent(agentId).workspacePath;
+    const secret = "FILE_AUTHORIZATION_TEST_SECRET";
+    await writeFile(workspacePath + path.sep + ".env", "API_KEY=" + secret + "\n");
+
+    const allowed = await app.inject({
+      method: "POST",
+      url: `/api/agents/${agentId}/files/read`,
+      headers: { cookie },
+      payload: { path: "README.md" },
+    });
+    expect(allowed.statusCode).toBe(200);
+    expect(allowed.json()).toMatchObject({
+      path: "README.md",
+      content: expect.stringContaining("Finance Agent workspace"),
+      decision: {
+        action: "file.read",
+        targetType: "file",
+        decision: "allow",
+        reasonCode: "WORKSPACE_PATH_ALLOWED",
+      },
+    });
+
+    const secretDenied = await app.inject({
+      method: "POST",
+      url: `/api/agents/${agentId}/files/read`,
+      headers: { cookie },
+      payload: { path: ".env" },
+    });
+    expect(secretDenied.statusCode).toBe(403);
+    expect(secretDenied.body).not.toContain(secret);
+    expect(secretDenied.json()).toMatchObject({
+      code: "AUTHORIZATION_DENIED",
+      decision: {
+        action: "file.read",
+        decision: "deny",
+        reasonCode: "PROTECTED_SECRET_FILE",
+      },
+    });
+
+    const traversalDenied = await app.inject({
+      method: "POST",
+      url: `/api/agents/${agentId}/files/read`,
+      headers: { cookie },
+      payload: { path: "../launchpad.json" },
+    });
+    expect(traversalDenied.statusCode).toBe(403);
+    expect(traversalDenied.json()).toMatchObject({
+      decision: {
+        action: "file.read",
+        decision: "deny",
+        reasonCode: "PATH_OUTSIDE_WORKSPACE",
+      },
+    });
+
+    const audit = await app.inject({
+      method: "GET",
+      url: "/api/authorization-decisions?limit=10",
+      headers: { cookie },
+    });
+    expect(audit.statusCode).toBe(200);
+    expect(
+      audit
+        .json()
+        .decisions.filter((decision: { action: string }) => decision.action === "file.read"),
+    ).toHaveLength(3);
+    await app.close();
+  });
+
   it("closes the direct Run lookup bypass", async () => {
     const { app } = await makeHarness();
     const financeCookie = await login(app, "finance@agent-gateway.local");
@@ -210,6 +294,132 @@ describe("HTTP identity and authorization boundary", () => {
       headers: { cookie: hrCookie },
     });
     expect(denied.statusCode).toBe(403);
+    await app.close();
+  });
+
+  it("denies a Runtime Action Firewall command before the Agent runner starts", async () => {
+    const { app, service, runner } = await makeHarness();
+    const cookie = await login(app, "finance@agent-gateway.local");
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/agents",
+      headers: { cookie },
+      payload: { name: "Finance Agent" },
+    });
+    const agentId = created.json().agent.id as string;
+
+    const denied = await app.inject({
+      method: "POST",
+      url: `/api/agents/${agentId}/messages`,
+      headers: { cookie },
+      payload: { content: "Run `rm -rf .` to clean the workspace." },
+    });
+    expect(denied.statusCode).toBe(403);
+    expect(denied.json()).toMatchObject({
+      code: "RUNTIME_ACTION_DENIED",
+      decision: {
+        action: "shell.execute",
+        targetLabel: "rm -rf",
+        decision: "deny",
+        reasonCode: "RUNTIME_COMMAND_DENIED",
+      },
+    });
+    expect(runner.requests).toHaveLength(0);
+    expect(service.getRuns(agentId)).toHaveLength(0);
+
+    const audit = await app.inject({
+      method: "GET",
+      url: "/api/authorization-decisions?limit=10",
+      headers: { cookie },
+    });
+    expect(
+      audit.json().decisions.some((decision: { action: string; decision: string }) =>
+        decision.action === "shell.execute" && decision.decision === "deny",
+      ),
+    ).toBe(true);
+    await app.close();
+  });
+
+  it("revokes an owned Agent, blocks future actions before the runner, and audits both decisions", async () => {
+    const { app, runner } = await makeHarness();
+    const financeCookie = await login(app, "finance@agent-gateway.local");
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/agents",
+      headers: { cookie: financeCookie },
+      payload: { name: "Revocable Finance Agent" },
+    });
+    const agentId = created.json().agent.id as string;
+
+    const active = await app.inject({
+      method: "POST",
+      url: `/api/agents/${agentId}/messages`,
+      headers: { cookie: financeCookie },
+      payload: { content: "Run npm test" },
+    });
+    expect(active.statusCode).toBe(202);
+    await expect.poll(() => runner.requests).toHaveLength(1);
+
+    const revoked = await app.inject({
+      method: "POST",
+      url: `/api/agents/${agentId}/revoke`,
+      headers: { cookie: financeCookie },
+    });
+    expect(revoked.statusCode).toBe(200);
+    expect(revoked.json()).toMatchObject({
+      agent: { status: "stopped", revokedAt: expect.any(String) },
+      decision: { action: "agent.revoke", decision: "allow", reasonCode: "AGENT_REVOKED" },
+    });
+
+    const denied = await app.inject({
+      method: "POST",
+      url: `/api/agents/${agentId}/messages`,
+      headers: { cookie: financeCookie },
+      payload: { content: "Run npm test again" },
+    });
+    expect(denied.statusCode).toBe(403);
+    expect(denied.json()).toMatchObject({
+      code: "AUTHORIZATION_DENIED",
+      decision: { action: "agent.invoke", decision: "deny", reasonCode: "AGENT_REVOKED" },
+    });
+    expect(runner.requests).toHaveLength(1);
+
+    const audit = await app.inject({
+      method: "GET",
+      url: "/api/authorization-decisions?limit=20",
+      headers: { cookie: financeCookie },
+    });
+    expect(audit.json().decisions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ action: "agent.revoke", decision: "allow" }),
+        expect.objectContaining({ action: "agent.invoke", decision: "deny", reasonCode: "AGENT_REVOKED" }),
+      ]),
+    );
+    await app.close();
+  });
+
+  it("does not let another user revoke an Agent", async () => {
+    const { app, service } = await makeHarness();
+    const financeCookie = await login(app, "finance@agent-gateway.local");
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/agents",
+      headers: { cookie: financeCookie },
+      payload: { name: "Finance Agent" },
+    });
+    const agentId = created.json().agent.id as string;
+    const hrCookie = await login(app, "hr@agent-gateway.local");
+
+    const denied = await app.inject({
+      method: "POST",
+      url: `/api/agents/${agentId}/revoke`,
+      headers: { cookie: hrCookie },
+    });
+    expect(denied.statusCode).toBe(403);
+    expect(denied.json()).toMatchObject({
+      decision: { action: "agent.revoke", reasonCode: "HUMAN_AGENT_OWNER_MISMATCH" },
+    });
+    expect(service.getAgent(agentId).revokedAt).toBeNull();
     await app.close();
   });
 

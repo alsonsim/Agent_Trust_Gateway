@@ -8,11 +8,16 @@ export type AuthorizationAction =
   | "agent.read"
   | "agent.update"
   | "agent.delete"
+  | "agent.revoke"
   | "agent.start"
   | "agent.stop"
   | "agent.invoke"
   | "run.read"
-  | "resource.read";
+  | "resource.read"
+  | "file.read"
+  | "file.write"
+  | "shell.execute"
+  | "network.request";
 
 export interface HumanPrincipal {
   id: string;
@@ -34,6 +39,7 @@ export interface Agent {
   description: string;
   instructions: string;
   status: AgentStatus;
+  revokedAt: string | null;
   workspacePath: string;
   codexThreadId: string | null;
   lastError: string | null;
@@ -96,14 +102,22 @@ export interface AuthorizationDecision {
   agentId: string | null;
   agentName: string | null;
   action: AuthorizationAction;
-  targetType: "agent" | "run" | "resource";
+  targetType: "agent" | "run" | "resource" | "file" | "command" | "network";
   targetId: string;
   targetLabel: string;
   decision: AuthorizationDecisionValue;
   reasonCode:
     | "OWNER_MATCH"
     | "HUMAN_AGENT_OWNER_MISMATCH"
-    | "AGENT_RESOURCE_OWNER_MISMATCH";
+    | "AGENT_REVOKED"
+    | "AGENT_RESOURCE_OWNER_MISMATCH"
+    | "WORKSPACE_PATH_ALLOWED"
+    | "PATH_OUTSIDE_WORKSPACE"
+    | "PROTECTED_SECRET_FILE"
+    | "FILE_TOO_LARGE"
+    | "RUNTIME_COMMAND_ALLOWED"
+    | "RUNTIME_COMMAND_DENIED"
+    | "RUNTIME_NETWORK_DENIED";
   reason: string;
   createdAt: string;
 }
@@ -113,5 +127,11 @@ export interface ProtectedResourceRead {
     summary: ProtectedResourceSummary;
     content: string;
   };
+  decision: AuthorizationDecision;
+}
+
+export interface WorkspaceFileRead {
+  path: string;
+  content: string;
   decision: AuthorizationDecision;
 }

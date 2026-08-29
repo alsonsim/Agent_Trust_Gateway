@@ -1,7 +1,7 @@
 node_modules/
 dist/
-.env
-.env.production
+.env*
+!.env.example
 .data/
 .local/
 data/
@@ -14,3 +14,8 @@ coverage/
 deploy/volcengine/.terraform/
 deploy/volcengine/*.tfstate*
 deploy/volcengine/terraform.tfvars
+
+# Local Supabase operator assets are intentionally never published.
+supabase/
+scripts/seed-supabase-users.mjs
+scripts/setup-supabase.sql

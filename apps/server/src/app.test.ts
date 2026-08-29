@@ -523,6 +523,134 @@ describe("HTTP identity and authorization boundary", () => {
     await app.close();
   });
 
+  it("issues the same scoped Trust Pass through request and owner initiated paths", async () => {
+    const { app, service } = await makeHarness();
+    const financeCookie = await login(app, "finance@agent-gateway.local");
+    const createdAgent = await app.inject({
+      method: "POST",
+      url: "/api/agents",
+      headers: { cookie: financeCookie },
+      payload: { name: "Private Finance Agent" },
+    });
+    const financeAgent = createdAgent.json().agent as { id: string; workspacePath: string };
+    const financeResource = RESOURCE_FIXTURES.find(
+      (resource) => resource.ownerDepartment === "finance",
+    )!;
+
+    const hrCookie = await login(app, "hr@agent-gateway.local");
+    const request = await app.inject({
+      method: "POST",
+      url: "/api/delegation-requests",
+      headers: { cookie: hrCookie },
+      payload: {
+        requiredCapability: "finance.cost-analysis",
+        prompt: "Estimate the budget impact of hiring 12 engineers.",
+        sanitizedTaskSummary: "Aggregate headcount and salary bands",
+      },
+    });
+    const requestId = request.json().request.id as string;
+
+    const approved = await app.inject({
+      method: "POST",
+      url: `/api/delegation-requests/${requestId}/approve`,
+      headers: { cookie: financeCookie },
+      payload: {
+        agentId: financeAgent.id,
+        approvedResourceIds: [financeResource.id],
+        expiresInSeconds: 600,
+      },
+    });
+    expect(approved.statusCode).toBe(200);
+    expect(approved.json()).toMatchObject({
+      contract: {
+        source: "request",
+        box: "outgoing",
+        grantee: { displayName: "HR", department: "hr" },
+        agent: { id: financeAgent.id, name: "Private Finance Agent" },
+        allowedActions: ["agent.invoke"],
+        resultVisibility: "final_output_only",
+        maximumUses: 1,
+        remainingUses: 1,
+        status: "active",
+        policyReasonCode: "DELEGATION_ACTIVE",
+      },
+      decision: {
+        action: "delegation.approve",
+        reasonCode: "DELEGATION_APPROVED",
+      },
+    });
+    const approvedContractId = approved.json().contract.id as string;
+
+    const hrPasses = await app.inject({
+      method: "GET",
+      url: "/api/delegation-contracts?box=incoming",
+      headers: { cookie: hrCookie },
+    });
+    expect(hrPasses.statusCode).toBe(200);
+    expect(hrPasses.json().contracts).toEqual([
+      expect.objectContaining({
+        id: approvedContractId,
+        box: "incoming",
+        providerLabel: "Privately managed finance capability",
+        approvedPrompt: "Estimate the budget impact of hiring 12 engineers.",
+        approvedInputCount: 1,
+      }),
+    ]);
+    expect(hrPasses.body).not.toContain(financeAgent.id);
+    expect(hrPasses.body).not.toContain("Private Finance Agent");
+    expect(hrPasses.body).not.toContain(financeAgent.workspacePath);
+    expect(hrPasses.body).not.toContain(financeResource.name);
+    expect(hrPasses.body).not.toContain(financeResource.fileName);
+
+    const unauthorizedRevoke = await app.inject({
+      method: "POST",
+      url: `/api/delegation-contracts/${approvedContractId}/revoke`,
+      headers: { cookie: hrCookie },
+    });
+    expect(unauthorizedRevoke.statusCode).toBe(404);
+
+    const revoked = await app.inject({
+      method: "POST",
+      url: `/api/delegation-contracts/${approvedContractId}/revoke`,
+      headers: { cookie: financeCookie },
+    });
+    expect(revoked.statusCode).toBe(200);
+    expect(revoked.json()).toMatchObject({
+      contract: { status: "revoked", policyReasonCode: "DELEGATION_REVOKED" },
+      decision: { reasonCode: "DELEGATION_REVOKED" },
+    });
+    expect(service.getAgent(financeAgent.id)).toMatchObject({
+      status: "ready",
+      revokedAt: null,
+    });
+
+    const direct = await app.inject({
+      method: "POST",
+      url: "/api/delegation-contracts",
+      headers: { cookie: financeCookie },
+      payload: {
+        requiredCapability: "finance.cost-analysis",
+        granteeHumanId: "33333333-3333-4333-8333-333333333333",
+        agentId: financeAgent.id,
+        exactPrompt: "Summarize the approved aggregate budget inputs.",
+        approvedResourceIds: [],
+        expiresInSeconds: 60,
+      },
+    });
+    expect(direct.statusCode).toBe(201);
+    expect(direct.json()).toMatchObject({
+      contract: {
+        source: "owner",
+        box: "outgoing",
+        grantee: { displayName: "Research", department: "research" },
+        allowedActions: ["agent.invoke"],
+        resultVisibility: "final_output_only",
+        maximumUses: 1,
+      },
+    });
+    await app.close();
+  });
+
   it("preserves the optional shared-token boundary in legacy mode", async () => {
     const { app } = await makeHarness({
       AUTH_MODE: "legacy",

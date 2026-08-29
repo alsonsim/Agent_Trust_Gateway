@@ -71,6 +71,24 @@ const delegationRequestQuery = z
   .object({ box: z.enum(["incoming", "outgoing"]) })
   .strict();
 const delegationIdParams = z.object({ id: z.string().uuid() }).strict();
+const delegationScopeFields = {
+  agentId: z.string().uuid(),
+  approvedResourceIds: z.array(z.string().uuid()).max(20).default([]),
+  expiresInSeconds: z.coerce.number().int().min(60).max(600).default(600),
+};
+const approveDelegationRequestBody = z.object(delegationScopeFields).strict();
+const createDelegationContractBody = z
+  .object({
+    requiredCapability: z.string().min(1).max(120),
+    granteeHumanId: z.string().uuid(),
+    exactPrompt: z.string().min(1).max(50_000).refine((value) => value.trim().length > 0),
+    sanitizedTaskSummary: z.string().min(1).max(500).optional(),
+    ...delegationScopeFields,
+  })
+  .strict();
+const delegationContractQuery = z
+  .object({ box: z.enum(["incoming", "outgoing"]) })
+  .strict();
 
 export async function createApp(
   config: AppConfig,
@@ -212,6 +230,55 @@ export async function createApp(
     ensureDelegationAvailable(config);
     const { id } = delegationIdParams.parse(request.params);
     return delegations.rejectRequest(
+      requirePrincipal(request),
+      id,
+      String(request.id),
+    );
+  });
+
+  app.post("/api/delegation-requests/:id/approve", async (request) => {
+    ensureDelegationAvailable(config);
+    const { id } = delegationIdParams.parse(request.params);
+    const body = approveDelegationRequestBody.parse(request.body);
+    return delegations.approveRequest(
+      requirePrincipal(request),
+      id,
+      body,
+      String(request.id),
+    );
+  });
+
+  app.post("/api/delegation-contracts", async (request, reply) => {
+    ensureDelegationAvailable(config);
+    const body = createDelegationContractBody.parse(request.body);
+    const result = await delegations.createContract(
+      requirePrincipal(request),
+      {
+        requiredCapability: body.requiredCapability,
+        granteeHumanId: body.granteeHumanId,
+        agentId: body.agentId,
+        exactPrompt: body.exactPrompt,
+        approvedResourceIds: body.approvedResourceIds,
+        expiresInSeconds: body.expiresInSeconds,
+        ...(body.sanitizedTaskSummary === undefined
+          ? {}
+          : { sanitizedTaskSummary: body.sanitizedTaskSummary }),
+      },
+      String(request.id),
+    );
+    return reply.code(201).send(result);
+  });
+
+  app.get("/api/delegation-contracts", async (request) => {
+    ensureDelegationAvailable(config);
+    const { box } = delegationContractQuery.parse(request.query);
+    return delegations.listContracts(requirePrincipal(request), box);
+  });
+
+  app.post("/api/delegation-contracts/:id/revoke", async (request) => {
+    ensureDelegationAvailable(config);
+    const { id } = delegationIdParams.parse(request.params);
+    return delegations.revokeContract(
       requirePrincipal(request),
       id,
       String(request.id),

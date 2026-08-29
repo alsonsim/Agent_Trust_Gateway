@@ -17,6 +17,10 @@ export interface SecurityRepository {
   initialize(): Promise<void>;
   listResources(): Promise<ProtectedResource[]>;
   readResource(id: string, userAccessToken: string): Promise<ResourceReadResult | null>;
+  readResourceForDelegation(
+    id: string,
+    approvingHumanId: string,
+  ): Promise<ResourceReadResult | null>;
   appendDecision(decision: AuthorizationDecision): Promise<void>;
   listDecisions(humanUserId: string, limit: number): Promise<AuthorizationDecision[]>;
 }
@@ -127,6 +131,14 @@ export class LocalSecurityRepository implements SecurityRepository {
     return { resource, content: await readFile(resourcePath, "utf8") };
   }
 
+  async readResourceForDelegation(
+    id: string,
+    approvingHumanId: string,
+  ): Promise<ResourceReadResult | null> {
+    const result = await this.readResource(id, "local-delegation");
+    return result?.resource.ownerId === approvingHumanId ? result : null;
+  }
+
   async appendDecision(decision: AuthorizationDecision): Promise<void> {
     await this.store.mutate((database) => {
       database.authorizationDecisions.push(decision);
@@ -194,6 +206,23 @@ export class SupabaseSecurityRepository implements SecurityRepository {
         "&select=id,owner_id,owner_department,name,description,file_name,content,created_at&limit=1",
       userAccessToken,
       { apiKey: this.anonKey },
+    );
+    const row = rows[0];
+    if (!row) return null;
+    return { resource: mapSupabaseResource(row), content: row.content ?? "" };
+  }
+
+  async readResourceForDelegation(
+    id: string,
+    approvingHumanId: string,
+  ): Promise<ResourceReadResult | null> {
+    const rows = await this.request<SupabaseResourceRow[]>(
+      "/rest/v1/protected_resources?id=eq." +
+        encodeURIComponent(id) +
+        "&owner_id=eq." +
+        encodeURIComponent(approvingHumanId) +
+        "&select=id,owner_id,owner_department,name,description,file_name,content,created_at&limit=1",
+      this.secretKey,
     );
     const row = rows[0];
     if (!row) return null;

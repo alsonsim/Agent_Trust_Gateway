@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { AppConfig } from "./config.js";
 import { isArkConfigured } from "./config.js";
 import { HttpError, RunCancelledError } from "./errors.js";
+import type { RuntimeActionFirewall } from "./runtime-action-firewall.js";
 import { JsonStore } from "./store.js";
 import type {
   Agent,
@@ -9,6 +10,7 @@ import type {
   AgentRunner,
   CreateAgentInput,
   Message,
+  RuntimeAuthorizationContext,
   UpdateAgentInput,
 } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
@@ -24,6 +26,7 @@ export class AgentService {
     private readonly store: JsonStore,
     private readonly workspaces: WorkspaceManager,
     private readonly runner: AgentRunner,
+    private readonly runtimeFirewall?: RuntimeActionFirewall,
   ) {}
 
   async initialize(): Promise<void> {
@@ -71,6 +74,7 @@ export class AgentService {
       description: input.description?.trim() ?? "",
       instructions: input.instructions?.trim() ?? "",
       status: "ready",
+      revokedAt: null,
       workspacePath: this.workspaces.workspacePath(id),
       codexThreadId: null,
       lastError: null,
@@ -119,6 +123,7 @@ export class AgentService {
   }
 
   async startAgent(id: string): Promise<Agent> {
+    this.assertNotRevoked(this.getAgent(id));
     return this.setStatus(id, "ready");
   }
 
@@ -126,6 +131,24 @@ export class AgentService {
     this.getAgent(id);
     await this.cancelExecution(id);
     return this.setStatus(id, "stopped");
+  }
+
+  async revokeAgent(id: string): Promise<Agent> {
+    const agent = this.getAgent(id);
+    if (agent.revokedAt) return agent;
+    await this.store.mutate((database) => {
+      const storedAgent = database.agents.find((item) => item.id === id);
+      if (!storedAgent) throw new HttpError(404, "Agent not found");
+      if (storedAgent.revokedAt) return structuredClone(storedAgent);
+      const timestamp = now();
+      storedAgent.revokedAt = timestamp;
+      storedAgent.status = "stopped";
+      storedAgent.lastError = null;
+      storedAgent.updatedAt = timestamp;
+      return structuredClone(storedAgent);
+    });
+    await this.cancelExecution(id);
+    return this.getAgent(id);
   }
 
   getMessages(agentId: string): Message[] {
@@ -155,12 +178,25 @@ export class AgentService {
   async sendMessage(
     agentId: string,
     prompt: string,
+    runtimeAuthorization?: RuntimeAuthorizationContext,
   ): Promise<{ run: AgentRun; message: Message }> {
     if (!isArkConfigured(this.config)) {
       throw new HttpError(
         503,
         "Ark is not configured. Set ARK_API_KEY and ARK_MODEL, then restart.",
       );
+    }
+    const agent = this.getAgent(agentId);
+    this.assertNotRevoked(agent);
+    if (this.runtimeFirewall) {
+      if (!runtimeAuthorization) {
+        throw new HttpError(
+          503,
+          "Runtime authorization context is required before Agent execution",
+          { code: "RUNTIME_AUTHORIZATION_CONTEXT_REQUIRED" },
+        );
+      }
+      await this.runtimeFirewall.authorize(agent, prompt, runtimeAuthorization);
     }
     const timestamp = now();
     const runId = randomUUID();
@@ -189,6 +225,7 @@ export class AgentService {
       if (!storedAgent) {
         throw new HttpError(404, "Agent not found");
       }
+      this.assertNotRevoked(storedAgent);
       if (storedAgent.status === "stopped") {
         throw new HttpError(409, "Start the Agent before sending a message");
       }
@@ -269,7 +306,7 @@ export class AgentService {
           content: result.output,
           createdAt: completedAt,
         });
-        agent.status = "ready";
+        agent.status = agent.revokedAt ? "stopped" : "ready";
         agent.codexThreadId = result.threadId;
         agent.lastError = null;
         agent.updatedAt = completedAt;
@@ -303,6 +340,7 @@ export class AgentService {
       if (!agent) {
         throw new HttpError(404, "Agent not found");
       }
+      if (status === "ready") this.assertNotRevoked(agent);
       if (status === "ready" && agent.status === "busy") {
         throw new HttpError(409, "Stop the active run before starting this Agent");
       }
@@ -323,6 +361,14 @@ export class AgentService {
       }
     } finally {
       this.cancellationRequests.delete(agentId);
+    }
+  }
+
+  private assertNotRevoked(agent: Agent): void {
+    if (agent.revokedAt) {
+      throw new HttpError(403, "This Agent has been revoked and cannot perform actions", {
+        code: "AGENT_REVOKED",
+      });
     }
   }
 }

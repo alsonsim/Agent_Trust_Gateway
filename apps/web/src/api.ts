@@ -8,6 +8,7 @@ import type {
   ProtectedResourceRead,
   ProtectedResourceSummary,
   SystemInfo,
+  WorkspaceFileRead,
 } from "./types";
 
 export class ApiError extends Error {
@@ -122,6 +123,16 @@ export const api = {
   readResource: (agentId: string, resourceId: string) =>
     request<ProtectedResourceRead>(
       "/api/agents/" + agentId + "/resources/" + resourceId + "/read",
+      { method: "POST" },
+    ),
+  readWorkspaceFile: (agentId: string, path: string) =>
+    request<WorkspaceFileRead>("/api/agents/" + agentId + "/files/read", {
+      method: "POST",
+      body: JSON.stringify({ path }),
+    }),
+  revokeAgent: (id: string) =>
+    request<{ agent: Agent; decision: AuthorizationDecision }>(
+      "/api/agents/" + id + "/revoke",
       { method: "POST" },
     ),
   authorizationDecisions: (limit = 50) =>

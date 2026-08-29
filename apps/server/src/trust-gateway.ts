@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import type { AgentService } from "./agent-service.js";
 import { HttpError } from "./errors.js";
 import {
@@ -19,9 +20,19 @@ import type {
   ProtectedResource,
   ProtectedResourceSummary,
 } from "./types.js";
+import {
+  evaluateWorkspaceFileRead,
+  WorkspaceFileNotFoundError,
+} from "./workspace-file-policy.js";
 
 export interface AuthorizedResourceRead {
   resource: ResourceReadResult;
+  decision: AuthorizationDecision;
+}
+
+export interface AuthorizedWorkspaceFileRead {
+  path: string;
+  content: string;
   decision: AuthorizationDecision;
 }
 
@@ -83,6 +94,22 @@ export class TrustGateway {
       await this.appendDeniedDecision(decision);
       throw deniedError(decision);
     }
+    if (agent.revokedAt && revocationBlocks(action)) {
+      const revokedDecision = this.makeDecision({
+        principal,
+        requestId,
+        agent,
+        action,
+        targetType,
+        targetId,
+        targetLabel,
+        allowed: false,
+        reasonCode: "AGENT_REVOKED",
+        reason: "This Agent has been revoked and cannot perform new actions.",
+      });
+      await this.appendDeniedDecision(revokedDecision);
+      throw deniedError(revokedDecision);
+    }
     if (options.auditAllow) await this.appendAllowedDecision(decision);
     return agent;
   }
@@ -129,6 +156,46 @@ export class TrustGateway {
     }));
   }
 
+  async revokeAgent(
+    principal: HumanPrincipal,
+    agentId: string,
+    requestId: string,
+  ): Promise<{ agent: Agent; decision: AuthorizationDecision }> {
+    const agent = this.agents.getAgent(agentId);
+    if (agent.ownerId !== principal.id) {
+      const decision = this.makeDecision({
+        principal,
+        requestId,
+        agent,
+        action: "agent.revoke",
+        targetType: "agent",
+        targetId: "redacted",
+        targetLabel: "Protected Agent",
+        allowed: false,
+        reasonCode: "HUMAN_AGENT_OWNER_MISMATCH",
+        reason: "The authenticated user does not own the requested Agent.",
+        redactAgent: true,
+      });
+      await this.appendDeniedDecision(decision);
+      throw deniedError(decision);
+    }
+    const revokedAgent = await this.agents.revokeAgent(agentId);
+    const decision = this.makeDecision({
+      principal,
+      requestId,
+      agent: revokedAgent,
+      action: "agent.revoke",
+      targetType: "agent",
+      targetId: revokedAgent.id,
+      targetLabel: revokedAgent.name,
+      allowed: true,
+      reasonCode: "AGENT_REVOKED",
+      reason: "The Agent was revoked. Future actions will fail closed.",
+    });
+    await this.appendAllowedDecision(decision);
+    return { agent: revokedAgent, decision };
+  }
+
   async readResource(
     principal: HumanPrincipal,
     userAccessToken: string,
@@ -153,6 +220,19 @@ export class TrustGateway {
         "HUMAN_AGENT_OWNER_MISMATCH",
         "The authenticated user cannot act through an Agent owned by another user.",
         true,
+      );
+      await this.appendDeniedDecision(decision);
+      throw deniedError(decision);
+    }
+    if (agent.revokedAt) {
+      const decision = this.resourceDecision(
+        principal,
+        requestId,
+        agent,
+        resource,
+        false,
+        "AGENT_REVOKED",
+        "This Agent has been revoked and cannot read protected resources.",
       );
       await this.appendDeniedDecision(decision);
       throw deniedError(decision);
@@ -193,6 +273,90 @@ export class TrustGateway {
     );
     await this.appendAllowedDecision(decision);
     return { resource: result, decision };
+  }
+
+  async readWorkspaceFile(
+    principal: HumanPrincipal,
+    agentId: string,
+    requestedPath: string,
+    requestId: string,
+  ): Promise<AuthorizedWorkspaceFileRead> {
+    const agent = this.agents.getAgent(agentId);
+    if (agent.ownerId !== principal.id) {
+      const decision = this.makeDecision({
+        principal,
+        requestId,
+        agent,
+        action: "file.read",
+        targetType: "file",
+        targetId: "redacted",
+        targetLabel: "Protected workspace file",
+        allowed: false,
+        reasonCode: "HUMAN_AGENT_OWNER_MISMATCH",
+        reason: "The authenticated user cannot read files through another user's Agent.",
+        redactAgent: true,
+      });
+      await this.appendDeniedDecision(decision);
+      throw deniedError(decision);
+    }
+
+    if (agent.revokedAt) {
+      const decision = this.makeDecision({
+        principal,
+        requestId,
+        agent,
+        action: "file.read",
+        targetType: "file",
+        targetId: "revoked-agent",
+        targetLabel: "Agent workspace file",
+        allowed: false,
+        reasonCode: "AGENT_REVOKED",
+        reason: "This Agent has been revoked and cannot read workspace files.",
+      });
+      await this.appendDeniedDecision(decision);
+      throw deniedError(decision);
+    }
+
+    let policy;
+    try {
+      policy = await evaluateWorkspaceFileRead(agent.workspacePath, requestedPath);
+    } catch (error) {
+      if (error instanceof WorkspaceFileNotFoundError) {
+        throw new HttpError(404, "Workspace file not found");
+      }
+      throw error;
+    }
+
+    const decision = this.makeDecision({
+      principal,
+      requestId,
+      agent,
+      action: "file.read",
+      targetType: "file",
+      targetId: policy.targetLabel,
+      targetLabel: policy.targetLabel,
+      allowed: policy.allowed,
+      reasonCode: policy.reasonCode,
+      reason: policy.reason,
+    });
+    if (!policy.allowed || !policy.resolvedPath) {
+      await this.appendDeniedDecision(decision);
+      throw deniedError(decision);
+    }
+
+    await this.appendAllowedDecision(decision);
+    try {
+      return {
+        path: policy.targetLabel,
+        content: await readFile(policy.resolvedPath, "utf8"),
+        decision,
+      };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        throw new HttpError(404, "Workspace file not found");
+      }
+      throw error;
+    }
   }
 
   async listDecisions(
@@ -285,4 +449,8 @@ function deniedError(decision: AuthorizationDecision): HttpError {
     code: "AUTHORIZATION_DENIED",
     details: decision,
   });
+}
+
+function revocationBlocks(action: AuthorizationAction): boolean {
+  return action === "agent.start" || action === "agent.invoke";
 }

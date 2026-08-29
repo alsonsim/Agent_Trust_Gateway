@@ -8,6 +8,8 @@ import {
   SupabaseIdentityProvider,
 } from "./identity-provider.js";
 import { createRunner } from "./runner-factory.js";
+import { RuntimeActionFirewall } from "./runtime-action-firewall.js";
+import { writeRuntimeExecPolicy } from "./runtime-execpolicy.js";
 import {
   LocalSecurityRepository,
   SupabaseSecurityRepository,
@@ -18,13 +20,28 @@ import { WorkspaceManager } from "./workspace.js";
 
 const config = loadConfig();
 await writeCodexConfig(config);
+await writeRuntimeExecPolicy(config.codexHome);
 
 const store = new JsonStore(path.join(config.dataDirectory, "launchpad.json"));
 const workspaces = new WorkspaceManager(config.workspaceRoot);
+const securityRepository =
+  config.authMode === "supabase"
+    ? new SupabaseSecurityRepository(
+        config.supabaseUrl,
+        config.supabasePublicKey,
+      config.supabaseSecretKey,
+    )
+    : new LocalSecurityRepository(store, config.dataDirectory);
 const runner = createRunner(config);
-const service = new AgentService(config, store, workspaces, runner);
+const service = new AgentService(
+  config,
+  store,
+  workspaces,
+  runner,
+  new RuntimeActionFirewall(securityRepository),
+);
 await service.initialize();
-
+await securityRepository.initialize();
 const identityProvider =
   config.authMode === "supabase"
     ? new SupabaseIdentityProvider({
@@ -42,15 +59,6 @@ const identityProvider =
         signingKey: config.authSessionSecret,
         tokenTtlSeconds: config.authSessionTtlSeconds,
       });
-const securityRepository =
-  config.authMode === "supabase"
-    ? new SupabaseSecurityRepository(
-        config.supabaseUrl,
-        config.supabasePublicKey,
-        config.supabaseSecretKey,
-      )
-    : new LocalSecurityRepository(store, config.dataDirectory);
-await securityRepository.initialize();
 const gateway = new TrustGateway(identityProvider, securityRepository, service);
 
 const app = await createApp(config, service, gateway);

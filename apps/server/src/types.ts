@@ -8,11 +8,16 @@ export type AuthorizationAction =
   | "agent.read"
   | "agent.update"
   | "agent.delete"
+  | "agent.revoke"
   | "agent.start"
   | "agent.stop"
   | "agent.invoke"
   | "run.read"
-  | "resource.read";
+  | "resource.read"
+  | "file.read"
+  | "file.write"
+  | "shell.execute"
+  | "network.request";
 
 export const DEFAULT_LEGACY_OWNER_ID = "11111111-1111-4111-8111-111111111111";
 
@@ -23,6 +28,7 @@ export interface Agent {
   description: string;
   instructions: string;
   status: AgentStatus;
+  revokedAt: string | null;
   workspacePath: string;
   codexThreadId: string | null;
   lastError: string | null;
@@ -82,14 +88,22 @@ export interface AuthorizationDecision {
   agentId: string | null;
   agentName: string | null;
   action: AuthorizationAction;
-  targetType: "agent" | "run" | "resource";
+  targetType: "agent" | "run" | "resource" | "file" | "command" | "network";
   targetId: string;
   targetLabel: string;
   decision: AuthorizationDecisionValue;
   reasonCode:
     | "OWNER_MATCH"
     | "HUMAN_AGENT_OWNER_MISMATCH"
-    | "AGENT_RESOURCE_OWNER_MISMATCH";
+    | "AGENT_REVOKED"
+    | "AGENT_RESOURCE_OWNER_MISMATCH"
+    | "WORKSPACE_PATH_ALLOWED"
+    | "PATH_OUTSIDE_WORKSPACE"
+    | "PROTECTED_SECRET_FILE"
+    | "FILE_TOO_LARGE"
+    | "RUNTIME_COMMAND_ALLOWED"
+    | "RUNTIME_COMMAND_DENIED"
+    | "RUNTIME_NETWORK_DENIED";
   reason: string;
   createdAt: string;
 }
@@ -126,6 +140,13 @@ export interface RunnerRequest {
   workspacePath: string;
   prompt: string;
   threadId: string | null;
+}
+
+export interface RuntimeAuthorizationContext {
+  humanUserId: string;
+  humanEmail: string;
+  humanDepartment: Department;
+  requestId: string;
 }
 
 export interface AgentRunner {

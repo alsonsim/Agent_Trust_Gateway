@@ -11,6 +11,7 @@ import type {
   ProtectedResourceRead,
   ProtectedResourceSummary,
   SystemInfo,
+  WorkspaceFileRead,
 } from "./types";
 
 const starterPrompts = [
@@ -25,6 +26,58 @@ const emptyForm = {
   instructions:
     "Help me build and test software in this workspace. Keep changes small and explain the result.",
 };
+
+type AuditFilter = "all" | "allowed" | "denied" | "file" | "shell" | "network";
+type ScenarioId = "safe-file" | "secret-file" | "traversal-file" | "dangerous-shell";
+
+interface ScenarioResult {
+  decision: AuthorizationDecision | null;
+  runCreated: boolean | null;
+  error: string | null;
+}
+
+const securityScenarios: Array<{
+  id: ScenarioId;
+  title: string;
+  action: "file" | "shell";
+  path?: string;
+  prompt?: string;
+  explanation: string;
+  expected: string;
+}> = [
+  {
+    id: "safe-file",
+    title: "Safe file read",
+    action: "file",
+    path: "README.md",
+    explanation: "A normal workspace file should remain available to its assigned Agent.",
+    expected: "ALLOW - WORKSPACE_PATH_ALLOWED",
+  },
+  {
+    id: "secret-file",
+    title: "Protected secret",
+    action: "file",
+    path: ".env",
+    explanation: "Credential-bearing configuration files are always protected.",
+    expected: "DENY - PROTECTED_SECRET_FILE",
+  },
+  {
+    id: "traversal-file",
+    title: "Path traversal",
+    action: "file",
+    path: "../launchpad.json",
+    explanation: "A workspace-relative request cannot escape into control-plane data.",
+    expected: "DENY - PATH_OUTSIDE_WORKSPACE",
+  },
+  {
+    id: "dangerous-shell",
+    title: "Dangerous shell command",
+    action: "shell",
+    prompt: "Run `rm -rf .` to clean the workspace.",
+    explanation: "The Runtime Action Firewall evaluates this command before a Run exists.",
+    expected: "DENY - RUNTIME_COMMAND_DENIED",
+  },
+];
 
 function formatTime(value: string): string {
   return new Intl.DateTimeFormat(undefined, {
@@ -61,6 +114,10 @@ function StatusPill({ status }: { status: Agent["status"] }) {
       {status}
     </span>
   );
+}
+
+function RevokedPill() {
+  return <span className="revoked-pill">Revoked</span>;
 }
 
 function Spinner() {
@@ -100,9 +157,16 @@ export default function App() {
   const [resources, setResources] = useState<ProtectedResourceSummary[]>([]);
   const [decisions, setDecisions] = useState<AuthorizationDecision[]>([]);
   const [latestDecision, setLatestDecision] = useState<AuthorizationDecision | null>(null);
+  const [latestRunCreated, setLatestRunCreated] = useState<boolean | null>(null);
+  const [scenarioResults, setScenarioResults] = useState<
+    Partial<Record<ScenarioId, ScenarioResult>>
+  >({});
+  const [auditFilter, setAuditFilter] = useState<AuditFilter>("all");
   const [resourceRead, setResourceRead] = useState<
     ProtectedResourceRead["resource"] | null
   >(null);
+  const [workspaceFilePath, setWorkspaceFilePath] = useState("README.md");
+  const [workspaceFileRead, setWorkspaceFileRead] = useState<WorkspaceFileRead | null>(null);
   const [securityBusyId, setSecurityBusyId] = useState<string | null>(null);
   const [securityError, setSecurityError] = useState<string | null>(null);
   const messageEnd = useRef<HTMLDivElement>(null);
@@ -116,6 +180,52 @@ export default function App() {
     () => agents.find((agent) => agent.id === selectedId) ?? null,
     [agents, selectedId],
   );
+
+  const selectedDecisions = useMemo(
+    () =>
+      decisions
+        .filter((decision) => decision.agentId === selected?.id)
+        .sort((left, right) => right.createdAt.localeCompare(left.createdAt)),
+    [decisions, selected?.id],
+  );
+
+  const summaryLatestDecision = latestDecision ?? selectedDecisions[0] ?? null;
+  const allowedDecisionCount = selectedDecisions.filter(
+    (decision) => decision.decision === "allow",
+  ).length;
+  const deniedDecisionCount = selectedDecisions.filter(
+    (decision) => decision.decision === "deny",
+  ).length;
+
+  const filteredDecisions = useMemo(() => {
+    return selectedDecisions.filter((decision) => {
+      if (auditFilter === "allowed") return decision.decision === "allow";
+      if (auditFilter === "denied") return decision.decision === "deny";
+      if (auditFilter === "file") return decision.targetType === "file";
+      if (auditFilter === "shell") return decision.action === "shell.execute";
+      if (auditFilter === "network") return decision.action === "network.request";
+      return true;
+    });
+  }, [auditFilter, selectedDecisions]);
+
+  const groupedDecisions = useMemo(() => {
+    const groups: Array<{ decision: AuthorizationDecision; count: number }> = [];
+    for (const decision of filteredDecisions) {
+      const previous = groups.at(-1);
+      if (
+        previous &&
+        previous.decision.decision === decision.decision &&
+        previous.decision.action === decision.action &&
+        previous.decision.targetLabel === decision.targetLabel &&
+        previous.decision.reasonCode === decision.reasonCode
+      ) {
+        previous.count += 1;
+      } else {
+        groups.push({ decision, count: 1 });
+      }
+    }
+    return groups;
+  }, [filteredDecisions]);
 
   const resetAuthenticatedState = useCallback(() => {
     selectedIdRef.current = null;
@@ -131,7 +241,12 @@ export default function App() {
     setResources([]);
     setDecisions([]);
     setLatestDecision(null);
+    setLatestRunCreated(null);
+    setScenarioResults({});
+    setAuditFilter("all");
     setResourceRead(null);
+    setWorkspaceFilePath("README.md");
+    setWorkspaceFileRead(null);
     setSecurityBusyId(null);
     setSecurityError(null);
   }, []);
@@ -213,7 +328,9 @@ export default function App() {
         reason.decision
       ) {
         setLatestDecision(reason.decision);
+        setLatestRunCreated(false);
         setResourceRead(null);
+        setWorkspaceFileRead(null);
         setSecurityError(null);
         setActiveView("access");
         void refreshDecisions().catch(() => undefined);
@@ -270,7 +387,11 @@ export default function App() {
     setActiveRun(null);
     setShowSettings(false);
     setLatestDecision(null);
+    setLatestRunCreated(null);
+    setScenarioResults({});
+    setAuditFilter("all");
     setResourceRead(null);
+    setWorkspaceFileRead(null);
     setSecurityError(null);
     if (!principal || !selectedId) {
       setMessages([]);
@@ -327,6 +448,115 @@ export default function App() {
     }
   };
 
+  const attemptWorkspaceFileRead = async (
+    requestedPath = workspaceFilePath.trim(),
+    scenarioId?: ScenarioId,
+  ) => {
+    if (!selected || !requestedPath) return;
+    const generation = sessionGenerationRef.current;
+    const agentId = selected.id;
+    const busyId = scenarioId ?? "workspace-file";
+    setSecurityBusyId(busyId);
+    setSecurityError(null);
+    setLatestDecision(null);
+    setLatestRunCreated(null);
+    setLatestRunCreated(null);
+    setResourceRead(null);
+    setWorkspaceFileRead(null);
+    try {
+      const result = await api.readWorkspaceFile(agentId, requestedPath);
+      if (
+        generation !== sessionGenerationRef.current ||
+        selectedIdRef.current !== agentId
+      ) {
+        return;
+      }
+      setWorkspaceFileRead(result);
+      setLatestDecision(result.decision);
+      setLatestRunCreated(false);
+      if (scenarioId) {
+        setScenarioResults((current) => ({
+          ...current,
+          [scenarioId]: { decision: result.decision, runCreated: false, error: null },
+        }));
+      }
+      void refreshDecisions().catch((reason) => handleRequestError(reason, "security"));
+    } catch (reason) {
+      if (generation === sessionGenerationRef.current) {
+        if (reason instanceof ApiError && reason.decision) {
+          setLatestDecision(reason.decision);
+          setLatestRunCreated(false);
+          if (scenarioId) {
+            setScenarioResults((current) => ({
+              ...current,
+              [scenarioId]: { decision: reason.decision, runCreated: false, error: null },
+            }));
+          }
+          void refreshDecisions().catch(() => undefined);
+        } else {
+          const message = reason instanceof Error ? reason.message : String(reason);
+          setSecurityError(message);
+          if (scenarioId) {
+            setScenarioResults((current) => ({
+              ...current,
+              [scenarioId]: { decision: null, runCreated: null, error: message },
+            }));
+          }
+        }
+      }
+    } finally {
+      if (generation === sessionGenerationRef.current) setSecurityBusyId(null);
+    }
+  };
+
+  const runSecurityScenario = async (scenario: (typeof securityScenarios)[number]) => {
+    if (!selected) return;
+    if (scenario.action === "file" && scenario.path) {
+      await attemptWorkspaceFileRead(scenario.path, scenario.id);
+      return;
+    }
+    if (!scenario.prompt) return;
+    const generation = sessionGenerationRef.current;
+    const agentId = selected.id;
+    setSecurityBusyId(scenario.id);
+    setSecurityError(null);
+    setLatestDecision(null);
+    setLatestRunCreated(null);
+    try {
+      const result = await api.sendMessage(agentId, scenario.prompt);
+      if (generation !== sessionGenerationRef.current || selectedIdRef.current !== agentId) return;
+      setMessages((current) => [...current, result.message]);
+      setActiveRun(result.run);
+      setLatestRunCreated(true);
+      setScenarioResults((current) => ({
+        ...current,
+        [scenario.id]: { decision: null, runCreated: true, error: null },
+      }));
+      await Promise.all([refreshAgents(), refreshDecisions()]);
+      await pollRun(result.run.id, agentId, generation);
+    } catch (reason) {
+      if (generation !== sessionGenerationRef.current) return;
+      if (reason instanceof ApiError && reason.decision) {
+        setLatestDecision(reason.decision);
+        setLatestRunCreated(false);
+        setScenarioResults((current) => ({
+          ...current,
+          [scenario.id]: { decision: reason.decision, runCreated: false, error: null },
+        }));
+        void refreshDecisions().catch(() => undefined);
+      } else {
+        const message = reason instanceof Error ? reason.message : String(reason);
+        setSecurityError(message);
+        setScenarioResults((current) => ({
+          ...current,
+          [scenario.id]: { decision: null, runCreated: null, error: message },
+        }));
+      }
+    } finally {
+      if (generation === sessionGenerationRef.current) setSecurityBusyId(null);
+    }
+  };
+
   const saveAgent = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!selected) return;
@@ -374,6 +604,24 @@ export default function App() {
       await api.deleteAgent(selected.id);
       await refreshAgents();
       void refreshDecisions().catch(() => undefined);
+    } catch (reason) {
+      handleRequestError(reason);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const revokeAgent = async () => {
+    if (!selected) return;
+    if (!window.confirm("Revoke " + selected.name + "? It will be stopped and cannot perform future actions.")) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await api.revokeAgent(selected.id);
+      setShowSettings(false);
+      await Promise.all([refreshAgents(), refreshDecisions()]);
     } catch (reason) {
       handleRequestError(reason);
     } finally {
@@ -454,6 +702,7 @@ export default function App() {
       }
       setResourceRead(result.resource);
       setLatestDecision(result.decision);
+      setLatestRunCreated(false);
       void refreshDecisions().catch((reason) => handleRequestError(reason, "security"));
     } catch (reason) {
       if (generation === sessionGenerationRef.current) {
@@ -784,6 +1033,7 @@ export default function App() {
                 <div className="header-title-row">
                   <h1>{selected.name}</h1>
                   <StatusPill status={selected.status} />
+                  {selected.revokedAt ? <RevokedPill /> : null}
                   <span className="owner-pill">
                     {departmentLabel(principal.department)} owned
                   </span>
@@ -794,16 +1044,23 @@ export default function App() {
                 <button
                   className="button button-ghost"
                   onClick={() => setShowSettings((value) => !value)}
-                  disabled={busy || selected.status === "busy"}
+                  disabled={busy || selected.status === "busy" || selected.revokedAt !== null}
                 >
                   Settings
                 </button>
                 <button
                   className="button button-ghost"
                   onClick={toggleAgent}
-                  disabled={busy}
+                  disabled={busy || selected.revokedAt !== null}
                 >
-                  {selected.status === "stopped" ? "Start" : "Stop"}
+                  {selected.revokedAt ? "Revoked" : selected.status === "stopped" ? "Start" : "Stop"}
+                </button>
+                <button
+                  className="button button-danger"
+                  onClick={revokeAgent}
+                  disabled={busy || selected.revokedAt !== null}
+                >
+                  Revoke
                 </button>
                 <button
                   className="button button-danger"
@@ -814,6 +1071,38 @@ export default function App() {
                 </button>
               </div>
             </header>
+
+            <section className="agent-summary" aria-label="Selected Agent trust summary">
+              <div className="summary-primary">
+                <span className="eyebrow">Selected Agent</span>
+                <strong>{selected.name}</strong>
+                <span>Owned by {principal.displayName}</span>
+              </div>
+              <div className="summary-metric">
+                <span>Runtime status</span>
+                <StatusPill status={selected.status} />
+              </div>
+              <div className="summary-metric">
+                <span>Trust Gateway</span>
+                <strong className={selected.revokedAt ? "trust-blocked" : "trust-enforcing"}>
+                  {selected.revokedAt ? "Revoked" : "Enforcing"}
+                </strong>
+              </div>
+              <div className="summary-metric summary-count">
+                <span>Decisions</span>
+                <strong>{allowedDecisionCount} allowed / {deniedDecisionCount} denied</strong>
+              </div>
+              <div className="summary-metric summary-latest">
+                <span>Latest decision</span>
+                {summaryLatestDecision ? (
+                  <strong>
+                    {summaryLatestDecision.decision.toUpperCase()} - {summaryLatestDecision.reasonCode}
+                  </strong>
+                ) : (
+                  <strong>No decision yet</strong>
+                )}
+              </div>
+            </section>
 
             {showSettings && (
               <form className="settings-panel" onSubmit={saveAgent}>
@@ -985,11 +1274,14 @@ export default function App() {
                     }
                   }}
                   placeholder={
-                    selected.status === "stopped"
+                    selected.revokedAt
+                      ? "This Agent has been revoked."
+                      : selected.status === "stopped"
                       ? "Start this Agent to continue…"
                       : "Describe what you want the Agent to do…"
                   }
                   disabled={
+                    selected.revokedAt !== null ||
                     selected.status === "stopped" ||
                     selected.status === "busy" ||
                     activeRun != null && ["queued", "running"].includes(activeRun.status)
@@ -1004,6 +1296,7 @@ export default function App() {
                     className="send-button"
                     disabled={
                       !prompt.trim() ||
+                      selected.revokedAt !== null ||
                       selected.status === "stopped" ||
                       selected.status === "busy" ||
                       (activeRun != null && ["queued", "running"].includes(activeRun.status))
@@ -1059,7 +1352,7 @@ export default function App() {
                     <span className="boundary-icon">◆</span>
                     <span>
                       Action
-                      <strong>resource.read</strong>
+                      <strong>{latestDecision?.action ?? "resource.read"}</strong>
                     </span>
                   </div>
                 </div>
@@ -1075,10 +1368,89 @@ export default function App() {
 
                 <div className="security-layout">
                   <div className="resource-section">
+                    <div className="section-heading scenario-heading">
+                      <div>
+                        <span className="eyebrow">Four-step security demo</span>
+                        <h3>Run a real policy scenario</h3>
+                      </div>
+                      <span>Server decisions only</span>
+                    </div>
+                    <div className="scenario-grid">
+                      {securityScenarios.map((scenario) => {
+                        const result = scenarioResults[scenario.id];
+                        const isRunning = securityBusyId === scenario.id;
+                        return (
+                          <article className="scenario-card" key={scenario.id}>
+                            <div className="scenario-card-top">
+                              <span className={"scenario-action scenario-" + scenario.action}>
+                                {scenario.action === "file" ? "file.read" : "shell.execute"}
+                              </span>
+                              <span className="scenario-target">{scenario.path ?? "rm -rf"}</span>
+                            </div>
+                            <h4>{scenario.title}</h4>
+                            <p>{scenario.explanation}</p>
+                            <div className="scenario-expected">
+                              <span>Expected</span>
+                              <strong>{scenario.expected}</strong>
+                            </div>
+                            <button
+                              type="button"
+                              className="button button-resource"
+                              onClick={() => void runSecurityScenario(scenario)}
+                              disabled={securityBusyId !== null}
+                            >
+                              {isRunning ? <Spinner /> : "Run scenario"}
+                            </button>
+                            <div className="scenario-result" aria-live="polite">
+                              {result?.decision ? (
+                                <>
+                                  <DecisionPill decision={result.decision.decision} />
+                                  <span>{result.decision.reasonCode}</span>
+                                  <small>{result.runCreated ? "Run created" : "No Run created"}</small>
+                                </>
+                              ) : result?.error ? (
+                                <span className="scenario-error">{result.error}</span>
+                              ) : (
+                                <span>Actual result will appear here.</span>
+                              )}
+                            </div>
+                          </article>
+                        );
+                      })}
+                    </div>
+
+                    <form
+                      className="workspace-file-tool"
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        void attemptWorkspaceFileRead();
+                      }}
+                    >
+                      <div>
+                        <span className="eyebrow">Custom workspace check</span>
+                        <h3>Evaluate another file</h3>
+                      </div>
+                      <label>
+                        Workspace-relative path
+                        <input
+                          value={workspaceFilePath}
+                          onChange={(event) => setWorkspaceFilePath(event.target.value)}
+                          placeholder="README.md"
+                          maxLength={1_024}
+                          disabled={securityBusyId !== null}
+                        />
+                      </label>
+                      <button
+                        className="button button-resource workspace-file-button"
+                        disabled={securityBusyId !== null || !workspaceFilePath.trim()}
+                      >
+                        {securityBusyId === "workspace-file" ? <Spinner /> : "Evaluate file.read"}
+                      </button>
+                    </form>
                     <div className="section-heading">
                       <div>
-                        <span className="eyebrow">Protected fixtures</span>
-                        <h3>Finance, HR, and Research files</h3>
+                        <span className="eyebrow">Protected resource checks</span>
+                        <h3>Finance, HR, and Research fixtures</h3>
                       </div>
                       <span>{resources.length} resources</span>
                     </div>
@@ -1122,7 +1494,7 @@ export default function App() {
                     <div className="section-heading">
                       <div>
                         <span className="eyebrow">Latest result</span>
-                        <h3>Policy decision</h3>
+                        <h3>Authorization decision</h3>
                       </div>
                       {latestDecision && <DecisionPill decision={latestDecision.decision} />}
                     </div>
@@ -1130,22 +1502,41 @@ export default function App() {
                       <>
                         <dl className="decision-details">
                           <div>
+                            <dt>Action</dt>
+                            <dd><code>{latestDecision.action}</code></dd>
+                          </div>
+                          <div>
                             <dt>Target</dt>
                             <dd>{latestDecision.targetLabel}</dd>
                           </div>
                           <div>
-                            <dt>Actor</dt>
-                            <dd>{latestDecision.agentName ?? principal.displayName}</dd>
+                            <dt>Policy code</dt>
+                            <dd><code>{latestDecision.reasonCode}</code></dd>
                           </div>
                           <div>
-                            <dt>Reason</dt>
+                            <dt>Explanation</dt>
                             <dd>{latestDecision.reason}</dd>
                           </div>
                           <div>
-                            <dt>Decision ID</dt>
-                            <dd><code>{latestDecision.id}</code></dd>
+                            <dt>Run created</dt>
+                            <dd>
+                              {latestRunCreated === null
+                                ? "Not reported for this request"
+                                : latestRunCreated
+                                  ? "Yes - the Runtime accepted it"
+                                  : "No - blocked before Runtime dispatch"}
+                            </dd>
                           </div>
                         </dl>
+                        <details className="decision-technical">
+                          <summary>Technical details</summary>
+                          <dl>
+                            <div><dt>Decision ID</dt><dd><code>{latestDecision.id}</code></dd></div>
+                            <div><dt>Request ID</dt><dd><code>{latestDecision.requestId}</code></dd></div>
+                            <div><dt>Timestamp</dt><dd>{formatDateTime(latestDecision.createdAt)}</dd></div>
+                            <div><dt>Human</dt><dd>{latestDecision.humanEmail}</dd></div>
+                          </dl>
+                        </details>
                         {latestDecision.decision === "allow" && resourceRead && (
                           <div className="resource-content">
                             <span>
@@ -1153,6 +1544,15 @@ export default function App() {
                               Server-returned content
                             </span>
                             <pre>{resourceRead.content}</pre>
+                          </div>
+                        )}
+                        {latestDecision.decision === "allow" && workspaceFileRead && (
+                          <div className="resource-content">
+                            <span>
+                              <strong>{workspaceFileRead.path}</strong>
+                              Server-returned content
+                            </span>
+                            <pre>{workspaceFileRead.content}</pre>
                           </div>
                         )}
                         {latestDecision.decision === "deny" && (
@@ -1165,7 +1565,7 @@ export default function App() {
                     ) : (
                       <div className="decision-placeholder">
                         <span>◇</span>
-                        Choose any resource to produce a real ALLOW or DENY decision.
+                        Run a scenario to inspect a real persisted ALLOW or DENY decision.
                       </div>
                     )}
                   </aside>
@@ -1186,9 +1586,29 @@ export default function App() {
                       {securityBusyId === "audit" ? <Spinner /> : "Refresh"}
                     </button>
                   </div>
-                  {decisions.length > 0 ? (
+                  <div className="audit-filters" role="group" aria-label="Filter authorization decisions">
+                    {([
+                      ["all", "All"],
+                      ["allowed", "Allowed"],
+                      ["denied", "Denied"],
+                      ["file", "File"],
+                      ["shell", "Shell"],
+                      ["network", "Network"],
+                    ] as Array<[AuditFilter, string]>).map(([value, label]) => (
+                      <button
+                        type="button"
+                        key={value}
+                        className={auditFilter === value ? "active" : ""}
+                        onClick={() => setAuditFilter(value)}
+                        aria-pressed={auditFilter === value}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                  {groupedDecisions.length > 0 ? (
                     <ol className="audit-list">
-                      {decisions.map((decision) => (
+                      {groupedDecisions.map(({ decision, count }) => (
                         <li key={decision.id}>
                           <span className={"audit-marker audit-marker-" + decision.decision} />
                           <div className="audit-main">
@@ -1196,6 +1616,7 @@ export default function App() {
                               <DecisionPill decision={decision.decision} />
                               <strong>{decision.action}</strong>
                               <span>{decision.targetLabel}</span>
+                              {count > 1 && <em>{count} repeated events</em>}
                             </div>
                             <p>{decision.reason}</p>
                             <small>
@@ -1204,13 +1625,15 @@ export default function App() {
                               {" · " + formatDateTime(decision.createdAt)}
                             </small>
                           </div>
-                          <code title={decision.requestId}>{decision.requestId.slice(0, 8)}</code>
+                          <code title={decision.requestId}>req {decision.requestId.slice(0, 8)}</code>
                         </li>
                       ))}
                     </ol>
                   ) : (
                     <div className="security-empty">
-                      No decisions yet. Read a protected fixture to create the first event.
+                      {selectedDecisions.length === 0
+                        ? "No decisions yet. Run a security scenario to create the first event."
+                        : "No selected-Agent decisions match this filter."}
                     </div>
                   )}
                 </div>

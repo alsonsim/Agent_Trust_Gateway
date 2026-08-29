@@ -948,12 +948,13 @@ export default function App() {
           <span>Your Agents</span>
           <span>{agents.length}</span>
         </div>
-        <nav className="agent-list">
+        <nav className="agent-list" aria-label="Your Agents">
           {agents.map((agent) => (
             <button
               className={"agent-card " + (agent.id === selectedId ? "selected" : "")}
               key={agent.id}
               onClick={() => setSelectedId(agent.id)}
+              aria-label={`${agent.name}, ${agent.status}`}
             >
               <div className="agent-avatar">{agent.name.slice(0, 1).toUpperCase()}</div>
               <div className="agent-card-copy">
@@ -971,34 +972,50 @@ export default function App() {
           )}
         </nav>
 
-        <div className="principal-card">
-          <span className={"principal-avatar team-" + principal.department}>
-            {initials(principal.displayName)}
-          </span>
-          <div className="principal-copy">
-            <span className="eyebrow">Signed in</span>
-            <strong>{principal.displayName}</strong>
-            <span>{principal.email}</span>
+        <div className="sidebar-footer">
+          <div className="principal-card">
+            <span className={"principal-avatar team-" + principal.department}>
+              {initials(principal.displayName)}
+            </span>
+            <div className="principal-copy">
+              <span className="eyebrow">Signed in</span>
+              <strong>{principal.displayName}</strong>
+              <span>{principal.email}</span>
+            </div>
+            <button
+              type="button"
+              className="principal-logout"
+              onClick={() => void logout()}
+              disabled={authBusy}
+              aria-label="Sign out"
+              title="Sign out"
+            >
+              <span aria-hidden="true">↪</span>
+              <span className="logout-label">Sign out</span>
+            </button>
           </div>
-          <button
-            type="button"
-            className="principal-logout"
-            onClick={() => void logout()}
-            disabled={authBusy}
-            aria-label="Sign out"
-            title="Sign out"
-          >
-            ↪
-          </button>
-        </div>
 
-        <div className="runtime-card">
-          <span className="eyebrow">Runtime</span>
-          <strong>{system?.runtime ?? "Checking…"}</strong>
-          <span>
-            {system?.arkModel ?? "Ark model not configured"}
-            {system?.containerEngine ? " · " + system.containerEngine : ""}
-          </span>
+          <div
+            className="runtime-card"
+            role="status"
+            aria-label={
+              "Runtime: " +
+              (system?.runtime ?? "Checking runtime") +
+              (system?.arkModel ? ". Model: " + system.arkModel : "")
+            }
+            title={
+              (system?.runtime ?? "Checking runtime") +
+              (system?.arkModel ? " · " + system.arkModel : "")
+            }
+          >
+            <span className="runtime-compact" aria-hidden="true">RT</span>
+            <span className="eyebrow">Runtime</span>
+            <strong>{system?.runtime ?? "Checking…"}</strong>
+            <span>
+              {system?.arkModel ?? "Ark model not configured"}
+              {system?.containerEngine ? " · " + system.containerEngine : ""}
+            </span>
+          </div>
         </div>
       </aside>
 
@@ -1211,7 +1228,12 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="messages">
+              <div
+                className="messages"
+                role="log"
+                aria-label="Conversation"
+                tabIndex={0}
+              >
                 {messages.length === 0 && !activeRun ? (
                   <div className="welcome">
                     <div className="welcome-orbit">
@@ -1357,16 +1379,22 @@ export default function App() {
                   </div>
                 </div>
 
-                {securityError && (
-                  <div className="error-banner security-error" role="alert">
-                    <span>{securityError}</span>
-                    <button onClick={() => setSecurityError(null)} aria-label="Dismiss error">
-                      ×
-                    </button>
-                  </div>
-                )}
+                <div
+                  className="security-scroll-area"
+                  role="region"
+                  aria-label="Authorization scenarios and audit evidence"
+                  tabIndex={0}
+                >
+                  {securityError && (
+                    <div className="error-banner security-error" role="alert">
+                      <span>{securityError}</span>
+                      <button onClick={() => setSecurityError(null)} aria-label="Dismiss error">
+                        ×
+                      </button>
+                    </div>
+                  )}
 
-                <div className="security-layout">
+                  <div className="security-layout">
                   <div className="resource-section">
                     <div className="section-heading scenario-heading">
                       <div>
@@ -1569,9 +1597,9 @@ export default function App() {
                       </div>
                     )}
                   </aside>
-                </div>
+                  </div>
 
-                <div className="audit-section">
+                  <div className="audit-section">
                   <div className="section-heading">
                     <div>
                       <span className="eyebrow">Persisted evidence</span>
@@ -1636,6 +1664,7 @@ export default function App() {
                         : "No selected-Agent decisions match this filter."}
                     </div>
                   )}
+                  </div>
                 </div>
               </section>
             )}

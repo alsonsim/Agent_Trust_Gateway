@@ -558,6 +558,7 @@ textarea:focus-visible {
 .config-banner,
 .error-banner {
   flex: 0 0 auto;
+  width: 100%;
   max-width: 1180px;
   margin: 0 auto 14px;
   display: flex;
@@ -613,6 +614,7 @@ textarea:focus-visible {
 
 .agent-header {
   flex: 0 0 auto;
+  width: 100%;
   max-width: 1180px;
   margin: 0 auto 10px;
   min-height: 58px;
@@ -711,6 +713,7 @@ textarea:focus-visible {
 .settings-panel,
 .playground,
 .security-panel {
+  width: 100%;
   max-width: 1180px;
   margin-left: auto;
   margin-right: auto;
@@ -1795,6 +1798,7 @@ textarea:focus {
 
 .agent-summary {
   flex: 0 0 auto;
+  width: 100%;
   max-width: 1180px;
   margin: -2px auto 9px;
   display: grid;
@@ -2164,13 +2168,60 @@ textarea:focus {
 }
 
 @media (max-width: 1100px) {
-  .agent-summary {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .app-shell {
+    grid-template-columns: 220px minmax(0, 1fr);
   }
 
-  .summary-primary,
+  .sidebar {
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+
+  .main {
+    padding-left: 20px;
+    padding-right: 20px;
+  }
+
+  .agent-header {
+    gap: 12px;
+  }
+
+  .header-title-row {
+    gap: 8px;
+  }
+
+  .agent-header h1,
+  .status,
+  .owner-pill {
+    white-space: nowrap;
+  }
+
+  .header-actions {
+    flex-wrap: nowrap;
+    gap: 5px;
+  }
+
+  .header-actions .button {
+    min-height: 34px;
+    padding: 0 10px;
+    font-size: 11px;
+  }
+
+  .principal-copy .eyebrow {
+    display: none;
+  }
+
+  .agent-summary {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .summary-primary {
+    grid-column: auto;
+    grid-row: span 2;
+  }
+
   .summary-latest {
-    grid-column: span 2;
+    grid-column: auto;
   }
 
   .security-layout {
@@ -2190,7 +2241,7 @@ textarea:focus {
   }
 }
 
-@media (max-width: 1024px) {
+@media (max-width: 900px) {
   .app-shell {
     grid-template-columns: 76px minmax(0, 1fr);
   }
@@ -2544,21 +2595,6 @@ textarea:focus {
 
   .audit-list li > code {
     display: none;
-  }
-}
-
-@media (min-width: 801px) {
-  .agent-summary {
-    grid-template-columns: minmax(160px, 1.25fr) repeat(3, minmax(105px, 0.72fr)) minmax(170px, 1.1fr);
-  }
-
-  .summary-primary,
-  .summary-latest {
-    grid-column: auto;
-  }
-
-  .security-layout {
-    grid-template-columns: minmax(0, 1.7fr) minmax(270px, 0.85fr);
   }
 }
 

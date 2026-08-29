@@ -12,7 +12,7 @@ import type { AgentService } from "./agent-service.js";
 import type { AppConfig } from "./config.js";
 import { HttpError } from "./errors.js";
 import {
-  FINANCE_PRINCIPAL,
+  FRONTEND_PRINCIPAL,
   type HumanPrincipal,
 } from "./identity-provider.js";
 import type { TrustGateway } from "./trust-gateway.js";
@@ -90,7 +90,7 @@ export async function createApp(
       if (config.authToken && !validSharedToken(request, config.authToken)) {
         return reply.code(401).send({ error: "Authentication required" });
       }
-      request.principal = { ...FINANCE_PRINCIPAL };
+      request.principal = { ...FRONTEND_PRINCIPAL };
       request.userAccessToken = config.authToken || "legacy-loopback";
       return;
     }
@@ -167,7 +167,7 @@ export async function createApp(
   app.post("/api/agents", async (request, reply) => {
     const principal = requirePrincipal(request);
     const body = createAgentBody.parse(request.body);
-    const agent = await service.createAgent(principal.id, body);
+    const agent = await service.createAgent(principal.id, principal.department, body);
     await gateway.recordAgentCreated(principal, agent, String(request.id));
     return reply.code(201).send({ agent });
   });
@@ -245,6 +245,10 @@ export async function createApp(
   app.get("/api/resources", async (request) => ({
     resources: await gateway.listResources(requirePrincipal(request)),
   }));
+
+  app.post("/api/authorization-probes/cross-owner-agent", async (request) =>
+    gateway.probeCrossOwnerAgent(requirePrincipal(request), String(request.id)),
+  );
 
   app.post("/api/agents/:id/resources/:resourceId/read", async (request) => {
     const { id, resourceId } = resourceParams.parse(request.params);

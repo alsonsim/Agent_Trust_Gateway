@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { AgentService } from "./agent-service.js";
 import {
   DemoIdentityProvider,
-  FINANCE_PRINCIPAL,
+  FRONTEND_PRINCIPAL,
 } from "./identity-provider.js";
 import type { SecurityRepository } from "./security-repository.js";
 import { TrustGateway } from "./trust-gateway.js";
@@ -13,10 +13,10 @@ import type {
 } from "./types.js";
 
 const timestamp = new Date().toISOString();
-const financeAgent: Agent = {
+const frontendAgent: Agent = {
   id: "99999999-9999-4999-8999-999999999999",
-  ownerId: FINANCE_PRINCIPAL.id,
-  name: "Finance Agent",
+  ownerId: FRONTEND_PRINCIPAL.id,
+  name: "Frontend Agent",
   description: "",
   instructions: "",
   status: "ready",
@@ -26,22 +26,22 @@ const financeAgent: Agent = {
   createdAt: timestamp,
   updatedAt: timestamp,
 };
-const financeResource: ProtectedResource = {
+const frontendResource: ProtectedResource = {
   id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1",
-  ownerId: FINANCE_PRINCIPAL.id,
-  ownerDepartment: "finance",
-  name: "Quarterly budget",
+  ownerId: FRONTEND_PRINCIPAL.id,
+  ownerDepartment: "frontend",
+  name: "Profile page requirements",
   description: "Synthetic",
-  fileName: "quarterly-budget.md",
-  storageKey: "finance/quarterly-budget.md",
+  fileName: "profile-page-requirements.md",
+  storageKey: "frontend/profile-page-requirements.md",
   createdAt: timestamp,
 };
 
 function makeGateway(repository: SecurityRepository): TrustGateway {
   const agents = {
     getAgent: (id: string) => {
-      if (id !== financeAgent.id) throw new Error("missing");
-      return financeAgent;
+      if (id !== frontendAgent.id) throw new Error("missing");
+      return frontendAgent;
     },
   } as unknown as AgentService;
   return new TrustGateway(
@@ -57,8 +57,8 @@ function makeGateway(repository: SecurityRepository): TrustGateway {
 function repository(overrides: Partial<SecurityRepository> = {}): SecurityRepository {
   return {
     initialize: async () => undefined,
-    listResources: async () => [financeResource],
-    readResource: async () => ({ resource: financeResource, content: "sensitive" }),
+    listResources: async () => [frontendResource],
+    readResource: async () => ({ resource: frontendResource, content: "sensitive" }),
     appendDecision: async () => undefined,
     listDecisions: async () => [],
     ...overrides,
@@ -76,10 +76,10 @@ describe("TrustGateway fail-closed behavior", () => {
     );
     await expect(
       gateway.readResource(
-        { ...FINANCE_PRINCIPAL },
+        { ...FRONTEND_PRINCIPAL },
         "demo-token",
-        financeAgent.id,
-        financeResource.id,
+        frontendAgent.id,
+        frontendResource.id,
         "request-1",
       ),
     ).rejects.toMatchObject({
@@ -94,10 +94,10 @@ describe("TrustGateway fail-closed behavior", () => {
       repository({
         listResources: async () => [
           {
-            ...financeResource,
+            ...frontendResource,
             id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2",
             ownerId: "22222222-2222-4222-8222-222222222222",
-            ownerDepartment: "hr",
+            ownerDepartment: "backend",
           },
         ],
         appendDecision: async (decision) => {
@@ -108,9 +108,9 @@ describe("TrustGateway fail-closed behavior", () => {
     );
     await expect(
       gateway.readResource(
-        { ...FINANCE_PRINCIPAL },
+        { ...FRONTEND_PRINCIPAL },
         "demo-token",
-        financeAgent.id,
+        frontendAgent.id,
         "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2",
         "request-2",
       ),

@@ -156,6 +156,34 @@ export class TrustGateway {
     }));
   }
 
+  async probeCrossOwnerAgent(
+    principal: HumanPrincipal,
+    requestId: string,
+  ): Promise<never> {
+    const crossOwnerAgent = this.agents
+      .listAgents()
+      .find((agent) => agent.ownerId !== principal.id);
+    if (!crossOwnerAgent) {
+      throw new HttpError(
+        404,
+        "Create an Agent under another identity before running this probe.",
+        { code: "CROSS_OWNER_AGENT_NOT_FOUND" },
+      );
+    }
+
+    await this.authorizeAgent(
+      principal,
+      crossOwnerAgent.id,
+      "agent.read",
+      requestId,
+      {
+        targetId: "redacted",
+        targetLabel: "Protected Agent",
+      },
+    );
+    throw new HttpError(500, "Cross-owner authorization probe did not fail closed");
+  }
+
   async revokeAgent(
     principal: HumanPrincipal,
     agentId: string,

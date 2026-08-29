@@ -9,6 +9,7 @@ import type {
   AgentRun,
   AgentRunner,
   CreateAgentInput,
+  Department,
   Message,
   RuntimeAuthorizationContext,
   UpdateAgentInput,
@@ -32,6 +33,9 @@ export class AgentService {
   async initialize(): Promise<void> {
     await this.store.initialize();
     await this.workspaces.initialize();
+    for (const agent of this.store.snapshot().agents) {
+      await this.workspaces.ensureStandardDirectories(agent);
+    }
     await this.store.mutate((database) => {
       for (const run of database.runs) {
         if (run.status === "queued" || run.status === "running") {
@@ -64,7 +68,11 @@ export class AgentService {
     return agent;
   }
 
-  async createAgent(ownerId: string, input: CreateAgentInput): Promise<Agent> {
+  async createAgent(
+    ownerId: string,
+    ownerDepartment: Department,
+    input: CreateAgentInput,
+  ): Promise<Agent> {
     const timestamp = now();
     const id = randomUUID();
     const agent: Agent = {
@@ -81,7 +89,7 @@ export class AgentService {
       createdAt: timestamp,
       updatedAt: timestamp,
     };
-    await this.workspaces.create(agent);
+    await this.workspaces.create(agent, ownerDepartment);
     await this.store.mutate((database) => database.agents.push(agent));
     return agent;
   }

@@ -1,7 +1,7 @@
 export type AgentStatus = "ready" | "busy" | "stopped" | "error";
 export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 export type MessageRole = "user" | "assistant";
-export type Department = "finance" | "hr" | "research";
+export type Department = "frontend" | "backend" | "qa";
 export type AuthorizationDecisionValue = "allow" | "deny";
 export type AuthorizationAction =
   | "agent.create"
@@ -109,7 +109,7 @@ export interface AuthorizationDecision {
 }
 
 export interface Database {
-  version: 2;
+  version: 3;
   agents: Agent[];
   messages: Message[];
   runs: AgentRun[];

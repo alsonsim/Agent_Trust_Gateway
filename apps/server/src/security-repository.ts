@@ -1,4 +1,5 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { HttpError } from "./errors.js";
 import { JsonStore } from "./store.js";
@@ -35,34 +36,77 @@ export const RESOURCE_FIXTURES: ResourceFixture[] = [
   {
     id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1",
     ownerId: "11111111-1111-4111-8111-111111111111",
-    ownerDepartment: "finance",
-    name: "Quarterly budget",
-    description: "Synthetic Finance planning data for the authorization demo.",
-    fileName: "quarterly-budget.md",
+    ownerDepartment: "frontend",
+    name: "Profile page requirements",
+    description: "Frontend requirements for the shared profile-page engineering project.",
+    fileName: "profile-page-requirements.md",
     content:
-      "# Quarterly budget (synthetic)\n\nLaunch budget: SGD 125,000.\nContingency: SGD 18,500.\n",
+      "# Profile page requirements\n\n" +
+      "Build an accessible, responsive profile page at `/profile`.\n\n" +
+      "## Required states\n\n" +
+      "- Loading skeleton while the profile request is pending.\n" +
+      "- Profile header with display name, avatar fallback, biography, and team.\n" +
+      "- Inline validation for display name and biography edits.\n" +
+      "- Explicit empty, not-found, forbidden, and retryable error states.\n\n" +
+      "## Acceptance criteria\n\n" +
+      "- Keyboard navigation and labelled controls meet WCAG 2.2 AA expectations.\n" +
+      "- The layout works from 360 px through desktop widths.\n" +
+      "- API data is treated as untrusted and rendered without raw HTML.\n",
   },
   {
     id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2",
     ownerId: "22222222-2222-4222-8222-222222222222",
-    ownerDepartment: "hr",
-    name: "Compensation bands",
-    description: "Synthetic HR compensation data for the authorization demo.",
-    fileName: "compensation-bands.md",
+    ownerDepartment: "backend",
+    name: "Profile API contract",
+    description: "Backend contract for reading and updating the shared profile resource.",
+    fileName: "profile-api-contract.md",
     content:
-      "# Compensation bands (synthetic)\n\nLevel H3: SGD 82,000–104,000.\nLevel H4: SGD 105,000–138,000.\n",
+      "# Profile API contract\n\n" +
+      "## `GET /api/profile`\n\n" +
+      "Returns `{ id, displayName, biography, team, avatarUrl, updatedAt }`. " +
+      "Use `404` for an unknown profile and `403` when the caller cannot view it.\n\n" +
+      "## `PATCH /api/profile`\n\n" +
+      "Accepts `{ displayName?, biography?, avatarUrl? }`. Reject unknown fields, " +
+      "trim text, cap biographies at 500 characters, and return the updated profile.\n\n" +
+      "## Engineering constraints\n\n" +
+      "- Authenticate before loading protected profile data.\n" +
+      "- Use parameterized persistence operations and optimistic concurrency.\n" +
+      "- Never return internal errors, credentials, or authorization metadata.\n",
   },
   {
     id: "cccccccc-cccc-4ccc-8ccc-ccccccccccc3",
     ownerId: "33333333-3333-4333-8333-333333333333",
-    ownerDepartment: "research",
-    name: "Experiment notes",
-    description: "Synthetic Research notes for the authorization demo.",
-    fileName: "experiment-notes.md",
+    ownerDepartment: "qa",
+    name: "Profile release test plan",
+    description: "QA release coverage for the profile page and profile API contract.",
+    fileName: "profile-release-test-plan.md",
     content:
-      "# Experiment notes (synthetic)\n\nEvaluation set: trust-gateway-v2.\nPrimary metric: unauthorized reads blocked.\n",
+      "# Profile release test plan\n\n" +
+      "## Functional coverage\n\n" +
+      "- Load, edit, save, cancel, and refresh a valid profile.\n" +
+      "- Verify empty biography, avatar fallback, validation, and concurrent edits.\n" +
+      "- Exercise `403`, `404`, validation, timeout, and retryable server failures.\n\n" +
+      "## Quality gates\n\n" +
+      "- Automated API contract tests and browser tests pass.\n" +
+      "- Keyboard-only and responsive checks pass at 360, 768, and 1440 px.\n" +
+      "- Cross-user reads and updates are denied without leaking profile content.\n",
   },
 ];
+
+const LEGACY_RESOURCE_FILES = [
+  {
+    ownerId: "11111111-1111-4111-8111-111111111111",
+    fileName: "quarterly-budget.md",
+  },
+  {
+    ownerId: "22222222-2222-4222-8222-222222222222",
+    fileName: "compensation-bands.md",
+  },
+  {
+    ownerId: "33333333-3333-4333-8333-333333333333",
+    fileName: "experiment-notes.md",
+  },
+] as const;
 
 export class LocalSecurityRepository implements SecurityRepository {
   private readonly resourceRoot: string;
@@ -79,22 +123,14 @@ export class LocalSecurityRepository implements SecurityRepository {
     for (const fixture of RESOURCE_FIXTURES) {
       const ownerDirectory = path.join(this.resourceRoot, fixture.ownerId);
       await mkdir(ownerDirectory, { recursive: true });
-      try {
-        await writeFile(path.join(ownerDirectory, fixture.fileName), fixture.content, {
-          encoding: "utf8",
-          flag: "wx",
-          mode: 0o600,
-        });
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      }
+      await refreshFixtureFile(ownerDirectory, fixture);
     }
     await this.store.mutate((database) => {
       for (const fixture of RESOURCE_FIXTURES) {
-        if (database.protectedResources.some((resource) => resource.id === fixture.id)) {
-          continue;
-        }
-        database.protectedResources.push({
+        const existing = database.protectedResources.find(
+          (resource) => resource.id === fixture.id,
+        );
+        const refreshed: ProtectedResource = {
           id: fixture.id,
           ownerId: fixture.ownerId,
           ownerDepartment: fixture.ownerDepartment,
@@ -102,10 +138,17 @@ export class LocalSecurityRepository implements SecurityRepository {
           description: fixture.description,
           fileName: fixture.fileName,
           storageKey: fixture.ownerId + "/" + fixture.fileName,
-          createdAt: new Date().toISOString(),
-        });
+          createdAt: existing?.createdAt ?? new Date().toISOString(),
+        };
+        if (existing) Object.assign(existing, refreshed);
+        else database.protectedResources.push(refreshed);
       }
     });
+    for (const legacyFile of LEGACY_RESOURCE_FILES) {
+      await removeFileIfExists(
+        path.join(this.resourceRoot, legacyFile.ownerId, legacyFile.fileName),
+      );
+    }
   }
 
   async listResources(): Promise<ProtectedResource[]> {
@@ -162,6 +205,8 @@ interface SupabaseResourceRow {
   created_at: string;
 }
 
+const REQUIRED_DEPARTMENTS: Department[] = ["frontend", "backend", "qa"];
+
 export class SupabaseSecurityRepository implements SecurityRepository {
   constructor(
     private readonly url: string,
@@ -171,6 +216,10 @@ export class SupabaseSecurityRepository implements SecurityRepository {
   ) {}
 
   async initialize(): Promise<void> {
+    const openApi = await this.request<unknown>("/rest/v1/", this.secretKey, {
+      accept: "application/openapi+json",
+    });
+    assertSupabaseSchemaContract(openApi);
     await this.listResources();
   }
 
@@ -252,6 +301,7 @@ export class SupabaseSecurityRepository implements SecurityRepository {
       body?: string;
       apiKey?: string;
       prefer?: string;
+      accept?: string;
     } = {},
   ): Promise<T> {
     const response = await this.fetchImplementation(this.url + resourcePath, {
@@ -263,6 +313,7 @@ export class SupabaseSecurityRepository implements SecurityRepository {
           : {}),
         ...(options.body ? { "Content-Type": "application/json" } : {}),
         ...(options.prefer ? { Prefer: options.prefer } : {}),
+        ...(options.accept ? { Accept: options.accept } : {}),
       },
       ...(options.body ? { body: options.body } : {}),
     });
@@ -272,6 +323,77 @@ export class SupabaseSecurityRepository implements SecurityRepository {
     const responseBody = await response.text();
     if (!responseBody) return undefined as T;
     return JSON.parse(responseBody) as T;
+  }
+}
+
+function assertSupabaseSchemaContract(openApi: unknown): void {
+  const definitions = asRecord(asRecord(openApi)?.definitions);
+  const authorizationDecisions = asRecord(definitions?.authorization_decisions);
+  const properties = asRecord(authorizationDecisions?.properties);
+  const targetId = asRecord(properties?.target_id);
+  const humanDepartment = asRecord(properties?.human_department);
+
+  if (!targetId || targetId.type !== "string" || targetId.format === "uuid") {
+    throw incompatibleSupabaseSchema(
+      "authorization_decisions.target_id must be text rather than uuid",
+    );
+  }
+
+  const departmentValues = Array.isArray(humanDepartment?.enum)
+    ? humanDepartment.enum.filter((value): value is string => typeof value === "string")
+    : [];
+  if (
+    departmentValues.length === 0 ||
+    REQUIRED_DEPARTMENTS.some((department) => !departmentValues.includes(department))
+  ) {
+    throw incompatibleSupabaseSchema(
+      "authorization_decisions.human_department must allow frontend, backend, and qa",
+    );
+  }
+}
+
+function incompatibleSupabaseSchema(detail: string): HttpError {
+  return new HttpError(
+    503,
+    "Supabase schema is incompatible with Agent Trust Gateway: " +
+      detail +
+      ". Apply the current hosted Supabase setup SQL, reload the PostgREST schema cache, and restart the app.",
+    { code: "SUPABASE_SCHEMA_INCOMPATIBLE" },
+  );
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+async function refreshFixtureFile(
+  ownerDirectory: string,
+  fixture: ResourceFixture,
+): Promise<void> {
+  const targetPath = path.join(ownerDirectory, fixture.fileName);
+  const temporaryPath = path.join(
+    ownerDirectory,
+    "." + fixture.fileName + "." + randomUUID() + ".tmp",
+  );
+  await writeFile(temporaryPath, fixture.content, {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+  try {
+    await rename(temporaryPath, targetPath);
+  } catch (error) {
+    await unlink(temporaryPath).catch(() => undefined);
+    throw error;
+  }
+}
+
+async function removeFileIfExists(filePath: string): Promise<void> {
+  try {
+    await unlink(filePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
 }
 

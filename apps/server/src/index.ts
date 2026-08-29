@@ -2,6 +2,7 @@ import path from "node:path";
 import { AgentService } from "./agent-service.js";
 import { createApp } from "./app.js";
 import { loadConfig, writeCodexConfig } from "./config.js";
+import { DelegationService } from "./delegation-service.js";
 import {
   DemoIdentityProvider,
   isLoopbackHost,
@@ -60,8 +61,12 @@ const identityProvider =
         tokenTtlSeconds: config.authSessionTtlSeconds,
       });
 const gateway = new TrustGateway(identityProvider, securityRepository, service);
+const delegations = new DelegationService(store, securityRepository);
+await delegations.observePrincipals(
+  config.authMode === "demo" ? gateway.demoPrincipals : [],
+);
 
-const app = await createApp(config, service, gateway);
+const app = await createApp(config, service, gateway, delegations);
 
 const shutdown = async (signal: string) => {
   app.log.info({ signal }, "Shutting down");

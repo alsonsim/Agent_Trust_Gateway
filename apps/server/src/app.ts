@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import type { AgentService } from "./agent-service.js";
 import type { AppConfig } from "./config.js";
+import type { DelegationService } from "./delegation-service.js";
 import { HttpError } from "./errors.js";
 import {
   FINANCE_PRINCIPAL,
@@ -54,11 +55,28 @@ const loginBody = z.object({
   email: z.string().trim().email().max(320),
   password: z.string().max(4_096).optional(),
 });
+const capabilityDiscoveryBody = z
+  .object({
+    prompt: z.string().min(1).max(50_000).refine((value) => value.trim().length > 0),
+  })
+  .strict();
+const createDelegationRequestBody = z
+  .object({
+    requiredCapability: z.string().min(1).max(120),
+    prompt: z.string().min(1).max(50_000).refine((value) => value.trim().length > 0),
+    sanitizedTaskSummary: z.string().min(1).max(500).optional(),
+  })
+  .strict();
+const delegationRequestQuery = z
+  .object({ box: z.enum(["incoming", "outgoing"]) })
+  .strict();
+const delegationIdParams = z.object({ id: z.string().uuid() }).strict();
 
 export async function createApp(
   config: AppConfig,
   service: AgentService,
   gateway: TrustGateway,
+  delegations: DelegationService,
 ): Promise<FastifyInstance> {
   const app = Fastify({
     logger: {
@@ -102,6 +120,7 @@ export async function createApp(
     try {
       request.principal = await gateway.authenticate(accessToken);
       request.userAccessToken = accessToken;
+      await delegations.observePrincipal(request.principal);
     } catch {
       return reply.code(401).send({ error: "Authentication required" });
     }
@@ -127,6 +146,7 @@ export async function createApp(
       email: credentials.email,
       ...(credentials.password === undefined ? {} : { password: credentials.password }),
     });
+    await delegations.observePrincipal(session.principal);
     const expiresInSeconds = Math.max(
       60,
       Math.floor((new Date(session.expiresAt).getTime() - Date.now()) / 1_000),
@@ -153,6 +173,50 @@ export async function createApp(
 
   app.get("/api/me", async (request) => ({ principal: requirePrincipal(request) }));
   app.get("/api/system", async () => service.systemInfo());
+
+  app.post("/api/capability-discovery", async (request) => {
+    ensureDelegationAvailable(config);
+    const body = capabilityDiscoveryBody.parse(request.body);
+    return delegations.discover(requirePrincipal(request), body.prompt);
+  });
+
+  app.get("/api/delegation-recipients", async (request) => {
+    ensureDelegationAvailable(config);
+    return { recipients: delegations.listRecipients(requirePrincipal(request)) };
+  });
+
+  app.post("/api/delegation-requests", async (request, reply) => {
+    ensureDelegationAvailable(config);
+    const body = createDelegationRequestBody.parse(request.body);
+    const result = await delegations.createRequest(
+      requirePrincipal(request),
+      {
+        requiredCapability: body.requiredCapability,
+        prompt: body.prompt,
+        ...(body.sanitizedTaskSummary === undefined
+          ? {}
+          : { sanitizedTaskSummary: body.sanitizedTaskSummary }),
+      },
+      String(request.id),
+    );
+    return reply.code(201).send(result);
+  });
+
+  app.get("/api/delegation-requests", async (request) => {
+    ensureDelegationAvailable(config);
+    const { box } = delegationRequestQuery.parse(request.query);
+    return delegations.listRequests(requirePrincipal(request), box);
+  });
+
+  app.post("/api/delegation-requests/:id/reject", async (request) => {
+    ensureDelegationAvailable(config);
+    const { id } = delegationIdParams.parse(request.params);
+    return delegations.rejectRequest(
+      requirePrincipal(request),
+      id,
+      String(request.id),
+    );
+  });
 
   app.get("/api/agents", async (request) => {
     const principal = requirePrincipal(request);
@@ -347,6 +411,15 @@ export async function createApp(
 function requirePrincipal(request: FastifyRequest): HumanPrincipal {
   if (!request.principal) throw new HttpError(401, "Authentication required");
   return request.principal;
+}
+
+function ensureDelegationAvailable(config: AppConfig): void {
+  if (config.authMode === "legacy") {
+    throw new HttpError(
+      400,
+      "Trust Pass delegation requires authenticated human identities",
+    );
+  }
 }
 
 function isPublicAuthRoute(request: FastifyRequest): boolean {

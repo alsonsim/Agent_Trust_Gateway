@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { AgentService } from "./agent-service.js";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
+import { DelegationService } from "./delegation-service.js";
 import { DemoIdentityProvider } from "./identity-provider.js";
 import { LocalSecurityRepository, RESOURCE_FIXTURES } from "./security-repository.js";
 import { RuntimeActionFirewall } from "./runtime-action-firewall.js";
@@ -76,7 +77,9 @@ async function makeHarness(overrides: NodeJS.ProcessEnv = {}) {
     tokenTtlSeconds: 3_600,
   });
   const gateway = new TrustGateway(identity, repository, service);
-  const app = await createApp(config, service, gateway);
+  const delegations = new DelegationService(store, repository);
+  await delegations.observePrincipals(gateway.demoPrincipals);
+  const app = await createApp(config, service, gateway, delegations);
   return { app, config, service, runner };
 }
 
@@ -420,6 +423,103 @@ describe("HTTP identity and authorization boundary", () => {
       decision: { action: "agent.revoke", reasonCode: "HUMAN_AGENT_OWNER_MISMATCH" },
     });
     expect(service.getAgent(agentId).revokedAt).toBeNull();
+    await app.close();
+  });
+
+  it("discovers and forwards a consented capability request without Agent disclosure", async () => {
+    const { app } = await makeHarness();
+    const hrCookie = await login(app, "hr@agent-gateway.local");
+    const discovery = await app.inject({
+      method: "POST",
+      url: "/api/capability-discovery",
+      headers: { cookie: hrCookie },
+      payload: {
+        prompt: "Estimate the budget impact of hiring 12 engineers.",
+      },
+    });
+    expect(discovery.statusCode).toBe(200);
+    expect(discovery.json()).toMatchObject({
+      required: true,
+      capability: "finance.cost-analysis",
+      providerDepartment: "finance",
+    });
+    expect(discovery.body).not.toContain("Agent");
+
+    const spoofed = await app.inject({
+      method: "POST",
+      url: "/api/delegation-requests",
+      headers: { cookie: hrCookie },
+      payload: {
+        requiredCapability: "finance.cost-analysis",
+        prompt: "Estimate costs for alice@example.com and 12 engineers.",
+        sanitizedTaskSummary: "Aggregate headcount and salary bands",
+        requesterHumanId: "11111111-1111-4111-8111-111111111111",
+      },
+    });
+    expect(spoofed.statusCode).toBe(400);
+
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/delegation-requests",
+      headers: { cookie: hrCookie },
+      payload: {
+        requiredCapability: "finance.cost-analysis",
+        prompt: "Estimate costs for alice@example.com and 12 engineers.",
+        sanitizedTaskSummary: "Aggregate headcount and salary bands",
+      },
+    });
+    expect(created.statusCode).toBe(201);
+    expect(created.json()).toMatchObject({
+      request: {
+        box: "outgoing",
+        requiredCapability: "finance.cost-analysis",
+        sanitizedTaskSummary: "Aggregate headcount and salary bands",
+        personalInformation: "possible",
+        status: "pending",
+      },
+      decision: {
+        action: "delegation.request",
+        reasonCode: "DELEGATION_REQUESTED",
+      },
+    });
+    expect(created.body).not.toContain("alice@example.com");
+    expect(created.json().request).not.toHaveProperty("agentId");
+    const requestId = created.json().request.id as string;
+
+    const researchCookie = await login(app, "research@agent-gateway.local");
+    const unrelatedInbox = await app.inject({
+      method: "GET",
+      url: "/api/delegation-requests?box=incoming",
+      headers: { cookie: researchCookie },
+    });
+    expect(unrelatedInbox.json().requests).toEqual([]);
+
+    const financeCookie = await login(app, "finance@agent-gateway.local");
+    const financeInbox = await app.inject({
+      method: "GET",
+      url: "/api/delegation-requests?box=incoming",
+      headers: { cookie: financeCookie },
+    });
+    expect(financeInbox.json().requests).toEqual([
+      expect.objectContaining({
+        id: requestId,
+        requester: { displayName: "HR", department: "hr" },
+        sanitizedTaskSummary: "Aggregate headcount and salary bands",
+      }),
+    ]);
+    expect(financeInbox.body).not.toContain("alice@example.com");
+    expect(financeInbox.json().requests[0]).not.toHaveProperty("agentId");
+
+    const rejected = await app.inject({
+      method: "POST",
+      url: `/api/delegation-requests/${requestId}/reject`,
+      headers: { cookie: financeCookie },
+    });
+    expect(rejected.statusCode).toBe(200);
+    expect(rejected.json()).toMatchObject({
+      request: { status: "rejected" },
+      decision: { reasonCode: "DELEGATION_REJECTED" },
+    });
     await app.close();
   });
 

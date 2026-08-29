@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -33,6 +33,27 @@ class FakeRunner implements AgentRunner {
   }
 }
 
+class ControlledRunner extends FakeRunner {
+  private finishFirst!: (result: RunnerResult) => void;
+  private readonly firstResult = new Promise<RunnerResult>((resolve) => {
+    this.finishFirst = resolve;
+  });
+
+  override async run(request: RunnerRequest): Promise<RunnerResult> {
+    this.requests.push(request);
+    if (this.requests.length === 1) return this.firstResult;
+    return {
+      output: "Completed: " + request.prompt,
+      threadId: request.threadId ?? "test-thread",
+      usage: null,
+    };
+  }
+
+  finish(output = "Approved finance result"): void {
+    this.finishFirst({ output, threadId: "must-not-persist", usage: null });
+  }
+}
+
 const temporaryDirectories: string[] = [];
 
 afterEach(async () => {
@@ -43,7 +64,10 @@ afterEach(async () => {
   );
 });
 
-async function makeHarness(overrides: NodeJS.ProcessEnv = {}) {
+async function makeHarness(
+  overrides: NodeJS.ProcessEnv = {},
+  runner: FakeRunner = new FakeRunner(),
+) {
   const root = await mkdtemp(path.join(tmpdir(), "trust-gateway-http-test-"));
   temporaryDirectories.push(root);
   const config = loadConfig({
@@ -61,7 +85,6 @@ async function makeHarness(overrides: NodeJS.ProcessEnv = {}) {
   });
   const store = new JsonStore(path.join(root, "data", "launchpad.json"));
   const repository = new LocalSecurityRepository(store, config.dataDirectory);
-  const runner = new FakeRunner();
   const service = new AgentService(
     config,
     store,
@@ -77,7 +100,7 @@ async function makeHarness(overrides: NodeJS.ProcessEnv = {}) {
     tokenTtlSeconds: 3_600,
   });
   const gateway = new TrustGateway(identity, repository, service);
-  const delegations = new DelegationService(store, repository);
+  const delegations = new DelegationService(store, repository, service);
   await delegations.observePrincipals(gateway.demoPrincipals);
   const app = await createApp(config, service, gateway, delegations);
   return { app, config, service, runner };
@@ -648,6 +671,268 @@ describe("HTTP identity and authorization boundary", () => {
         maximumUses: 1,
       },
     });
+    await app.close();
+  });
+
+  it("atomically consumes one pass and exposes only an isolated final result", async () => {
+    const runner = new ControlledRunner();
+    const { app, service } = await makeHarness({}, runner);
+    const financeCookie = await login(app, "finance@agent-gateway.local");
+    const createdAgent = await app.inject({
+      method: "POST",
+      url: "/api/agents",
+      headers: { cookie: financeCookie },
+      payload: {
+        name: "Hidden Finance Agent",
+        instructions: "PRIVATE_AGENT_INSTRUCTION_SENTINEL",
+      },
+    });
+    const financeAgent = createdAgent.json().agent as {
+      id: string;
+      workspacePath: string;
+    };
+    const financeResource = RESOURCE_FIXTURES.find(
+      (resource) => resource.ownerDepartment === "finance",
+    )!;
+    const exactPrompt = "Estimate the approved aggregate hiring budget.";
+    const issued = await app.inject({
+      method: "POST",
+      url: "/api/delegation-contracts",
+      headers: { cookie: financeCookie },
+      payload: {
+        requiredCapability: "finance.cost-analysis",
+        granteeHumanId: "22222222-2222-4222-8222-222222222222",
+        agentId: financeAgent.id,
+        exactPrompt,
+        sanitizedTaskSummary: "Aggregate hiring budget estimate",
+        approvedResourceIds: [financeResource.id],
+        expiresInSeconds: 600,
+      },
+    });
+    const contractId = issued.json().contract.id as string;
+    const hrCookie = await login(app, "hr@agent-gateway.local");
+
+    const attempts = await Promise.all(
+      Array.from({ length: 20 }, () =>
+        app.inject({
+          method: "POST",
+          url: `/api/delegation-contracts/${contractId}/invoke`,
+          headers: { cookie: hrCookie },
+          payload: { content: exactPrompt },
+        }),
+      ),
+    );
+    const accepted = attempts.filter((response) => response.statusCode === 202);
+    const denied = attempts.filter((response) => response.statusCode === 403);
+    expect(accepted).toHaveLength(1);
+    expect(denied).toHaveLength(19);
+    expect(runner.requests).toHaveLength(1);
+    for (const response of denied) {
+      expect(response.json()).toMatchObject({
+        code: "AUTHORIZATION_DENIED",
+        decision: {
+          reasonCode: "DELEGATION_CONSUMED",
+          agentId: null,
+          agentName: null,
+        },
+      });
+      expect(response.body).not.toContain("Hidden Finance Agent");
+      expect(response.body).not.toContain(financeAgent.workspacePath);
+    }
+
+    const acceptedBody = accepted[0]!.json();
+    expect(acceptedBody).toMatchObject({
+      contract: {
+        id: contractId,
+        box: "incoming",
+        status: "consumed",
+        remainingUses: 0,
+      },
+      decision: {
+        decision: "allow",
+        reasonCode: "DELEGATION_ACTIVE",
+        agentId: null,
+        agentName: null,
+      },
+      result: { status: "queued", output: null },
+    });
+    expect(JSON.stringify(acceptedBody.contract)).not.toContain(financeAgent.id);
+    expect(JSON.stringify(acceptedBody.contract)).not.toContain("Hidden Finance Agent");
+
+    const delegatedRequest = runner.requests[0]!;
+    expect(delegatedRequest.threadId).toBeNull();
+    expect(delegatedRequest.workspacePath).not.toBe(financeAgent.workspacePath);
+    expect(delegatedRequest.workspacePath).toContain(`${path.sep}.delegated${path.sep}`);
+    expect(await readdir(delegatedRequest.workspacePath)).toEqual([
+      "AGENTS.md",
+      "approved-input-1.md",
+    ]);
+    expect(
+      await readFile(
+        path.join(delegatedRequest.workspacePath, "approved-input-1.md"),
+        "utf8",
+      ),
+    ).toContain("Quarterly budget");
+    expect(service.getAgent(financeAgent.id).codexThreadId).toBeNull();
+
+    const changedRetry = await app.inject({
+      method: "POST",
+      url: `/api/delegation-contracts/${contractId}/invoke`,
+      headers: { cookie: hrCookie },
+      payload: { content: exactPrompt + " changed" },
+    });
+    expect(changedRetry.statusCode).toBe(403);
+    expect(changedRetry.json()).toMatchObject({
+      decision: { reasonCode: "DELEGATION_CONSUMED" },
+    });
+
+    const genericAgentRead = await app.inject({
+      method: "GET",
+      url: `/api/agents/${financeAgent.id}`,
+      headers: { cookie: hrCookie },
+    });
+    expect(genericAgentRead.statusCode).toBe(403);
+    const genericRunRead = await app.inject({
+      method: "GET",
+      url: `/api/runs/${acceptedBody.result.id}`,
+      headers: { cookie: hrCookie },
+    });
+    expect(genericRunRead.statusCode).toBe(403);
+
+    runner.finish("Final approved budget impact: SGD 1.2M.");
+    await expect
+      .poll(async () => {
+        const result = await app.inject({
+          method: "GET",
+          url: `/api/delegation-contracts/${contractId}/result`,
+          headers: { cookie: hrCookie },
+        });
+        return result.json().result?.status;
+      })
+      .toBe("completed");
+    const resultResponse = await app.inject({
+      method: "GET",
+      url: `/api/delegation-contracts/${contractId}/result`,
+      headers: { cookie: hrCookie },
+    });
+    expect(resultResponse.json()).toMatchObject({
+      contractStatus: "consumed",
+      result: {
+        id: acceptedBody.result.id,
+        status: "completed",
+        output: "Final approved budget impact: SGD 1.2M.",
+        error: null,
+      },
+    });
+    for (const forbidden of [
+      financeAgent.id,
+      financeAgent.workspacePath,
+      "Hidden Finance Agent",
+      "PRIVATE_AGENT_INSTRUCTION_SENTINEL",
+      "must-not-persist",
+      "usage",
+      "prompt",
+    ]) {
+      expect(resultResponse.body).not.toContain(forbidden);
+    }
+    await expect(access(delegatedRequest.workspacePath)).rejects.toThrow();
+    expect(service.getAgent(financeAgent.id).codexThreadId).toBeNull();
+
+    const audit = await app.inject({
+      method: "GET",
+      url: "/api/authorization-decisions?limit=100",
+      headers: { cookie: hrCookie },
+    });
+    const delegatedDecisions = audit
+      .json()
+      .decisions.filter(
+        (decision: { targetType: string }) => decision.targetType === "delegation",
+      );
+    expect(delegatedDecisions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          decision: "allow",
+          reasonCode: "DELEGATION_ACTIVE",
+          agentId: null,
+          agentName: null,
+        }),
+        expect.objectContaining({
+          decision: "deny",
+          reasonCode: "DELEGATION_CONSUMED",
+          agentId: null,
+          agentName: null,
+        }),
+      ]),
+    );
+
+    const ownerRun = await app.inject({
+      method: "POST",
+      url: `/api/agents/${financeAgent.id}/messages`,
+      headers: { cookie: financeCookie },
+      payload: { content: "Run npm test" },
+    });
+    expect(ownerRun.statusCode).toBe(202);
+    await expect.poll(() => runner.requests).toHaveLength(2);
+    await app.close();
+  }, 20_000);
+
+  it("rejects an altered task without consuming the active pass", async () => {
+    const { app, runner } = await makeHarness();
+    const financeCookie = await login(app, "finance@agent-gateway.local");
+    const createdAgent = await app.inject({
+      method: "POST",
+      url: "/api/agents",
+      headers: { cookie: financeCookie },
+      payload: { name: "Finance Agent" },
+    });
+    const agentId = createdAgent.json().agent.id as string;
+    const exactPrompt = "Estimate one approved budget.";
+    const issued = await app.inject({
+      method: "POST",
+      url: "/api/delegation-contracts",
+      headers: { cookie: financeCookie },
+      payload: {
+        requiredCapability: "finance.cost-analysis",
+        granteeHumanId: "22222222-2222-4222-8222-222222222222",
+        agentId,
+        exactPrompt,
+        approvedResourceIds: [],
+        expiresInSeconds: 600,
+      },
+    });
+    const contractId = issued.json().contract.id as string;
+    const hrCookie = await login(app, "hr@agent-gateway.local");
+    const changed = await app.inject({
+      method: "POST",
+      url: `/api/delegation-contracts/${contractId}/invoke`,
+      headers: { cookie: hrCookie },
+      payload: { content: exactPrompt + " " },
+    });
+    expect(changed.statusCode).toBe(403);
+    expect(changed.json()).toMatchObject({
+      decision: { reasonCode: "DELEGATION_PROMPT_MISMATCH" },
+    });
+    expect(runner.requests).toHaveLength(0);
+
+    const stillActive = await app.inject({
+      method: "GET",
+      url: "/api/delegation-contracts?box=incoming",
+      headers: { cookie: hrCookie },
+    });
+    expect(stillActive.json().contracts[0]).toMatchObject({
+      id: contractId,
+      status: "active",
+      remainingUses: 1,
+    });
+
+    const exact = await app.inject({
+      method: "POST",
+      url: `/api/delegation-contracts/${contractId}/invoke`,
+      headers: { cookie: hrCookie },
+      payload: { content: exactPrompt },
+    });
+    expect(exact.statusCode).toBe(202);
+    await expect.poll(() => runner.requests).toHaveLength(1);
     await app.close();
   });
 

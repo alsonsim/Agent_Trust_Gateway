@@ -61,7 +61,7 @@ const identityProvider =
         tokenTtlSeconds: config.authSessionTtlSeconds,
       });
 const gateway = new TrustGateway(identityProvider, securityRepository, service);
-const delegations = new DelegationService(store, securityRepository);
+const delegations = new DelegationService(store, securityRepository, service);
 await delegations.observePrincipals(
   config.authMode === "demo" ? gateway.demoPrincipals : [],
 );

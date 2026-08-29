@@ -9,11 +9,13 @@ import type {
   AgentRun,
   AgentRunner,
   CreateAgentInput,
+  DelegationContract,
   Message,
   RuntimeAuthorizationContext,
   UpdateAgentInput,
 } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
+import type { DelegatedWorkspaceInput } from "./workspace.js";
 
 const now = () => new Date().toISOString();
 
@@ -252,6 +254,164 @@ export class AgentService {
     return { run, message };
   }
 
+  async sendDelegatedMessage(input: {
+    contractId: string;
+    granteeHumanId: string;
+    prompt: string;
+    promptDigest: string;
+    approvedInputs: DelegatedWorkspaceInput[];
+    runtimeAuthorization: RuntimeAuthorizationContext;
+    onAuthorized: (
+      contract: DelegationContract,
+      run: AgentRun,
+      agent: Agent,
+    ) => Promise<void>;
+  }): Promise<{ run: AgentRun; contract: DelegationContract }> {
+    if (!isArkConfigured(this.config)) {
+      throw new HttpError(
+        503,
+        "Ark is not configured. Set ARK_API_KEY and ARK_MODEL, then restart.",
+      );
+    }
+    const initialContract = this.store
+      .snapshot()
+      .delegationContracts.find((candidate) => candidate.id === input.contractId);
+    if (!initialContract || initialContract.granteeHumanId !== input.granteeHumanId) {
+      throw new HttpError(404, "Approved task not found");
+    }
+    const agent = this.getAgent(initialContract.agentId);
+    this.assertNotRevoked(agent);
+    if (agent.status === "stopped") {
+      throw new HttpError(409, "The approved task is temporarily unavailable");
+    }
+    if (agent.status === "busy") {
+      throw new HttpError(409, "The approved capability is currently busy");
+    }
+
+    const timestamp = now();
+    const runId = randomUUID();
+    const workspacePath = await this.workspaces.createDelegatedRunWorkspace(
+      agent,
+      runId,
+      input.approvedInputs,
+    );
+    const delegatedAgent = { ...agent, workspacePath };
+    try {
+      if (this.runtimeFirewall) {
+        await this.runtimeFirewall.authorize(
+          delegatedAgent,
+          input.prompt,
+          input.runtimeAuthorization,
+        );
+      }
+      const run: AgentRun = {
+        id: runId,
+        agentId: agent.id,
+        status: "queued",
+        prompt: initialContract.sanitizedTaskSummary,
+        output: null,
+        error: null,
+        usage: null,
+        startedAt: null,
+        completedAt: null,
+        createdAt: timestamp,
+      };
+      const reservation = await this.store.mutate((database) => {
+        const contract = database.delegationContracts.find(
+          (candidate) => candidate.id === input.contractId,
+        );
+        if (!contract || contract.granteeHumanId !== input.granteeHumanId) {
+          throw new HttpError(404, "Approved task not found");
+        }
+        if (contract.status !== "active" || contract.usesConsumed >= contract.maximumUses) {
+          throw new HttpError(403, "This Trust Pass can no longer be used", {
+            code:
+              contract.status === "revoked"
+                ? "DELEGATION_REVOKED"
+                : contract.status === "expired"
+                  ? "DELEGATION_EXPIRED"
+                  : "DELEGATION_CONSUMED",
+          });
+        }
+        if (new Date(contract.expiresAt).getTime() <= Date.now()) {
+          contract.status = "expired";
+          throw new HttpError(403, "This Trust Pass has expired", {
+            code: "DELEGATION_EXPIRED",
+          });
+        }
+        if (
+          contract.exactPromptDigest !== input.promptDigest ||
+          contract.allowedActions.length !== 1 ||
+          contract.allowedActions[0] !== "agent.invoke"
+        ) {
+          throw new HttpError(403, "The requested task does not match the approved scope", {
+            code: "DELEGATION_PROMPT_MISMATCH",
+          });
+        }
+        const storedAgent = database.agents.find(
+          (candidate) => candidate.id === contract.agentId,
+        );
+        if (!storedAgent) {
+          throw new HttpError(404, "Approved task not found");
+        }
+        this.assertNotRevoked(storedAgent);
+        if (storedAgent.status === "stopped") {
+          throw new HttpError(409, "The approved task is temporarily unavailable");
+        }
+        if (storedAgent.status === "busy") {
+          throw new HttpError(409, "The approved capability is currently busy");
+        }
+        contract.status = "consumed";
+        contract.usesConsumed = 1;
+        contract.runId = run.id;
+        contract.consumedAt = timestamp;
+        database.runs.push(run);
+        storedAgent.status = "busy";
+        storedAgent.lastError = null;
+        storedAgent.updatedAt = timestamp;
+        return {
+          contract: structuredClone(contract),
+          agent: structuredClone(storedAgent),
+        };
+      });
+      try {
+        await input.onAuthorized(reservation.contract, run, reservation.agent);
+      } catch (error) {
+        await this.rollbackDelegatedReservation(
+          reservation.contract.id,
+          run.id,
+          reservation.agent.id,
+        );
+        throw error;
+      }
+      const execution = this.executeRun(reservation.agent, run, {
+        prompt: input.prompt,
+        workspacePath,
+        threadId: null,
+        delegated: true,
+      });
+      this.activeExecutions.set(agent.id, execution);
+      void execution
+        .finally(() => {
+          if (this.activeExecutions.get(agent.id) === execution) {
+            this.activeExecutions.delete(agent.id);
+          }
+        })
+        .catch(() => undefined);
+      return { run, contract: reservation.contract };
+    } catch (error) {
+      const reserved = this.store
+        .snapshot()
+        .delegationContracts.find(
+          (candidate) => candidate.id === input.contractId && candidate.runId === runId,
+        );
+      if (!reserved) {
+        await this.workspaces.cleanupDelegatedRunWorkspace(workspacePath);
+      }
+      throw error;
+    }
+  }
+
   async systemInfo(): Promise<Record<string, unknown>> {
     return {
       arkConfigured: isArkConfigured(this.config),
@@ -271,7 +431,21 @@ export class AgentService {
     };
   }
 
-  private async executeRun(agentAtStart: Agent, run: AgentRun): Promise<void> {
+  private async executeRun(
+    agentAtStart: Agent,
+    run: AgentRun,
+    options: {
+      prompt: string;
+      workspacePath: string;
+      threadId: string | null;
+      delegated: boolean;
+    } = {
+      prompt: run.prompt,
+      workspacePath: agentAtStart.workspacePath,
+      threadId: agentAtStart.codexThreadId,
+      delegated: false,
+    },
+  ): Promise<void> {
     await this.store.mutate((database) => {
       const storedRun = database.runs.find((item) => item.id === run.id);
       if (storedRun) {
@@ -285,9 +459,9 @@ export class AgentService {
       }
       const result = await this.runner.run({
         agentId: agentAtStart.id,
-        workspacePath: agentAtStart.workspacePath,
-        prompt: run.prompt,
-        threadId: agentAtStart.codexThreadId,
+        workspacePath: options.workspacePath,
+        prompt: options.prompt,
+        threadId: options.threadId,
       });
       const completedAt = now();
       await this.store.mutate((database) => {
@@ -298,16 +472,18 @@ export class AgentService {
         storedRun.output = result.output;
         storedRun.usage = result.usage;
         storedRun.completedAt = completedAt;
-        database.messages.push({
-          id: randomUUID(),
-          agentId: agent.id,
-          runId: run.id,
-          role: "assistant",
-          content: result.output,
-          createdAt: completedAt,
-        });
+        if (!options.delegated) {
+          database.messages.push({
+            id: randomUUID(),
+            agentId: agent.id,
+            runId: run.id,
+            role: "assistant",
+            content: result.output,
+            createdAt: completedAt,
+          });
+        }
         agent.status = agent.revokedAt ? "stopped" : "ready";
-        agent.codexThreadId = result.threadId;
+        if (!options.delegated) agent.codexThreadId = result.threadId;
         agent.lastError = null;
         agent.updatedAt = completedAt;
       });
@@ -325,13 +501,42 @@ export class AgentService {
         }
         if (agent) {
           if (agent.status !== "stopped") {
-            agent.status = cancelled ? "ready" : "error";
+            agent.status = options.delegated || cancelled ? "ready" : "error";
           }
-          agent.lastError = cancelled ? null : message;
+          agent.lastError = options.delegated || cancelled ? null : message;
           agent.updatedAt = completedAt;
         }
       });
+    } finally {
+      if (options.delegated) {
+        await this.workspaces.cleanupDelegatedRunWorkspace(options.workspacePath);
+      }
     }
+  }
+
+  private async rollbackDelegatedReservation(
+    contractId: string,
+    runId: string,
+    agentId: string,
+  ): Promise<void> {
+    await this.store.mutate((database) => {
+      const contract = database.delegationContracts.find(
+        (candidate) => candidate.id === contractId,
+      );
+      if (contract?.runId === runId && contract.status === "consumed") {
+        contract.status = "active";
+        contract.usesConsumed = 0;
+        contract.runId = null;
+        contract.consumedAt = null;
+      }
+      database.runs = database.runs.filter((candidate) => candidate.id !== runId);
+      const agent = database.agents.find((candidate) => candidate.id === agentId);
+      if (agent?.status === "busy") {
+        agent.status = "ready";
+        agent.lastError = null;
+        agent.updatedAt = now();
+      }
+    });
   }
 
   private async setStatus(id: string, status: Agent["status"]): Promise<Agent> {

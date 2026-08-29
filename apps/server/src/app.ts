@@ -89,6 +89,11 @@ const createDelegationContractBody = z
 const delegationContractQuery = z
   .object({ box: z.enum(["incoming", "outgoing"]) })
   .strict();
+const invokeDelegationContractBody = z
+  .object({
+    content: z.string().min(1).max(50_000).refine((value) => value.trim().length > 0),
+  })
+  .strict();
 
 export async function createApp(
   config: AppConfig,
@@ -283,6 +288,25 @@ export async function createApp(
       id,
       String(request.id),
     );
+  });
+
+  app.post("/api/delegation-contracts/:id/invoke", async (request, reply) => {
+    ensureDelegationAvailable(config);
+    const { id } = delegationIdParams.parse(request.params);
+    const body = invokeDelegationContractBody.parse(request.body);
+    const result = await delegations.invokeContract(
+      requirePrincipal(request),
+      id,
+      body.content,
+      String(request.id),
+    );
+    return reply.code(202).send(result);
+  });
+
+  app.get("/api/delegation-contracts/:id/result", async (request) => {
+    ensureDelegationAvailable(config);
+    const { id } = delegationIdParams.parse(request.params);
+    return delegations.delegatedResult(requirePrincipal(request), id);
   });
 
   app.get("/api/agents", async (request) => {

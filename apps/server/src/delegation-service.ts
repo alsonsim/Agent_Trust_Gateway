@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { AgentService } from "./agent-service.js";
 import {
   assessPersonalInformation,
   discoverCapability,
@@ -14,6 +15,7 @@ import { JsonStore } from "./store.js";
 import type {
   AuthorizationDecision,
   Agent,
+  AgentRun,
   DelegationContract,
   DelegationContractStatus,
   DelegationRequest,
@@ -96,10 +98,21 @@ export type DelegationContractView =
   | GranteeDelegationContractView
   | OwnerDelegationContractView;
 
+export interface DelegatedRunView {
+  id: string;
+  status: AgentRun["status"];
+  output: string | null;
+  error: string | null;
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+}
+
 export class DelegationService {
   constructor(
     private readonly store: JsonStore,
     private readonly securityRepository: SecurityRepository,
+    private readonly agents: AgentService,
     private readonly now: () => number = () => Date.now(),
   ) {}
 
@@ -410,6 +423,191 @@ export class DelegationService {
     };
   }
 
+  async invokeContract(
+    principal: HumanPrincipal,
+    contractId: string,
+    prompt: string,
+    auditRequestId: string,
+  ): Promise<{
+    contract: GranteeDelegationContractView;
+    decision: AuthorizationDecision;
+    result: DelegatedRunView;
+  }> {
+    await this.expireContracts();
+    const contract = this.store
+      .snapshot()
+      .delegationContracts.find((candidate) => candidate.id === contractId);
+    if (!contract || contract.granteeHumanId !== principal.id) {
+      throw new HttpError(404, "Approved task not found");
+    }
+    const agent = this.safeGetAgent(contract.agentId);
+    if (contract.status !== "active") {
+      await this.denyInvocation(
+        principal,
+        contract,
+        auditRequestId,
+        this.reasonCodeForStatus(contract.status),
+        contract.status === "consumed"
+          ? "This one-use Trust Pass has already admitted its approved Run."
+          : contract.status === "revoked"
+            ? "The Agent owner revoked this Trust Pass before use."
+            : "This Trust Pass expired before the approved Run started.",
+        agent,
+      );
+    }
+    const promptDigest = digestExactPrompt(prompt);
+    if (promptDigest !== contract.exactPromptDigest) {
+      await this.denyInvocation(
+        principal,
+        contract,
+        auditRequestId,
+        "DELEGATION_PROMPT_MISMATCH",
+        "The submitted prompt bytes do not match the exact owner-approved task.",
+        agent,
+      );
+    }
+    if (contract.allowedActions.length !== 1 || contract.allowedActions[0] !== "agent.invoke") {
+      await this.denyInvocation(
+        principal,
+        contract,
+        auditRequestId,
+        "DELEGATION_ACTION_NOT_ALLOWED",
+        "The Trust Pass does not authorize this action.",
+        agent,
+      );
+    }
+    if (!agent || agent.revokedAt) {
+      await this.denyInvocation(
+        principal,
+        contract,
+        auditRequestId,
+        "DELEGATION_REVOKED",
+        "The approved capability is no longer available.",
+        agent,
+      );
+    }
+    if (!agent) throw new Error("Approved capability became unavailable");
+
+    const approvedInputs: Array<{ fileName: string; content: string }> = [];
+    for (const [index, resourceId] of contract.approvedResourceIds.entries()) {
+      const resource = await this.securityRepository.readResourceForDelegation(
+        resourceId,
+        contract.approvingHumanId,
+      );
+      if (
+        !resource ||
+        digestResourceContent(resource.content) !==
+          contract.approvedResourceDigests[resourceId]
+      ) {
+        await this.denyInvocation(
+          principal,
+          contract,
+          auditRequestId,
+          "DELEGATION_RESOURCE_CHANGED",
+          "An owner-approved input changed after approval, so execution failed closed.",
+          agent,
+        );
+      }
+      if (!resource) throw new Error("Approved input became unavailable");
+      approvedInputs.push({
+        fileName: `approved-input-${index + 1}.md`,
+        content: resource.content,
+      });
+    }
+
+    try {
+      let allowedDecision: AuthorizationDecision | null = null;
+      const reservation = await this.agents.sendDelegatedMessage({
+        contractId: contract.id,
+        granteeHumanId: principal.id,
+        prompt,
+        promptDigest,
+        approvedInputs,
+        runtimeAuthorization: {
+          humanUserId: principal.id,
+          humanEmail: principal.email,
+          humanDepartment: principal.department,
+          requestId: auditRequestId,
+        },
+        onAuthorized: async (claimedContract, _run, claimedAgent) => {
+          const decision = this.makeDecision({
+            principal,
+            requestId: auditRequestId,
+            action: "agent.invoke",
+            targetType: "delegation",
+            targetId: claimedContract.id,
+            targetLabel: "One-use Agent Trust Pass",
+            reasonCode: "DELEGATION_ACTIVE",
+            reason:
+              "The grantee, exact task, action, approved inputs, expiry, and remaining use matched.",
+            agent: claimedAgent,
+          });
+          await this.appendAllowedDecision(decision);
+          allowedDecision = decision;
+        },
+      });
+      if (!allowedDecision) {
+        throw new Error("Delegated authorization evidence was not created");
+      }
+      return {
+        contract: this.contractView(reservation.contract, "incoming", []),
+        decision: this.publicDecision(allowedDecision),
+        result: this.runView(reservation.run),
+      };
+    } catch (error) {
+      if (error instanceof HttpError && error.code?.startsWith("DELEGATION_")) {
+        const reasonCode = error.code as AuthorizationDecision["reasonCode"];
+        await this.denyInvocation(
+          principal,
+          contract,
+          auditRequestId,
+          reasonCode,
+          error.message,
+          agent,
+        );
+      }
+      if (
+        error instanceof HttpError &&
+        error.code === "RUNTIME_ACTION_DENIED" &&
+        error.details &&
+        typeof error.details === "object"
+      ) {
+        throw new HttpError(403, error.message, {
+          code: error.code,
+          details: this.publicDecision(error.details as AuthorizationDecision),
+        });
+      }
+      throw error;
+    }
+  }
+
+  async delegatedResult(
+    principal: HumanPrincipal,
+    contractId: string,
+  ): Promise<{
+    contractStatus: DelegationContractStatus;
+    result: DelegatedRunView | null;
+    serverNow: string;
+  }> {
+    await this.expireContracts();
+    const contract = this.store
+      .snapshot()
+      .delegationContracts.find((candidate) => candidate.id === contractId);
+    if (
+      !contract ||
+      (contract.granteeHumanId !== principal.id &&
+        contract.approvingHumanId !== principal.id)
+    ) {
+      throw new HttpError(404, "Delegated result not found");
+    }
+    const run = contract.runId ? this.agents.getRun(contract.runId) : null;
+    return {
+      contractStatus: contract.status,
+      result: run ? this.runView(run) : null,
+      serverNow: this.nowIso(),
+    };
+  }
+
   private async issueContract(
     principal: HumanPrincipal,
     input: {
@@ -658,6 +856,54 @@ export class DelegationService {
     });
   }
 
+  private runView(run: AgentRun): DelegatedRunView {
+    return {
+      id: run.id,
+      status: run.status,
+      output: run.status === "completed" ? run.output : null,
+      error: run.status === "failed" ? "The delegated Run failed." : null,
+      createdAt: run.createdAt,
+      startedAt: run.startedAt,
+      completedAt: run.completedAt,
+    };
+  }
+
+  private async denyInvocation(
+    principal: HumanPrincipal,
+    contract: DelegationContract,
+    requestId: string,
+    reasonCode: AuthorizationDecision["reasonCode"],
+    reason: string,
+    agent: Agent | null,
+  ): Promise<never> {
+    const decision = this.makeDecision({
+      principal,
+      requestId,
+      action: "agent.invoke",
+      targetType: "delegation",
+      targetId: contract.id,
+      targetLabel: "One-use Agent Trust Pass",
+      reasonCode,
+      reason,
+      decision: "deny",
+      ...(agent ? { agent } : {}),
+    });
+    await this.appendDeniedDecision(decision);
+    throw new HttpError(403, "Access denied by Agent Trust Gateway", {
+      code: "AUTHORIZATION_DENIED",
+      details: this.publicDecision(decision),
+    });
+  }
+
+  private publicDecision(decision: AuthorizationDecision): AuthorizationDecision {
+    return {
+      ...decision,
+      agentId: null,
+      agentName: null,
+      targetLabel: "Approved delegated task",
+    };
+  }
+
   private reasonCodeForStatus(
     status: DelegationContractStatus,
   ):
@@ -739,6 +985,7 @@ export class DelegationService {
     reasonCode: AuthorizationDecision["reasonCode"];
     reason: string;
     agent?: Agent;
+    decision?: AuthorizationDecision["decision"];
   }): AuthorizationDecision {
     return {
       id: randomUUID(),
@@ -752,7 +999,7 @@ export class DelegationService {
       targetType: input.targetType,
       targetId: input.targetId,
       targetLabel: input.targetLabel,
-      decision: "allow",
+      decision: input.decision ?? "allow",
       reasonCode: input.reasonCode,
       reason: input.reason,
       createdAt: this.nowIso(),
@@ -768,6 +1015,14 @@ export class DelegationService {
         "Authorization evidence could not be persisted; access failed closed",
         { code: "AUTHORIZATION_AUDIT_UNAVAILABLE" },
       );
+    }
+  }
+
+  private async appendDeniedDecision(decision: AuthorizationDecision): Promise<void> {
+    try {
+      await this.securityRepository.appendDecision(decision);
+    } catch {
+      // The request remains denied even if the evidence sink is unavailable.
     }
   }
 

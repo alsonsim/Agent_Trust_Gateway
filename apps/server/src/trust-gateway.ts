@@ -363,7 +363,27 @@ export class TrustGateway {
     principal: HumanPrincipal,
     limit: number,
   ): Promise<AuthorizationDecision[]> {
-    return this.securityRepository.listDecisions(principal.id, limit);
+    const decisions = await this.securityRepository.listDecisions(principal.id, limit);
+    return decisions.map((decision) => {
+      if (!decision.agentId) return decision;
+      let ownsAgent = false;
+      try {
+        ownsAgent = this.agents.getAgent(decision.agentId).ownerId === principal.id;
+      } catch {
+        ownsAgent = false;
+      }
+      return ownsAgent
+        ? decision
+        : {
+            ...decision,
+            agentId: null,
+            agentName: null,
+            targetLabel:
+              decision.targetType === "delegation"
+                ? "Approved delegated task"
+                : decision.targetLabel,
+          };
+    });
   }
 
   private resourceDecision(

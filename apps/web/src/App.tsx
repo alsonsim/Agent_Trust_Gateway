@@ -14,11 +14,29 @@ import type {
   WorkspaceFileRead,
 } from "./types";
 
-const starterPrompts = [
-  "Create a small TypeScript CLI that prints a weather summary from sample JSON.",
-  "Inspect this workspace and explain what you would improve first.",
-  "Build a responsive single-page todo app with tests.",
+const defaultStarterPrompts = [
+  "Read README.md, then create workspace-summary.md with the workspace purpose and three next steps.",
+  "Read README.md, then create implementation-checklist.md with a local-only plan and verification steps.",
+  "Read README.md, then create notes.md with a concise summary and open questions.",
 ];
+
+const starterPromptsByDepartment = {
+  finance: [
+    "Read README.md, then create finance-brief.md with a fictional monthly budget table and three validation checks.",
+    "Read README.md, then create expense-review.md with fictional categories, totals, and a review checklist.",
+    "Read README.md, then create forecast-notes.md with fictional assumptions, risks, and next steps.",
+  ],
+  hr: [
+    "Read README.md, then create onboarding-checklist.md for a fictional hire. Include no personal data.",
+    "Read README.md, then create interview-scorecard.md with job-related criteria and a neutral rating guide.",
+    "Read README.md, then create team-handbook-outline.md with generic sections and review notes.",
+  ],
+  research: [
+    "Read README.md, then create research-plan.md with a sample question, three hypotheses, and a validation checklist.",
+    "Read README.md, then create evidence-log.md as a local template for source, claim, confidence, and notes.",
+    "Read README.md, then create experiment-checklist.md for a fictional reproducible experiment using local sample data.",
+  ],
+} satisfies Record<Department, readonly string[]>;
 
 const emptyForm = {
   name: "",
@@ -96,6 +114,14 @@ function formatDateTime(value: string): string {
 function departmentLabel(department: Department): string {
   if (department === "hr") return "HR";
   return department.slice(0, 1).toUpperCase() + department.slice(1);
+}
+
+function starterPromptsFor(
+  principal: HumanPrincipal,
+  agent: Agent,
+): readonly string[] {
+  if (agent.ownerId !== principal.id) return defaultStarterPrompts;
+  return starterPromptsByDepartment[principal.department] ?? defaultStarterPrompts;
 }
 
 function initials(value: string): string {
@@ -232,6 +258,7 @@ export default function App() {
     setPrincipal(null);
     setAgents([]);
     setSelectedId(null);
+    setPrompt("");
     setMessages([]);
     setSystem(null);
     setActiveRun(null);
@@ -384,6 +411,7 @@ export default function App() {
 
   useEffect(() => {
     const generation = sessionGenerationRef.current;
+    setPrompt("");
     setActiveRun(null);
     setShowSettings(false);
     setLatestDecision(null);
@@ -1239,13 +1267,13 @@ export default function App() {
                     <div className="welcome-orbit">
                       <div>⌁</div>
                     </div>
-                    <h3>What should {selected.name} build?</h3>
+                    <h3>What should {selected.name} work on?</h3>
                     <p>
-                      The Agent can inspect files, write code, run commands, and continue the
-                      same Codex session across messages.
+                      Choose a task for {departmentLabel(principal.department)} or write your own.
+                      The Agent remains inside its assigned workspace and middleware permissions.
                     </p>
                     <div className="prompt-grid">
-                      {starterPrompts.map((item) => (
+                      {starterPromptsFor(principal, selected).map((item) => (
                         <button key={item} onClick={() => setPrompt(item)}>
                           <span>↗</span>
                           {item}

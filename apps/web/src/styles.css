@@ -1401,6 +1401,11 @@ textarea:focus {
   background: white;
 }
 
+.resource-section {
+  container-type: inline-size;
+  container-name: resource-section;
+}
+
 .resource-section,
 .decision-card {
   padding: 17px;
@@ -1420,12 +1425,21 @@ textarea:focus {
 
 .workspace-file-tool {
   display: grid;
-  grid-template-columns: minmax(150px, 0.8fr) minmax(190px, 1.4fr) auto;
-  align-items: end;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas:
+    "heading"
+    "field"
+    "action";
+  align-items: stretch;
   gap: 12px;
   margin-bottom: 17px;
   padding-bottom: 17px;
   border-bottom: 1px solid #ebe9e2;
+}
+
+.workspace-file-tool > div {
+  grid-area: heading;
+  min-width: 0;
 }
 
 .workspace-file-tool h3 {
@@ -1436,6 +1450,8 @@ textarea:focus {
 }
 
 .workspace-file-tool label {
+  grid-area: field;
+  min-width: 0;
   font-size: 9px;
 }
 
@@ -1447,8 +1463,33 @@ textarea:focus {
 }
 
 .workspace-file-button {
-  width: auto;
-  min-width: 132px;
+  grid-area: action;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  white-space: nowrap;
+}
+
+@container resource-section (min-width: 400px) {
+  .workspace-file-tool {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "heading heading"
+      "field action";
+    align-items: end;
+  }
+
+  .workspace-file-button {
+    width: auto;
+    min-width: 132px;
+  }
+}
+
+@container resource-section (min-width: 560px) {
+  .workspace-file-tool {
+    grid-template-columns: minmax(150px, 0.8fr) minmax(200px, 1.4fr) auto;
+    grid-template-areas: "heading field action";
+  }
 }
 
 .section-heading {
@@ -2017,10 +2058,6 @@ textarea:focus {
   color: #a94343;
 }
 
-.workspace-file-tool {
-  grid-template-columns: minmax(155px, 0.8fr) minmax(200px, 1.4fr) auto;
-}
-
 .workspace-file-tool label,
 .workspace-file-tool input,
 .resource-card p,
@@ -2232,10 +2269,6 @@ textarea:focus {
     min-height: 130px;
   }
 
-  .workspace-file-tool {
-    grid-template-columns: minmax(0, 1fr) minmax(190px, 1.4fr) auto;
-  }
-
   .scenario-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -2339,15 +2372,6 @@ textarea:focus {
 
   .resource-grid {
     grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  }
-
-  .workspace-file-tool {
-    grid-template-columns: 1fr;
-    align-items: stretch;
-  }
-
-  .workspace-file-button {
-    width: 100%;
   }
 
   .security-panel {

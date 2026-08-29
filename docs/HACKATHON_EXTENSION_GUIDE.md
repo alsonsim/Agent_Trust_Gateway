@@ -30,14 +30,26 @@ Required demo:
 
 Separate the human user from the Agent acting for that user.
 
-Required demo:
+Required demo for this branch:
 
-- Create User A, User B, and an Agent principal owned by User A.
-- Allow the Agent to read User A's mock resource.
-- Deny access to User B's resource in the backend.
-- Record the human, Agent, action, resource, and decision.
+- Sign in as Frontend (`frontend@bytedance.com`) and create a Profile UI Agent.
+- Allow that Agent to read the Frontend-owned **Profile page requirements**
+  (`profile-page-requirements.md`).
+- Deny the same Agent access to Backend's **Profile API contract**
+  (`profile-api-contract.md`) in the backend.
+- Create an Agent under Backend (`backend@bytedance.com`), then use the visible
+  **Cross-team Agent** scenario. The backend privately selects a foreign Agent,
+  denies the probe with `HUMAN_AGENT_OWNER_MISMATCH`, and returns no foreign
+  Agent ID or name.
+- Show QA (`qa@bytedance.com`) separately owns **Profile release test plan**
+  (`profile-release-test-plan.md`).
+- Record the human, Agent, action, resource, decision, and policy reason.
 
 A login screen without server-side authorization does not qualify.
+
+Trust Pass delegation is not implemented on this branch. Do not present the
+Human → Agent → resource attribution display as a temporary or one-use grant;
+cross-owner Agent use remains denied.
 
 ### Kill Switch: safety and sandboxing
 

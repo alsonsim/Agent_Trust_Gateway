@@ -13,6 +13,12 @@ Volcengine ECS.
 > is not presented as hardened multi-tenant isolation. See
 > [SECURITY.md](SECURITY.md).
 
+> [!IMPORTANT]
+> Trust Pass delegation is **not implemented** in this version. There is no temporary, one-use, or
+> cross-owner grant: an Agent remains exclusively owned by its creator, and a
+> different signed-in user is denied. The Human → Agent → resource display is
+> an attribution path, not a transferable credential.
+
 ## Screenshots
 
 ### Agent Playground
@@ -26,9 +32,10 @@ Volcengine ECS.
 ## Features
 
 - React and TypeScript Web UI
-- Finance, HR, and Research login identities
+- Frontend, Backend, and QA engineering login identities
 - Server-side Human → Agent ownership enforcement on every Agent/Run route
-- Owner-scoped protected file gateway with visible `ALLOW` / `DENY` decisions
+- Owner-scoped protected resource and workspace-file gateways with visible
+  `ALLOW` / `DENY` decisions
 - HttpOnly sessions, append-only audit evidence, and a Supabase Auth/RLS adapter
 - Agent create, edit, start, stop, delete, and multi-turn chat
 - Fastify control plane with asynchronous Run state
@@ -55,8 +62,39 @@ $env:HOST="127.0.0.1"
 npm run dev
 ```
 
-Open <http://localhost:5173>, choose Finance, HR, or Research, create an Agent,
-then use **Access & audit** to demonstrate allowed and denied file reads.
+Open <http://localhost:5173> and choose an engineering identity:
+
+| Identity | Login email | Owned protected resource |
+| --- | --- | --- |
+| Frontend | `frontend@bytedance.com` | **Profile page requirements** (`profile-page-requirements.md`) |
+| Backend | `backend@bytedance.com` | **Profile API contract** (`profile-api-contract.md`) |
+| QA | `qa@bytedance.com` | **Profile release test plan** (`profile-release-test-plan.md`) |
+
+In demo mode, select the identity in the login screen. In Supabase mode, use
+the same email and the demo password configured by the operator; no password
+belongs in this repository.
+
+Create an Agent for the signed-in identity, open **Access & audit**, and read
+that identity's resource. Then select another identity's resource to show a
+backend-produced `AGENT_RESOURCE_OWNER_MISMATCH` denial. A realistic Playground
+task for each coding Agent is:
+
+- **Frontend:** `Create a typed profile-page state model for loading, ready,
+  empty, and error states; add tests and run them.`
+- **Backend:** `Create a typed profile API handler with input validation and
+  tests for success, missing profiles, and invalid IDs; run the tests.`
+- **QA:** `Create an executable profile-release smoke-test suite covering the
+  happy path, validation errors, and an authorization regression; run it.`
+
+To prove that the UI is not the security boundary, first create an Agent under
+two different identities. Open **Access & audit**, find **Cross-team Agent**,
+and select **Run scenario**. The UI calls the backend's opaque cross-owner
+probe; it does not receive a foreign Agent ID or name.
+
+The expected result is HTTP `403`, error code `AUTHORIZATION_DENIED`, and
+decision reason `HUMAN_AGENT_OWNER_MISMATCH`. The target is labelled
+`Protected Agent`, the denied decision is persisted for the signed-in
+principal, and no Runtime is invoked.
 
 ## Local browser SOP
 

@@ -32,9 +32,10 @@ flowchart LR
 
 ### Web UI
 
-Authenticates Finance, HR, or Research; lists only owned Agents; manages the
-unchanged lifecycle and Playground; and displays backend-produced policy
-decisions. It never receives Ark or Supabase server keys.
+Authenticates Frontend (`frontend@bytedance.com`), Backend
+(`backend@bytedance.com`), or QA (`qa@bytedance.com`); lists only owned Agents;
+manages the unchanged lifecycle and Playground; and displays backend-produced
+policy decisions. It never receives Ark or Supabase server keys.
 
 ### Fastify API
 
@@ -48,6 +49,20 @@ Derives the Agent principal from the stored Agent, compares human/Agent/resource
 ownership, fails closed before protected content is returned, and persists
 attributed `ALLOW`/`DENY` evidence. The same policy contract uses local
 synthetic files in demo mode or Supabase Auth, tables, and RLS in Supabase mode.
+
+The engineering fixtures form one coherent profile-feature workflow while
+remaining separately owned:
+
+| Principal | Protected resource | Suggested Agent |
+| --- | --- | --- |
+| Frontend | **Profile page requirements** (`profile-page-requirements.md`) | Profile UI Agent |
+| Backend | **Profile API contract** (`profile-api-contract.md`) | Profile API Agent |
+| QA | **Profile release test plan** (`profile-release-test-plan.md`) | Profile Release Agent |
+
+Ownership is intentionally non-delegable on this branch. Trust Pass delegation
+is not implemented: there is no temporary or one-use authority transfer between
+these principals. The Human → Agent → resource chain shown by the UI records
+who is acting and what was targeted; it does not grant cross-owner access.
 
 `readWorkspaceFile()` is a separate server-enforced file boundary for an
 Agent's assigned workspace. It verifies the authenticated owner, canonicalizes

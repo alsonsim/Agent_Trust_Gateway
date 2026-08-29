@@ -23,6 +23,22 @@ policy reason codes:
 
 Owner mismatches remain attributable as `HUMAN_AGENT_OWNER_MISMATCH`.
 
+## Engineering ownership fixtures
+
+The ownership demo uses three coding roles and synthetic, separately owned
+resources:
+
+| Identity | Email | Resource |
+| --- | --- | --- |
+| Frontend | `frontend@bytedance.com` | **Profile page requirements** (`profile-page-requirements.md`) |
+| Backend | `backend@bytedance.com` | **Profile API contract** (`profile-api-contract.md`) |
+| QA | `qa@bytedance.com` | **Profile release test plan** (`profile-release-test-plan.md`) |
+
+Protected resource content is released only through
+`POST /api/agents/:id/resources/:resourceId/read`. The middleware derives the
+human from the HttpOnly session and the Agent owner from stored server state;
+neither identity is accepted from request JSON.
+
 ## Policy rules
 
 The workspace policy resolves the Agent workspace and requested target through
@@ -34,7 +50,7 @@ It denies:
 - Paths outside the workspace, including `..` traversal.
 - Symlinks that resolve outside the workspace.
 - Symlinks that resolve to protected files.
-- `.env`, `.env.*`, `.npmrc`, `.pypirc`, `credentials.json`, `id_rsa`,
+- `.env`, `.env.*`, `.gitignore`, `.npmrc`, `.pypirc`, `credentials.json`, `id_rsa`,
   `id_ed25519`, `id_dsa`, `.aws`, `.kube`, `.ssh`, `secrets`, `*.pem`, and
   `*.key` paths.
 - Files larger than 256 KiB.
@@ -44,24 +60,36 @@ they never include file contents.
 
 ## Three-minute demo
 
-1. Start the app in demo mode, sign in, create an Agent, and open **Access &
+1. Start the app in demo mode. Sign in as Frontend with
+   `frontend@bytedance.com`, create **Profile UI Agent**, and open **Access &
    audit**.
-2. Start with the selected-Agent summary: owner, Runtime state, Trust Gateway
+2. Read **Profile page requirements**. It is allowed because the human, Agent,
+   and resource share the Frontend owner. Attempt **Profile API contract** next;
+   it is denied with `AGENT_RESOURCE_OWNER_MISMATCH`, and no content is returned.
+3. Start with the selected-Agent summary: owner, Runtime state, Trust Gateway
    state, actual allowed/denied totals, and the latest persisted decision are
-   visible before any interaction.
-3. In **Four-step security demo**, run **Safe file read**. `README.md` is
+   visible before any workspace-file interaction.
+4. In **Five-step security demo**, run **Safe file read**. `README.md` is
    allowed, returned only by the server, and shown in the authorization result.
-4. Run **Protected secret** and **Path traversal**. `.env` returns
+5. Run **Protected secret** and **Path traversal**. `.env` returns
    `PROTECTED_SECRET_FILE`; `../launchpad.json` returns
    `PATH_OUTSIDE_WORKSPACE`. Both cards report that no Run was created.
-5. Run **Dangerous shell command**. The Runtime Action Firewall returns
+6. Run **Dangerous shell command**. The Runtime Action Firewall returns
    `RUNTIME_COMMAND_DENIED` for `rm -rf` before Codex starts, and the result
    confirms that no Run was created.
-6. Use the prominent latest-decision inspector to show action, target, policy
+7. Create an Agent under a second identity, then select **Run scenario** on
+   **Cross-team Agent**. Expect HTTP `403`, `AUTHORIZATION_DENIED`, and
+   `HUMAN_AGENT_OWNER_MISMATCH`; the target is redacted as `Protected Agent`,
+   the denial is audited, and no Runtime starts.
+8. Use the prominent latest-decision inspector to show action, target, policy
    code, explanation, Run creation state, and expandable request metadata.
    Then filter the newest-first timeline by denied, file, shell, or network
    events. Consecutive repeated decisions are grouped without discarding their
    audit evidence.
+
+This implementation does not include Trust Pass delegation. The Backend identity
+cannot borrow, inherit, or temporarily invoke the Frontend Agent; the denial in
+step 7 is the intended policy result.
 
 ## Security console presentation
 
@@ -74,7 +102,7 @@ deny outcome, file contents, a policy reason, or whether a Run was created.
 ## Adversarial coverage
 
 `apps/server/src/workspace-file-policy.test.ts` verifies safe reads, `.env`,
-traversal, a symlink to `.env`, a symlink outside the workspace, and oversized
+`.env.local`, `.gitignore`, traversal, a symlink to `.env`, a symlink outside the workspace, and oversized
 files. `apps/server/src/app.test.ts` verifies the authenticated HTTP route,
 secret non-disclosure, traversal denial, and persisted decisions.
 

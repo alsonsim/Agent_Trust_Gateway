@@ -66,10 +66,29 @@ they never include file contents.
 ## Security console presentation
 
 The Access & audit screen is deliberately a demo console, not a mock dashboard.
-Each scenario invokes the same Fastify file-read or Playground message endpoint
-used by the application. Actual results are rendered only after the backend
-returns an authorization decision or error. The UI never hard-codes an allow or
-deny outcome, file contents, a policy reason, or whether a Run was created.
+File scenarios invoke the normal Fastify file-read endpoint. The dangerous-shell
+card invokes the dedicated non-executing Runtime evaluation endpoint:
+
+```text
+POST /api/agents/:id/runtime-actions/evaluate
+{ "type": "shell", "command": "rm -rf ./demo-folder" }
+```
+
+It authenticates and authorizes the owner, evaluates and persists the Firewall
+decision, and never creates a Run or calls Codex. Actual results are rendered
+only after the backend returns an authorization decision or error. The UI never
+hard-codes an allow or deny outcome, file contents, a policy reason, or whether
+a Run was created.
+
+### Manual UI check
+
+The web package has no frontend test runner configured. To verify the Runtime
+scenario card manually, select a ready Agent, open **Access & audit**, and run
+**Dangerous shell command**. The card must transition from loading to **DENY**,
+show `RUNTIME_COMMAND_DENIED` and “The command was blocked before a Run was
+created.” The latest-decision inspector and denied audit filter must show the
+same persisted `shell.execute` decision. Confirm that the card reports no Run
+created, then click it again to confirm it remains available for retry.
 
 ## Adversarial coverage
 
@@ -84,6 +103,21 @@ The file authorization middleware protects the explicit Fastify endpoint above.
 It is enforced by the backend, not by the browser UI, and an allowed decision is
 persisted before the backend releases file content. If an allow decision cannot
 be persisted, access fails closed.
+
+## Department workspace isolation
+
+New Agents are bound by the backend to the authenticated Finance, HR, or
+Research department and use that department's persistent workspace profile.
+The browser cannot choose a workspace. In the disposable container Runtime,
+only a filtered projection of that department workspace is mounted. Repository
+source, other departments, symlinks, `.env`/`.env.*`, credentials, private
+keys, and protected directories are absent from that filesystem projection.
+Safe files such as `README.md` remain available.
+
+The hardened Runtime currently disables direct network access and does not pass
+`ARK_API_KEY` into the Agent container. A server-side model proxy using
+short-lived Runtime credentials is required before connected Codex execution
+can be enabled without reintroducing a long-lived provider credential.
 
 ## Runtime Action Firewall
 

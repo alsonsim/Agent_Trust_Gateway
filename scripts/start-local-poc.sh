@@ -4,16 +4,49 @@ set -euo pipefail
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_dir"
 
+log() {
+  printf '[local-poc] %s\n' "$*" >&2
+}
+
+load_dotenv() {
+  local dotenv_path="$1"
+  local line key value
+  local loaded_keys=$'\n'
+
+  [[ -f "$dotenv_path" ]] || return 0
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"
+    line="${line#"${line%%[![:space:]]*}"}"
+    [[ -z "$line" || "$line" == \#* ]] && continue
+    if [[ "$line" == export[[:space:]]* ]]; then
+      line="${line#export}"
+      line="${line#"${line%%[![:space:]]*}"}"
+    fi
+    [[ "$line" == *=* ]] || continue
+
+    key="${line%%=*}"
+    key="${key%"${key##*[![:space:]]}"}"
+    value="${line#*=}"
+    [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+
+    # The caller's exported environment wins; later dotenv entries still win.
+    if [[ "$loaded_keys" != *$'\n'"$key"$'\n'* ]] && printenv "$key" >/dev/null 2>&1; then
+      continue
+    fi
+    export "$key=$value"
+    loaded_keys+="$key"$'\n'
+  done < "$dotenv_path"
+}
+
+load_dotenv "$repo_dir/.env"
+
 runtime_image="${CONTAINER_RUNTIME_IMAGE:-volc-agent-runtime:local}"
 runtime_base_image="${CONTAINER_RUNTIME_BASE_IMAGE:-node:22-bookworm-slim}"
 runtime_apt_mirror="${CONTAINER_APT_MIRROR:-}"
 runtime_apt_security_mirror="${CONTAINER_APT_SECURITY_MIRROR:-}"
 runtime_apt_packages="${CONTAINER_RUNTIME_APT_PACKAGES:-ca-certificates git ripgrep}"
 codex_sandbox_mode="${CODEX_SANDBOX_MODE:-workspace-write}"
-
-log() {
-  printf '[local-poc] %s\n' "$*" >&2
-}
 
 engine_works() {
   "$1" info >/dev/null 2>&1
@@ -88,22 +121,10 @@ if [[ ! -d node_modules ]]; then
   npm ci
 fi
 
-if [[ -n "${LOCAL_POC_DATA_ROOT:-}" ]]; then
-  local_state_root="$LOCAL_POC_DATA_ROOT"
-  export APP_DATA_DIR="$local_state_root/data"
-  export AGENT_WORKSPACE_ROOT="$local_state_root/workspaces"
-  export CODEX_HOME="$local_state_root/codex-home"
-elif [[ "$(uname -s)" == "Darwin" ]]; then
-  local_state_root="${HOME}/.volc-agent-launchpad"
-  export APP_DATA_DIR="${APP_DATA_DIR:-$local_state_root/data}"
-  export AGENT_WORKSPACE_ROOT="${AGENT_WORKSPACE_ROOT:-$local_state_root/workspaces}"
-  export CODEX_HOME="${CODEX_HOME:-$local_state_root/codex-home}"
-else
-  local_state_root="$repo_dir/.local"
-  export APP_DATA_DIR="${APP_DATA_DIR:-$local_state_root/data}"
-  export AGENT_WORKSPACE_ROOT="${AGENT_WORKSPACE_ROOT:-$local_state_root/workspaces}"
-  export CODEX_HOME="${CODEX_HOME:-$local_state_root/codex-home}"
-fi
+local_state_root="$repo_dir/.local"
+export APP_DATA_DIR="$local_state_root/data"
+export AGENT_WORKSPACE_ROOT="$local_state_root/workspaces"
+export CODEX_HOME="$local_state_root/codex-home"
 export RUNTIME_INSTANCE_ID="${RUNTIME_INSTANCE_ID:-local-$(id -u)-$(printf '%s' "$repo_dir" | cksum | awk '{print $1}')}"
 
 mkdir -p "$APP_DATA_DIR" "$AGENT_WORKSPACE_ROOT" "$CODEX_HOME"
@@ -132,7 +153,7 @@ if ! "$engine" run --rm \
   "$runtime_image" sh -lc \
     'touch /workspace/.launchpad-write-test /codex-home/.launchpad-write-test && rm /workspace/.launchpad-write-test /codex-home/.launchpad-write-test'; then
   log "The container engine cannot mount $local_state_root."
-  log "Set LOCAL_POC_DATA_ROOT to a directory shared with Docker/Colima/Podman."
+  log "Configure the Docker, Colima, or Podman VM to share the repository directory."
   exit 2
 fi
 
@@ -152,6 +173,7 @@ export CODEX_SANDBOX_MODE="$codex_sandbox_mode"
 export RUNTIME_PROVIDER=container
 export CONTAINER_ENGINE="$engine"
 export CONTAINER_RUNTIME_IMAGE="$runtime_image"
+export CONTAINER_CODEX_BIN="${CONTAINER_CODEX_BIN:-codex}"
 
 cleanup() {
   local container_ids

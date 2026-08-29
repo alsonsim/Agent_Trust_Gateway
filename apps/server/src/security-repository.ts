@@ -216,7 +216,9 @@ export class SupabaseSecurityRepository implements SecurityRepository {
           agent_name: decision.agentName,
           action: decision.action,
           target_type: decision.targetType,
-          target_id: decision.targetId,
+          // Supabase stores target_id as UUID. Paths and commands remain in
+          // target_label; use the decision UUID for non-UUID runtime targets.
+          target_id: isUuid(decision.targetId) ? decision.targetId : decision.id,
           target_label: decision.targetLabel,
           decision: decision.decision,
           reason_code: decision.reasonCode,
@@ -266,12 +268,34 @@ export class SupabaseSecurityRepository implements SecurityRepository {
       },
       ...(options.body ? { body: options.body } : {}),
     });
-    if (!response.ok) {
-      throw new HttpError(503, "Supabase security repository is unavailable");
-    }
     const responseBody = await response.text();
+    if (!response.ok) {
+      throw new HttpError(503, "Supabase security repository is unavailable", {
+        code: "SUPABASE_REPOSITORY_UNAVAILABLE",
+        details: {
+          repository: "supabase",
+          httpStatus: response.status,
+          errorCode: safeSupabaseErrorCode(responseBody),
+        },
+      });
+    }
     if (!responseBody) return undefined as T;
     return JSON.parse(responseBody) as T;
+  }
+}
+
+function isUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+function safeSupabaseErrorCode(responseBody: string): string | null {
+  try {
+    const parsed = JSON.parse(responseBody) as { code?: unknown };
+    return typeof parsed.code === "string" && /^[A-Z0-9_]{1,32}$/i.test(parsed.code)
+      ? parsed.code
+      : null;
+  } catch {
+    return null;
   }
 }
 

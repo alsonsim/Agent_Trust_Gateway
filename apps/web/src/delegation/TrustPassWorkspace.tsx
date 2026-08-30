@@ -93,6 +93,10 @@ function departmentLabel(department: Department): string {
     : department.slice(0, 1).toUpperCase() + department.slice(1);
 }
 
+function countLabel(count: number, singular: string, plural = singular + "s"): string {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
 function formatDateTime(value: string): string {
   return new Intl.DateTimeFormat(undefined, {
     dateStyle: "medium",
@@ -678,8 +682,35 @@ export function TrustPassWorkspace({
     (contract) =>
       contract.status === "active" && !isExpired(contract.expiresAt, serverNowMs),
   ).length;
-  const requestedByYouCount = pendingOutgoingRequestCount + activeTaskCount;
-  const requestedFromYouCount = pendingApprovalCount + activeIssuedPassCount;
+  const trustPassTabs = [
+    {
+      value: "requested-by-you",
+      label: "Requested by you",
+      description: "Requests + approved tasks",
+      firstMetric: countLabel(pendingOutgoingRequestCount, "pending", "pending"),
+      secondMetric: countLabel(activeTaskCount, "approved", "approved"),
+      ariaLabel:
+        `Requested by you. ${countLabel(pendingOutgoingRequestCount, "pending request")}. ` +
+        `${countLabel(activeTaskCount, "approved task")} ready.`,
+    },
+    {
+      value: "requested-from-you",
+      label: "Requested from you",
+      description: "Approvals + issued passes",
+      firstMetric: countLabel(pendingApprovalCount, "to review", "to review"),
+      secondMetric: countLabel(activeIssuedPassCount, "issued", "issued"),
+      ariaLabel:
+        `Requested from you. ${countLabel(pendingApprovalCount, "request to review", "requests to review")}. ` +
+        `${countLabel(activeIssuedPassCount, "active issued pass", "active issued passes")}.`,
+    },
+  ] satisfies Array<{
+    value: TrustPassTab;
+    label: string;
+    description: string;
+    firstMetric: string;
+    secondMetric: string;
+    ariaLabel: string;
+  }>;
 
   return (
     <section className="trust-pass-panel" aria-labelledby="trust-pass-title">
@@ -701,27 +732,31 @@ export function TrustPassWorkspace({
         aria-label="Trust Pass views"
         aria-orientation="horizontal"
       >
-        {([
-          ["requested-by-you", "Requested by you", requestedByYouCount],
-          ["requested-from-you", "Requested from you", requestedFromYouCount],
-        ] as Array<[TrustPassTab, string, number]>).map(([value, label, count]) => (
+        {trustPassTabs.map((view) => (
           <button
             type="button"
             role="tab"
-            key={value}
-            id={`trust-${value}-tab`}
+            key={view.value}
+            id={`trust-${view.value}-tab`}
             aria-controls="trust-pass-content-panel"
-            aria-selected={tab === value}
-            tabIndex={tab === value ? 0 : -1}
-            className={tab === value ? "active" : ""}
-            onClick={() => setTab(value)}
-            onKeyDown={(event) => handleTabKeyDown(event, value)}
+            aria-label={view.ariaLabel}
+            aria-selected={tab === view.value}
+            tabIndex={tab === view.value ? 0 : -1}
+            className={tab === view.value ? "active" : ""}
+            onClick={() => setTab(view.value)}
+            onKeyDown={(event) => handleTabKeyDown(event, view.value)}
             ref={(node) => {
-              tabButtonRefs.current[value] = node;
+              tabButtonRefs.current[view.value] = node;
             }}
           >
-            {label}
-            {count > 0 && <span className="trust-tab-count">{count}</span>}
+            <span className="trust-tab-copy">
+              <strong>{view.label}</strong>
+              <small>{view.description}</small>
+            </span>
+            <span className="trust-tab-metrics" aria-hidden="true">
+              <span>{view.firstMetric}</span>
+              <span>{view.secondMetric}</span>
+            </span>
           </button>
         ))}
       </nav>

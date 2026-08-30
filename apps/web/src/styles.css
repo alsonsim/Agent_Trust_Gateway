@@ -2360,8 +2360,7 @@ textarea:focus {
   white-space: nowrap;
 }
 
-.trust-sidebar-count,
-.trust-tab-count {
+.trust-sidebar-count {
   min-width: 20px;
   height: 20px;
   display: inline-grid;
@@ -2380,7 +2379,7 @@ textarea:focus {
   flex: 1 1 0;
   margin: 0 auto;
   display: grid;
-  grid-template-rows: auto auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 17px;
@@ -2414,40 +2413,95 @@ textarea:focus {
 }
 
 .trust-pass-tabs {
-  display: flex;
-  gap: 3px;
-  padding: 8px 18px;
-  overflow-x: auto;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+  padding: 10px 18px;
   border-bottom: 1px solid #e4e2da;
   background: #f6f4ee;
 }
 
 .trust-pass-tabs button {
-  min-height: 32px;
-  flex: 0 0 auto;
-  display: inline-flex;
+  min-width: 0;
+  min-height: 58px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 7px;
-  border: 0;
-  border-radius: 8px;
-  padding: 0 12px;
-  color: #767770;
-  background: transparent;
-  font-size: 12px;
-  font-weight: 750;
+  gap: 12px;
+  border: 1px solid #dfddd5;
+  border-radius: 11px;
+  padding: 9px 12px;
+  color: #63645d;
+  background: rgba(255, 255, 255, 0.46);
+  text-align: left;
   cursor: pointer;
+}
+
+.trust-pass-tabs button:hover {
+  border-color: #cbc5e7;
+  background: rgba(255, 255, 255, 0.75);
+}
+
+.trust-pass-tabs button:focus-visible {
+  outline: 3px solid rgba(116, 95, 223, 0.24);
+  outline-offset: 2px;
 }
 
 .trust-pass-tabs button.active {
   color: #4e3ca5;
+  border-color: #bcb1ed;
   background: white;
-  box-shadow: 0 3px 12px rgba(49, 45, 70, 0.1);
+  box-shadow: 0 4px 14px rgba(49, 45, 70, 0.12);
 }
 
-.trust-tab-count {
-  min-width: 17px;
-  height: 17px;
-  font-size: 11px;
+.trust-tab-copy {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.trust-tab-copy strong {
+  overflow: hidden;
+  color: #393a35;
+  font-size: 13px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trust-pass-tabs button.active .trust-tab-copy strong {
+  color: #4e3ca5;
+}
+
+.trust-tab-copy small {
+  overflow: hidden;
+  color: #85867f;
+  font-size: 10px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trust-tab-metrics {
+  display: grid;
+  justify-items: end;
+  gap: 4px;
+}
+
+.trust-tab-metrics > span {
+  border-radius: 999px;
+  padding: 3px 7px;
+  color: #77786f;
+  background: #eceae4;
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.trust-pass-tabs button.active .trust-tab-metrics > span {
+  color: #5b49b4;
+  background: #eeeafb;
 }
 
 .trust-pass-scroll {
@@ -2549,6 +2603,11 @@ textarea:focus {
   gap: 9px;
   color: var(--muted);
   font-size: 12px;
+}
+
+.trust-grouped-view {
+  display: grid;
+  gap: 14px;
 }
 
 .trust-view-grid,
@@ -3836,7 +3895,18 @@ textarea:focus {
   }
 
   .trust-pass-tabs {
-    padding: 7px 10px;
+    grid-template-columns: 1fr;
+    gap: 6px;
+    padding: 8px 10px;
+  }
+
+  .trust-pass-tabs button {
+    min-height: 52px;
+  }
+
+  .trust-tab-copy strong,
+  .trust-tab-copy small {
+    white-space: normal;
   }
 
   .trust-pass-scroll {

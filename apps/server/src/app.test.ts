@@ -310,7 +310,7 @@ describe("HTTP identity and authorization boundary", () => {
     expect(allowed.statusCode).toBe(200);
     expect(allowed.json()).toMatchObject({
       path: "README.md",
-      content: expect.stringContaining("frontend engineering workspace"),
+      content: expect.stringContaining("frontend engineering owner-scoped workspace"),
       decision: {
         action: "file.read",
         targetType: "file",

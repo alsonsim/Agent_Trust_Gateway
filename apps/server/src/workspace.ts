@@ -1,4 +1,5 @@
-import { cp, mkdir, stat, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { cp, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Agent, Department, WorkspaceProfile } from "./types.js";
 
@@ -8,11 +9,30 @@ export function workspaceProfileId(department: Department): string {
   return "department-" + department;
 }
 
+export function workspaceOwnerKey(ownerId: string): string {
+  return "owner-" + createHash("sha256").update(ownerId, "utf8").digest("hex").slice(0, 24);
+}
+
+export function runtimeWorkspaceStateId(
+  department: Department,
+  ownerId: string,
+): string {
+  return workspaceProfileId(department) + "-" + workspaceOwnerKey(ownerId);
+}
+
 export class WorkspaceManager {
   constructor(private readonly root: string) {}
 
   workspacePath(department: Department): string {
     return path.join(this.root, department);
+  }
+
+  ownerWorkspacePath(department: Department, ownerId: string): string {
+    return path.join(
+      this.workspacePath(department),
+      ".owners",
+      workspaceOwnerKey(ownerId),
+    );
   }
 
   profile(department: Department): WorkspaceProfile {
@@ -32,29 +52,52 @@ export class WorkspaceManager {
   }
 
   async ensureProfile(profile: WorkspaceProfile): Promise<void> {
-    await mkdir(profile.workspacePath, { recursive: true });
-    await this.ensureStandardDirectories(profile.workspacePath);
+    await this.ensureWorkspace(profile, profile.workspacePath, "role template");
+  }
+
+  async ensureOwnerWorkspace(
+    profile: WorkspaceProfile,
+    ownerId: string,
+  ): Promise<string> {
+    const workspacePath = this.ownerWorkspacePath(profile.department, ownerId);
+    await this.ensureWorkspace(profile, workspacePath, "owner-scoped");
+    return workspacePath;
+  }
+
+  private async ensureWorkspace(
+    profile: WorkspaceProfile,
+    workspacePath: string,
+    scopeLabel: "role template" | "owner-scoped",
+  ): Promise<void> {
+    await mkdir(workspacePath, { recursive: true });
+    await this.ensureStandardDirectories(workspacePath);
     await writeOnce(
-      path.join(profile.workspacePath, ".gitignore"),
+      path.join(workspacePath, ".gitignore"),
       [".codex/", "node_modules/", "dist/", ".env", "*.log", ""].join("\n"),
     );
     await writeOnce(
-      path.join(profile.workspacePath, "README.md"),
+      path.join(workspacePath, "README.md"),
       [
-        "# " + profile.department + " engineering workspace",
+        "# " + profile.department + " engineering " + scopeLabel + " workspace",
         "",
-        "This persistent workspace is shared by authorized " +
-          profile.department +
-          " engineering Agents.",
-        "Only this role workspace is projected into the Agent Runtime.",
+        scopeLabel === "owner-scoped"
+          ? "This persistent workspace is private to one authenticated owner within the " +
+            profile.department +
+            " role."
+          : "This directory provides the managed template for the " +
+            profile.department +
+            " role.",
+        scopeLabel === "owner-scoped"
+          ? "Only this owner's workspace is projected into the Agent Runtime."
+          : "Writable Agent workspaces are created in owner-scoped child directories.",
         "",
       ].join("\n"),
     );
     await writeOnce(
-      path.join(profile.workspacePath, "PROJECT_BRIEF.md"),
+      path.join(workspacePath, "PROJECT_BRIEF.md"),
       projectBrief(profile.department),
     );
-    await this.writeProfileInstructions(profile);
+    await this.writeProfileInstructions(profile, workspacePath);
   }
 
   async importLegacyWorkspace(
@@ -63,7 +106,9 @@ export class WorkspaceManager {
   ): Promise<void> {
     const source = path.resolve(agent.workspacePath);
     const root = path.resolve(this.root);
-    const destinationRoot = path.resolve(profile.workspacePath);
+    const destinationRoot = path.resolve(
+      this.ownerWorkspacePath(profile.department, agent.ownerId),
+    );
     if (source === destinationRoot || !isInside(root, source) || source === root) return;
 
     try {
@@ -73,30 +118,50 @@ export class WorkspaceManager {
       throw error;
     }
 
-    const destination = path.join(
-      destinationRoot,
-      "legacy-agent-workspaces",
-      agent.id,
-    );
-    await mkdir(path.dirname(destination), { recursive: true });
-    await cp(source, destination, {
+    const ownersRoot = path.resolve(profile.workspacePath, ".owners");
+    const copyOptions = {
       recursive: true,
       force: false,
       errorOnExist: false,
       preserveTimestamps: true,
-    });
+      filter: (sourcePath: string) => {
+        const candidate = path.resolve(sourcePath);
+        return !isSameOrInside(ownersRoot, candidate) &&
+          !isSameOrInside(destinationRoot, candidate);
+      },
+    } as const;
+    if (isSameOrInside(source, destinationRoot)) {
+      const stagingRoot = await mkdtemp(path.join(root, ".workspace-migration-"));
+      const stagedWorkspace = path.join(stagingRoot, "workspace");
+      try {
+        await cp(source, stagedWorkspace, copyOptions);
+        await cp(stagedWorkspace, destinationRoot, {
+          recursive: true,
+          force: false,
+          errorOnExist: false,
+          preserveTimestamps: true,
+        });
+      } finally {
+        await rm(stagingRoot, { recursive: true, force: true });
+      }
+    } else {
+      await cp(source, destinationRoot, copyOptions);
+    }
   }
 
   async writeInstructions(agent: Agent): Promise<void> {
     // Shared AGENTS.md contains only role-safe rules. AgentService injects the
     // selected Agent's own identity and instructions into every Runtime prompt.
-    await this.writeProfileInstructions({
-      id: agent.workspaceProfileId,
-      department: agent.department,
-      workspacePath: agent.workspacePath,
-      createdAt: agent.createdAt,
-      updatedAt: agent.updatedAt,
-    });
+    await this.writeProfileInstructions(
+      {
+        id: agent.workspaceProfileId,
+        department: agent.department,
+        workspacePath: this.workspacePath(agent.department),
+        createdAt: agent.createdAt,
+        updatedAt: agent.updatedAt,
+      },
+      agent.workspacePath,
+    );
   }
 
   private async ensureStandardDirectories(workspacePath: string): Promise<void> {
@@ -107,7 +172,10 @@ export class WorkspaceManager {
     );
   }
 
-  private async writeProfileInstructions(profile: WorkspaceProfile): Promise<void> {
+  private async writeProfileInstructions(
+    profile: WorkspaceProfile,
+    workspacePath: string,
+  ): Promise<void> {
     const content = [
       "# Platform-managed engineering workspace rules",
       "",
@@ -126,11 +194,17 @@ export class WorkspaceManager {
     ]
       .filter((line, index, lines) => !(line === "" && lines[index - 1] === ""))
       .join("\n");
-    await writeFile(path.join(profile.workspacePath, "AGENTS.md"), content, "utf8");
+    await writeFile(path.join(workspacePath, "AGENTS.md"), content, "utf8");
   }
 }
 
 function isInside(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative !== "" && relative !== ".." && !relative.startsWith(".." + path.sep);
+}
+
+function isSameOrInside(root: string, candidate: string): boolean {
+  if (root === candidate) return true;
   const relative = path.relative(root, candidate);
   return relative !== "" && relative !== ".." && !relative.startsWith(".." + path.sep);
 }

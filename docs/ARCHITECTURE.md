@@ -76,19 +76,23 @@ requested path, never file contents.
 The authenticated backend principal, not the browser, supplies an Agent's
 `department`. New Agents receive the deterministic profile
 `department-frontend`, `department-backend`, or `department-qa`; each profile
-has one persistent workspace under `AGENT_WORKSPACE_ROOT/<role>`. The three demo
-identities map one-to-one to these profiles. Agents in the same role share that
-workspace and Runs for one profile are serialized, while Agent APIs still check
-the exact stored owner ID. Existing UUID-named workspaces are retained on disk
-during JSON-store migration and are not silently mounted into another profile.
+is a role template under `AGENT_WORKSPACE_ROOT/<role>`. Each exact owner receives
+a private writable child at `<role>/.owners/<hashed-owner-id>`; Agents owned by
+that same principal share it and their Runs are serialized. A different
+principal assigned the same role receives a different child workspace, while
+Agent APIs continue to check the exact stored owner ID. Legacy workspace content
+is copied only when its stored path maps unambiguously to one owner. A path
+shared by multiple owners is left in place for recovery rather than cloned into
+either private workspace.
 
 `ContainerCodexRunner` creates a disposable projection of only the selected
-profile before launching Codex. It excludes symlinks and every path classified
+owner-scoped profile workspace before launching Codex. It excludes symlinks and every path classified
 as protected by `workspace-file-policy.ts`, then mounts that projection as
 `/workspace`. The Runtime receives neither the repository root nor the shared
-control-plane Codex home; it receives a profile-scoped Codex home containing
-only generated CLI configuration and exec policy. The Runtime root filesystem
-is read-only, capabilities are dropped, and its network is disabled.
+control-plane Codex home; it receives an owner-and-role-scoped Codex home
+containing only generated CLI configuration, exec policy, and that owner's
+session state. The Runtime root filesystem is read-only, capabilities are
+dropped, and its network is disabled.
 
 This establishes a real filesystem boundary for role-owned source and secret
 isolation. A network-disabled Runtime cannot make direct model-provider calls;
@@ -125,9 +129,9 @@ Existing Runs remain readable to their owner for audit and troubleshooting.
 
 ```text
 data/launchpad.json       Agent, message, and Run metadata
-workspaces/frontend/      Frontend role workspace
-workspaces/backend/       Backend role workspace
-workspaces/qa/            QA role workspace
+workspaces/frontend/.owners/<hash>/  Frontend owner workspace
+workspaces/backend/.owners/<hash>/   Backend owner workspace
+workspaces/qa/.owners/<hash>/        QA owner workspace
 codex-home/               Codex configuration and sessions
 ```
 
@@ -176,7 +180,8 @@ Both providers use argv-only process execution, bound output and time, resume
 the stored Codex thread, and escalate termination after a grace period. The
 role-workspace isolation guarantee applies to `ContainerCodexRunner`; the legacy
 local-process runner remains a development compatibility path and must not be
-used as a multi-tenant boundary.
+used as a multi-tenant boundary. It still uses the same owner-and-role-scoped
+Codex home so local Supabase development does not mix session files.
 
 ## Deployment profiles
 

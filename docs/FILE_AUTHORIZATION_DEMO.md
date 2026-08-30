@@ -135,10 +135,12 @@ be persisted, access fails closed.
 ## Engineering-role workspace isolation
 
 New Agents are bound by the backend to the authenticated Frontend, Backend, or
-QA role and use that role's persistent workspace profile.
+QA role and use an exact-owner writable workspace beneath that role's persistent
+profile. A second Supabase principal assigned the same role receives a separate
+workspace and Runtime Codex home.
 The browser cannot choose a workspace. In the disposable container Runtime,
-only a filtered projection of that role workspace is mounted. Repository
-source, other roles, symlinks, `.env`/`.env.*`, credentials, private
+only a filtered projection of that owner's role workspace is mounted. Repository
+source, other owners or roles, symlinks, `.env`/`.env.*`, credentials, private
 keys, and protected directories are absent from that filesystem projection.
 Safe files such as `README.md` remain available.
 

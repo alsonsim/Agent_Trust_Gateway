@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import type { AppConfig } from "./config.js";
 import { RunCancelledError } from "./errors.js";
+import { prepareScopedCodexHome, runtimeStateKey } from "./runtime-state.js";
 import type {
   AgentRunner,
   RunUsage,
@@ -136,13 +137,17 @@ export class CodexRunner implements AgentRunner {
       throw new Error("Agent already has an active Codex process");
     }
 
+    const codexHome = await prepareScopedCodexHome(
+      this.config,
+      runtimeStateKey(request),
+    );
     const args = buildCodexArgs(request, this.config.codexSandboxMode);
     let child: ChildProcess;
     try {
       child = this.startCodex(args, {
         cwd: request.workspacePath,
         stdio: ["ignore", "pipe", "pipe"],
-      });
+      }, codexHome);
     } catch (error) {
       throw this.executableStartError(error);
     }
@@ -258,42 +263,17 @@ export class CodexRunner implements AgentRunner {
     }
   }
 
-  private childEnvironment(): NodeJS.ProcessEnv {
-    const inheritedNames = [
-      "PATH",
-      "HOME",
-      "TMPDIR",
-      "LANG",
-      "LC_ALL",
-      "SSL_CERT_FILE",
-      "SSL_CERT_DIR",
-      "HTTP_PROXY",
-      "HTTPS_PROXY",
-      "NO_PROXY",
-      "NODE_EXTRA_CA_CERTS",
-      "TERM",
-    ] as const;
-    const environment: NodeJS.ProcessEnv = {
-      CODEX_HOME: this.config.codexHome,
-      ARK_API_KEY: this.config.arkApiKey,
-      NO_COLOR: "1",
-    };
-    for (const name of inheritedNames) {
-      if (process.env[name] !== undefined) environment[name] = process.env[name];
-    }
-    return environment;
-  }
-
   private startCodex(
     args: string[],
     options: {
       cwd?: string;
       stdio: "ignore" | ["ignore", "pipe", "pipe"];
     },
+    codexHome = this.config.codexHome,
   ): ChildProcess {
     const spawnOptions = {
       ...options,
-      env: this.childEnvironment(),
+      env: buildCodexChildEnvironment(this.config, codexHome),
     };
     if (this.usesWindowsCommandShell()) {
       return spawn(
@@ -336,6 +316,38 @@ export class CodexRunner implements AgentRunner {
       "Unable to start Codex CLI at " + this.config.codexBin + ". " + configuredGuidance,
     );
   }
+}
+
+export function buildCodexChildEnvironment(
+  config: AppConfig,
+  codexHome: string,
+  sourceEnvironment: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  const inheritedNames = [
+    "PATH",
+    "HOME",
+    "TMPDIR",
+    "LANG",
+    "LC_ALL",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "NODE_EXTRA_CA_CERTS",
+    "TERM",
+  ] as const;
+  const environment: NodeJS.ProcessEnv = {
+    CODEX_HOME: codexHome,
+    ARK_API_KEY: config.arkApiKey,
+    NO_COLOR: "1",
+  };
+  for (const name of inheritedNames) {
+    if (sourceEnvironment[name] !== undefined) {
+      environment[name] = sourceEnvironment[name];
+    }
+  }
+  return environment;
 }
 
 export function buildWindowsCmdCommand(executable: string, args: string[]): string {

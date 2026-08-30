@@ -339,24 +339,29 @@ flowchart LR
 ```
 
 The first turn uses `codex exec`; later turns resume the stored Codex thread.
-Engineering-role workspaces are persistent shared profiles, so deleting an
-Agent removes its metadata but retains that role's workspace.
+Engineering roles provide persistent workspace templates, with writable files
+and Codex session state scoped to the exact authenticated owner. Deleting an
+Agent removes its metadata but retains that owner's role workspace.
 
 ## Role workspace and Runtime isolation
 
 Agent creation derives Frontend, Backend, or QA from the authenticated backend
 principal. New Agents share one persistent, deterministic workspace profile per
-engineering role. Agent and protected-resource routes still require an exact
-human owner-ID match; sharing a role does not grant cross-owner access.
+engineering role, then receive a private writable child keyed by a one-way hash
+of the exact owner ID. Agents owned by the same principal and role share that
+child; a second Supabase principal with the same role receives a different
+workspace and Runtime Codex home. Agent and protected-resource routes still
+require an exact human owner-ID match.
 
 The defense-in-depth disposable Runtime receives a filtered projection of only
-that role workspace: application source, other role workspaces, symlinks, and
+that owner's role workspace: application source, other owner/role workspaces, symlinks, and
 credential paths such as `.env` are not mounted. Its root is read-only,
 capabilities are dropped, `no-new-privileges` is set, resource limits apply, and
 direct networking is disabled by default.
 
 The existing local-process runner is a development compatibility path, not a
-shared-role isolation boundary. Connected container runs require the next
+multi-principal isolation boundary. It still uses an owner-scoped Codex home so
+Windows/Supabase development does not mix session files. Connected container runs require the next
 milestone, a trusted model proxy/workload-identity adapter. Direct Ark access is
 available only through the two explicit insecure local-debugging opt-ins above,
 which deliberately weaken both credential and network isolation.

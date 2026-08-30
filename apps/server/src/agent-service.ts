@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import path from "node:path";
 import type { AppConfig } from "./config.js";
 import { isArkConfigured } from "./config.js";
 import { HttpError, RunCancelledError } from "./errors.js";
@@ -15,7 +16,7 @@ import {
   type RuntimeAuthorizationContext,
   type UpdateAgentInput,
 } from "./types.js";
-import { WorkspaceManager } from "./workspace.js";
+import { runtimeWorkspaceStateId, WorkspaceManager } from "./workspace.js";
 
 const now = () => new Date().toISOString();
 
@@ -38,11 +39,28 @@ export class AgentService {
     for (const department of DEPARTMENTS) {
       await this.workspaces.ensureProfile(this.workspaces.profile(department));
     }
+    const ownersByLegacyWorkspace = new Map<string, Set<string>>();
     for (const agent of agentsBeforeProfileMigration) {
-      await this.workspaces.importLegacyWorkspace(
-        agent,
+      const workspaceKey = normalizedWorkspaceKey(agent.workspacePath);
+      const owners = ownersByLegacyWorkspace.get(workspaceKey) ?? new Set<string>();
+      owners.add(agent.ownerId);
+      ownersByLegacyWorkspace.set(workspaceKey, owners);
+    }
+    const importedLegacyWorkspaces = new Set<string>();
+    for (const agent of agentsBeforeProfileMigration) {
+      await this.workspaces.ensureOwnerWorkspace(
         this.workspaces.profile(agent.department),
+        agent.ownerId,
       );
+      const workspaceKey = normalizedWorkspaceKey(agent.workspacePath);
+      const owners = ownersByLegacyWorkspace.get(workspaceKey);
+      if (owners?.size === 1 && !importedLegacyWorkspaces.has(workspaceKey)) {
+        await this.workspaces.importLegacyWorkspace(
+          agent,
+          this.workspaces.profile(agent.department),
+        );
+        importedLegacyWorkspaces.add(workspaceKey);
+      }
     }
     await this.store.mutate((database) => {
       const timestamp = now();
@@ -67,15 +85,13 @@ export class AgentService {
         }
       }
       for (const agent of database.agents) {
-        const profile = database.workspaceProfiles.find(
-          (item) => item.id === agent.workspaceProfileId,
+        // The role profile remains shared metadata, while writable files are
+        // isolated by exact owner within that role.
+        agent.workspacePath = this.workspaces.ownerWorkspacePath(
+          agent.department,
+          agent.ownerId,
         );
-        if (profile) {
-          // Legacy UUID workspaces stay on disk for recovery, but new and
-          // migrated Agent execution uses the deterministic department profile.
-          agent.workspacePath = profile.workspacePath;
-          agent.updatedAt = timestamp;
-        }
+        agent.updatedAt = timestamp;
         if (agent.status === "busy") {
           agent.status = "ready";
           agent.updatedAt = now();
@@ -108,6 +124,10 @@ export class AgentService {
     const id = randomUUID();
     const profile = this.workspaces.profile(department);
     await this.workspaces.ensureProfile(profile);
+    const ownerWorkspacePath = await this.workspaces.ensureOwnerWorkspace(
+      profile,
+      ownerId,
+    );
     const agent: Agent = {
       id,
       department,
@@ -118,7 +138,7 @@ export class AgentService {
       instructions: input.instructions?.trim() ?? "",
       status: "ready",
       revokedAt: null,
-      workspacePath: profile.workspacePath,
+      workspacePath: ownerWorkspacePath,
       codexThreadId: null,
       lastError: null,
       createdAt: timestamp,
@@ -282,12 +302,13 @@ export class AgentService {
       const profileBusy = database.runs.some((candidate) => {
         if (candidate.status !== "queued" && candidate.status !== "running") return false;
         const candidateAgent = database.agents.find((item) => item.id === candidate.agentId);
-        return candidateAgent?.workspaceProfileId === storedAgent.workspaceProfileId;
+        return candidateAgent?.workspaceProfileId === storedAgent.workspaceProfileId &&
+          candidateAgent.ownerId === storedAgent.ownerId;
       });
       if (profileBusy) {
         throw new HttpError(
           409,
-          "Another Agent is using this shared role workspace",
+          "Another Agent is using this owner's role workspace",
         );
       }
       database.runs.push(run);
@@ -367,7 +388,10 @@ export class AgentService {
       }
       const result = await this.runner.run({
         agentId: agentAtStart.id,
-        workspaceProfileId: agentAtStart.workspaceProfileId,
+        workspaceProfileId: runtimeWorkspaceStateId(
+          agentAtStart.department,
+          agentAtStart.ownerId,
+        ),
         workspacePath: agentAtStart.workspacePath,
         prompt: runtimePrompt(agentAtStart, run.prompt),
         threadId: agentAtStart.codexThreadId,
@@ -471,4 +495,9 @@ function runtimePrompt(agent: Agent, userPrompt: string): string {
   ]
     .filter((line, index, lines) => !(line === "" && lines[index - 1] === ""))
     .join("\n");
+}
+
+function normalizedWorkspaceKey(workspacePath: string): string {
+  const resolved = path.resolve(workspacePath);
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
 }

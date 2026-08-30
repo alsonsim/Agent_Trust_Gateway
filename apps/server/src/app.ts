@@ -14,7 +14,7 @@ import type { AppConfig } from "./config.js";
 import type { DelegationService } from "./delegation-service.js";
 import { HttpError } from "./errors.js";
 import {
-  FINANCE_PRINCIPAL,
+  FRONTEND_PRINCIPAL,
   type HumanPrincipal,
 } from "./identity-provider.js";
 import type { TrustGateway } from "./trust-gateway.js";
@@ -134,7 +134,7 @@ export async function createApp(
       if (config.authToken && !validSharedToken(request, config.authToken)) {
         return reply.code(401).send({ error: "Authentication required" });
       }
-      request.principal = { ...FINANCE_PRINCIPAL };
+      request.principal = { ...FRONTEND_PRINCIPAL };
       request.userAccessToken = config.authToken || "legacy-loopback";
       return;
     }
@@ -312,7 +312,7 @@ export async function createApp(
       agents:
         config.authMode === "legacy"
           ? service.listAgents()
-          : service.listAgentsByOwner(principal.id),
+          : service.listAgents(principal.id),
     };
   });
 
@@ -412,6 +412,10 @@ export async function createApp(
   app.get("/api/resources", async (request) => ({
     resources: await gateway.listResources(requirePrincipal(request)),
   }));
+
+  app.post("/api/authorization-probes/cross-owner-agent", async (request) =>
+    gateway.probeCrossOwnerAgent(requirePrincipal(request), String(request.id)),
+  );
 
   app.post("/api/agents/:id/resources/:resourceId/read", async (request) => {
     const { id, resourceId } = resourceParams.parse(request.params);

@@ -130,11 +130,11 @@ export function extractRuntimeActions(prompt: string): RuntimeAction[] {
   };
 
   for (const match of prompt.matchAll(/\b(read|cat|open|view|inspect)\s+(?:the\s+)?(?:file\s+)?[`"']?([^\s`"',;]+)/gi)) {
-    const candidate = match[2];
+    const candidate = normalizeExtractedPath(match[2]);
     if (candidate && looksLikePath(candidate)) add({ kind: "file.read", path: candidate });
   }
   for (const match of prompt.matchAll(/\b(write|edit|create|append|save)(?:\s+(?:to|into))?\s+(?:the\s+)?(?:file\s+)?[`"']?([^\s`"',;]+)/gi)) {
-    const candidate = match[2];
+    const candidate = normalizeExtractedPath(match[2]);
     if (candidate && looksLikePath(candidate)) add({ kind: "file.write", path: candidate });
   }
 
@@ -280,6 +280,11 @@ function makeDecision(
 
 function looksLikePath(value: string): boolean {
   return value.startsWith(".") || value.includes("/") || value.includes("\\") || value.includes(".");
+}
+
+function normalizeExtractedPath(value: string | undefined): string | undefined {
+  if (!value) return value;
+  return /[A-Za-z0-9_\])}][.!?]$/.test(value) ? value.slice(0, -1) : value;
 }
 
 function safePathLabel(value: string): string {

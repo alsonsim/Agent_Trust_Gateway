@@ -2,9 +2,9 @@ import { digestExactPrompt } from "./delegation-digest.js";
 import type { Department } from "./types.js";
 
 export type CapabilityId =
-  | "finance.cost-analysis"
-  | "hr.people-operations"
-  | "research.evidence-synthesis";
+  | "frontend.interface-implementation"
+  | "backend.service-implementation"
+  | "qa.release-validation";
 
 export type PersonalInformationAssessment = "none_detected" | "possible";
 
@@ -27,38 +27,37 @@ export interface CapabilityDiscovery {
 
 export const CAPABILITY_CATALOG: readonly CapabilityDefinition[] = Object.freeze([
   Object.freeze({
-    id: "finance.cost-analysis",
-    label: "Finance cost analysis",
-    providerDepartment: "finance",
-    description: "Budget, spend, forecast, and financial-impact analysis.",
+    id: "frontend.interface-implementation",
+    label: "Frontend interface implementation",
+    providerDepartment: "frontend",
+    description: "Typed interfaces, components, layout, and accessibility implementation.",
   }),
   Object.freeze({
-    id: "hr.people-operations",
-    label: "HR people operations",
-    providerDepartment: "hr",
-    description: "People policies, onboarding, benefits, and employee operations.",
+    id: "backend.service-implementation",
+    label: "Backend service implementation",
+    providerDepartment: "backend",
+    description: "API, service, data-model, and server-side authorization implementation.",
   }),
   Object.freeze({
-    id: "research.evidence-synthesis",
-    label: "Research evidence synthesis",
-    providerDepartment: "research",
-    description: "Literature, study, source, and evidence synthesis.",
+    id: "qa.release-validation",
+    label: "QA release validation",
+    providerDepartment: "qa",
+    description: "Regression, smoke-test, acceptance, and release-readiness validation.",
   }),
 ]);
 
 const capabilitySignals: Readonly<Record<CapabilityId, readonly RegExp[]>> = {
-  "finance.cost-analysis": [
-    /\b(?:budget|cost|spend|expense|expenditure|cash flow|financial analysis|financial impact|cost analysis|cost estimate|budget impact|payroll cost|salary spend)\b/i,
-    /\b(?:hire|hiring|headcount)\b[\s\S]{0,80}\b(?:budget|cost|salary|spend|financial)\b/i,
-    /\b(?:budget|cost|salary|spend|financial)\b[\s\S]{0,80}\b(?:hire|hiring|headcount)\b/i,
+  "frontend.interface-implementation": [
+    /\b(?:frontend|user interface|ui implementation|react|component|client-side|web interface|page layout|css|accessibility)\b/i,
+    /\b(?:build|create|implement|design)\b[\s\S]{0,80}\b(?:screen|page|component|interface|layout|form)\b/i,
   ],
-  "hr.people-operations": [
-    /\b(?:people operations|employee relations|onboarding|offboarding|leave policy|benefits policy|performance review|recruitment workflow|hiring policy|workforce policy|staff retention)\b/i,
-    /\b(?:employee|staff|workforce)\b[\s\S]{0,60}\b(?:policy|benefits|onboarding|retention|relations)\b/i,
+  "backend.service-implementation": [
+    /\b(?:backend|api|endpoint|database|data model|schema|server|service layer|middleware|authentication|authorization)\b/i,
+    /\b(?:build|create|implement|design)\b[\s\S]{0,80}\b(?:handler|endpoint|service|api|schema|database)\b/i,
   ],
-  "research.evidence-synthesis": [
-    /\b(?:evidence synthesis|literature review|systematic review|research evidence|study findings|citation review|source comparison|research synthesis)\b/i,
-    /\b(?:synthesize|compare|review|summarize)\b[\s\S]{0,60}\b(?:papers|studies|sources|evidence|literature)\b/i,
+  "qa.release-validation": [
+    /\b(?:qa|quality assurance|test plan|test suite|smoke test|regression test|release validation|release readiness|acceptance test)\b/i,
+    /\b(?:test|validate|verify)\b[\s\S]{0,80}\b(?:release|workflow|feature|regression|failure|authorization)\b/i,
   ],
 };
 

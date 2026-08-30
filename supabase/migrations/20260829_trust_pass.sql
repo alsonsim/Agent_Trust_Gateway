@@ -37,9 +37,9 @@ parallel safe
 set search_path = ''
 as $function$
   select case capability
-    when 'finance.cost-analysis' then 'finance'
-    when 'hr.people-operations' then 'hr'
-    when 'research.evidence-synthesis' then 'research'
+    when 'frontend.interface-implementation' then 'frontend'
+    when 'backend.service-implementation' then 'backend'
+    when 'qa.release-validation' then 'qa'
     else null
   end
 $function$;
@@ -208,8 +208,8 @@ create table public.delegation_requests (
     pg_catalog.char_length(requester_display_name) between 1 and 200
   ),
   constraint delegation_requests_department check (
-    requester_department in ('finance', 'hr', 'research')
-    and provider_department in ('finance', 'hr', 'research')
+    requester_department in ('frontend', 'backend', 'qa')
+    and provider_department in ('frontend', 'backend', 'qa')
     and requester_department <> provider_department
   ),
   constraint delegation_requests_capability check (
@@ -267,8 +267,8 @@ create table public.delegation_contracts (
     provider_department = public._trust_pass_capability_department(required_capability)
   ),
   constraint delegation_contracts_departments check (
-    provider_department in ('finance', 'hr', 'research')
-    and grantee_department in ('finance', 'hr', 'research')
+    provider_department in ('frontend', 'backend', 'qa')
+    and grantee_department in ('frontend', 'backend', 'qa')
     and provider_department <> grantee_department
     and approving_human_id <> grantee_human_id
   ),

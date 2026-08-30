@@ -57,7 +57,7 @@ class ControlledRunner extends FakeRunner {
     };
   }
 
-  finish(output = "Approved finance result"): void {
+  finish(output = "Approved frontend result"): void {
     this.finishFirst({ output, threadId: "must-not-persist", usage: null });
   }
 }
@@ -130,7 +130,7 @@ async function login(app: Awaited<ReturnType<typeof createApp>>, email: string) 
 describe("HTTP identity and authorization boundary", () => {
   it("reports the resolved Codex executable and availability", async () => {
     const { app, config } = await makeHarness();
-    const cookie = await login(app, "finance@agent-gateway.local");
+    const cookie = await login(app, "frontend@bytedance.com");
     const response = await app.inject({
       method: "GET",
       url: "/api/system",
@@ -151,32 +151,32 @@ describe("HTTP identity and authorization boundary", () => {
     const denied = await app.inject({ method: "GET", url: "/api/agents" });
     expect(denied.statusCode).toBe(401);
 
-    const financeCookie = await login(app, "finance@agent-gateway.local");
+    const frontendCookie = await login(app, "frontend@bytedance.com");
     const created = await app.inject({
       method: "POST",
       url: "/api/agents",
-      headers: { cookie: financeCookie },
+      headers: { cookie: frontendCookie },
       payload: {
-        name: "Finance Agent",
+        name: "Frontend Agent",
         ownerId: "22222222-2222-4222-8222-222222222222",
       },
     });
     expect(created.statusCode).toBe(201);
-    const financeAgent = created.json().agent;
-    expect(financeAgent.ownerId).toBe("11111111-1111-4111-8111-111111111111");
+    const frontendAgent = created.json().agent;
+    expect(frontendAgent.ownerId).toBe("11111111-1111-4111-8111-111111111111");
 
-    const hrCookie = await login(app, "hr@agent-gateway.local");
-    const hrList = await app.inject({
+    const backendCookie = await login(app, "backend@bytedance.com");
+    const backendList = await app.inject({
       method: "GET",
       url: "/api/agents",
-      headers: { cookie: hrCookie },
+      headers: { cookie: backendCookie },
     });
-    expect(hrList.json()).toEqual({ agents: [] });
+    expect(backendList.json()).toEqual({ agents: [] });
 
     const crossTenant = await app.inject({
       method: "GET",
-      url: "/api/agents/" + financeAgent.id,
-      headers: { cookie: hrCookie },
+      url: "/api/agents/" + frontendAgent.id,
+      headers: { cookie: backendCookie },
     });
     expect(crossTenant.statusCode).toBe(403);
     expect(crossTenant.json()).toMatchObject({
@@ -190,54 +190,122 @@ describe("HTTP identity and authorization boundary", () => {
     await app.close();
   }, 20_000);
 
+  it("probes a cross-owner Agent through the existing redacted authorization path", async () => {
+    const { app, runner } = await makeHarness();
+    const backendCookie = await login(app, "backend@bytedance.com");
+    const missing = await app.inject({
+      method: "POST",
+      url: "/api/authorization-probes/cross-owner-agent",
+      headers: { cookie: backendCookie },
+    });
+    expect(missing.statusCode).toBe(404);
+    expect(missing.json()).toMatchObject({
+      code: "CROSS_OWNER_AGENT_NOT_FOUND",
+      error: expect.stringContaining("another identity"),
+    });
+
+    const frontendCookie = await login(app, "frontend@bytedance.com");
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/agents",
+      headers: { cookie: frontendCookie },
+      payload: { name: "Private Frontend Agent" },
+    });
+    const agentId = created.json().agent.id as string;
+
+    const denied = await app.inject({
+      method: "POST",
+      url: "/api/authorization-probes/cross-owner-agent",
+      headers: { cookie: backendCookie },
+    });
+    expect(denied.statusCode).toBe(403);
+    expect(denied.json()).toMatchObject({
+      code: "AUTHORIZATION_DENIED",
+      decision: {
+        action: "agent.read",
+        targetType: "agent",
+        targetId: "redacted",
+        targetLabel: "Protected Agent",
+        agentId: null,
+        agentName: null,
+        decision: "deny",
+        reasonCode: "HUMAN_AGENT_OWNER_MISMATCH",
+      },
+    });
+    expect(denied.body).not.toContain(agentId);
+    expect(denied.body).not.toContain("Private Frontend Agent");
+    expect(runner.requests).toHaveLength(0);
+
+    const audit = await app.inject({
+      method: "GET",
+      url: "/api/authorization-decisions?limit=10",
+      headers: { cookie: backendCookie },
+    });
+    expect(audit.json().decisions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          action: "agent.read",
+          agentId: null,
+          agentName: null,
+          targetLabel: "Protected Agent",
+          decision: "deny",
+          reasonCode: "HUMAN_AGENT_OWNER_MISMATCH",
+        }),
+      ]),
+    );
+    await app.close();
+  });
+
   it("allows an owned resource and denies a cross-owner file with audit evidence", async () => {
     const { app, config } = await makeHarness();
-    const cookie = await login(app, "finance@agent-gateway.local");
+    const cookie = await login(app, "frontend@bytedance.com");
     const created = await app.inject({
       method: "POST",
       url: "/api/agents",
       headers: { cookie },
-      payload: { name: "Finance Agent" },
+      payload: { name: "Frontend Agent" },
     });
     const agentId = created.json().agent.id as string;
-    const financeResource = RESOURCE_FIXTURES.find(
-      (resource) => resource.ownerDepartment === "finance",
+    const frontendResource = RESOURCE_FIXTURES.find(
+      (resource) => resource.ownerDepartment === "frontend",
     )!;
-    const hrResource = RESOURCE_FIXTURES.find(
-      (resource) => resource.ownerDepartment === "hr",
+    const backendResource = RESOURCE_FIXTURES.find(
+      (resource) => resource.ownerDepartment === "backend",
     )!;
 
-    const financeResources = await app.inject({
+    const frontendResources = await app.inject({
       method: "GET",
       url: "/api/resources",
       headers: { cookie },
     });
-    expect(financeResources.json().resources).toEqual([
+    expect(frontendResources.json().resources).toEqual([
       expect.objectContaining({
-        id: financeResource.id,
+        id: frontendResource.id,
         ownedByCurrentUser: true,
       }),
     ]);
-    expect(financeResources.body).not.toContain(hrResource.name);
+    expect(frontendResources.body).not.toContain(backendResource.name);
 
     const allowed = await app.inject({
       method: "POST",
-      url: `/api/agents/${agentId}/resources/${financeResource.id}/read`,
+      url: `/api/agents/${agentId}/resources/${frontendResource.id}/read`,
       headers: { cookie },
     });
     expect(allowed.statusCode).toBe(200);
     expect(allowed.json()).toMatchObject({
-      resource: { content: expect.stringContaining("Quarterly budget") },
+      resource: { content: expect.stringContaining("Profile page requirements") },
       decision: { decision: "allow", reasonCode: "OWNER_MATCH" },
     });
 
     const denied = await app.inject({
       method: "POST",
-      url: `/api/agents/${agentId}/resources/${hrResource.id}/read`,
+      url: `/api/agents/${agentId}/resources/${backendResource.id}/read`,
       headers: { cookie },
     });
     expect(denied.statusCode).toBe(403);
-    expect(denied.body).not.toContain("Compensation bands (synthetic)");
+    expect(denied.body).not.toContain(
+      "Authenticate before loading protected profile data.",
+    );
     expect(denied.json()).toMatchObject({
       statusCode: 403,
       code: "AUTHORIZATION_DENIED",
@@ -246,7 +314,7 @@ describe("HTTP identity and authorization boundary", () => {
         id: expect.any(String),
         requestId: expect.any(String),
         agentId,
-        humanEmail: "finance@agent-gateway.local",
+        humanEmail: "frontend@bytedance.com",
         action: "resource.read",
         targetType: "resource",
         decision: "deny",
@@ -255,7 +323,7 @@ describe("HTTP identity and authorization boundary", () => {
         targetLabel: "Protected resource",
       },
     });
-    expect(denied.body).not.toContain(hrResource.name);
+    expect(denied.body).not.toContain(backendResource.name);
 
     const privateCrossOwnerDemo = await app.inject({
       method: "POST",
@@ -271,19 +339,19 @@ describe("HTTP identity and authorization boundary", () => {
         targetLabel: "Protected resource",
       },
     });
-    expect(privateCrossOwnerDemo.body).not.toContain(hrResource.name);
+    expect(privateCrossOwnerDemo.body).not.toContain(backendResource.name);
 
     await rm(
       path.join(
         config.dataDirectory,
         "protected-resources",
-        financeResource.ownerId,
-        financeResource.fileName,
+        frontendResource.ownerId,
+        frontendResource.fileName,
       ),
     );
     const unavailable = await app.inject({
       method: "POST",
-      url: `/api/agents/${agentId}/resources/${financeResource.id}/read`,
+      url: `/api/agents/${agentId}/resources/${frontendResource.id}/read`,
       headers: { cookie },
     });
     expect(unavailable.statusCode).toBe(503);
@@ -307,12 +375,12 @@ describe("HTTP identity and authorization boundary", () => {
 
   it("authorizes workspace file reads and records denied secret and traversal attempts", async () => {
     const { app, service } = await makeHarness();
-    const cookie = await login(app, "finance@agent-gateway.local");
+    const cookie = await login(app, "frontend@bytedance.com");
     const created = await app.inject({
       method: "POST",
       url: "/api/agents",
       headers: { cookie },
-      payload: { name: "Finance Agent" },
+      payload: { name: "Frontend Agent" },
     });
     const agentId = created.json().agent.id as string;
     const workspacePath = service.getAgent(agentId).workspacePath;
@@ -328,7 +396,7 @@ describe("HTTP identity and authorization boundary", () => {
     expect(allowed.statusCode).toBe(200);
     expect(allowed.json()).toMatchObject({
       path: "README.md",
-      content: expect.stringContaining("finance department workspace"),
+      content: expect.stringContaining("frontend engineering owner-scoped workspace"),
       decision: {
         action: "file.read",
         targetType: "file",
@@ -388,27 +456,27 @@ describe("HTTP identity and authorization boundary", () => {
 
   it("closes the direct Run lookup bypass", async () => {
     const { app } = await makeHarness();
-    const financeCookie = await login(app, "finance@agent-gateway.local");
+    const frontendCookie = await login(app, "frontend@bytedance.com");
     const created = await app.inject({
       method: "POST",
       url: "/api/agents",
-      headers: { cookie: financeCookie },
-      payload: { name: "Finance Agent" },
+      headers: { cookie: frontendCookie },
+      payload: { name: "Frontend Agent" },
     });
     const agentId = created.json().agent.id as string;
     const sent = await app.inject({
       method: "POST",
       url: `/api/agents/${agentId}/messages`,
-      headers: { cookie: financeCookie },
+      headers: { cookie: frontendCookie },
       payload: { content: "test authorization" },
     });
     expect(sent.statusCode).toBe(202);
 
-    const hrCookie = await login(app, "hr@agent-gateway.local");
+    const backendCookie = await login(app, "backend@bytedance.com");
     const denied = await app.inject({
       method: "GET",
       url: "/api/runs/" + sent.json().run.id,
-      headers: { cookie: hrCookie },
+      headers: { cookie: backendCookie },
     });
     expect(denied.statusCode).toBe(403);
     await expect
@@ -416,7 +484,7 @@ describe("HTTP identity and authorization boundary", () => {
         const completed = await app.inject({
           method: "GET",
           url: "/api/runs/" + sent.json().run.id,
-          headers: { cookie: financeCookie },
+          headers: { cookie: frontendCookie },
         });
         return completed.json().run?.status;
       })
@@ -426,12 +494,12 @@ describe("HTTP identity and authorization boundary", () => {
 
   it("denies a dangerous Playground chat command before creating a Run or starting the runner", async () => {
     const { app, service, runner } = await makeHarness();
-    const cookie = await login(app, "finance@agent-gateway.local");
+    const cookie = await login(app, "frontend@bytedance.com");
     const created = await app.inject({
       method: "POST",
       url: "/api/agents",
       headers: { cookie },
-      payload: { name: "Finance Agent" },
+      payload: { name: "Frontend Agent" },
     });
     const agentId = created.json().agent.id as string;
 
@@ -471,12 +539,12 @@ describe("HTTP identity and authorization boundary", () => {
 
   it("allows a safe Playground chat command through the normal Run path", async () => {
     const { app, service, runner } = await makeHarness();
-    const cookie = await login(app, "finance@agent-gateway.local");
+    const cookie = await login(app, "backend@bytedance.com");
     const created = await app.inject({
       method: "POST",
       url: "/api/agents",
       headers: { cookie },
-      payload: { name: "Finance Agent" },
+      payload: { name: "Backend Agent" },
     });
     const agentId = created.json().agent.id as string;
 
@@ -503,7 +571,9 @@ describe("HTTP identity and authorization boundary", () => {
     await expect.poll(() => runner.requests).toHaveLength(1);
     expect(runner.requests[0]).toMatchObject({
       agentId,
-      prompt: "Run pwd and report the current directory.",
+      prompt: expect.stringContaining(
+        "User request:\nRun pwd and report the current directory.",
+      ),
     });
     await expect.poll(() => service.getRuns(agentId)[0]?.status).toBe("completed");
     await app.close();
@@ -511,12 +581,12 @@ describe("HTTP identity and authorization boundary", () => {
 
   it("evaluates a dangerous shell demo action without creating a Run or calling the runner", async () => {
     const { app, service, runner } = await makeHarness();
-    const cookie = await login(app, "finance@agent-gateway.local");
+    const cookie = await login(app, "qa@bytedance.com");
     const created = await app.inject({
       method: "POST",
       url: "/api/agents",
       headers: { cookie },
-      payload: { name: "Finance Agent" },
+      payload: { name: "QA Agent" },
     });
     const agentId = created.json().agent.id as string;
 
@@ -538,7 +608,7 @@ describe("HTTP identity and authorization boundary", () => {
         id: expect.any(String),
         requestId: expect.any(String),
         agentId,
-        humanEmail: "finance@agent-gateway.local",
+        humanEmail: "qa@bytedance.com",
         action: "shell.execute",
         targetType: "command",
         targetLabel: "rm -rf",
@@ -568,19 +638,19 @@ describe("HTTP identity and authorization boundary", () => {
 
   it("revokes an owned Agent, blocks future actions before the runner, and audits both decisions", async () => {
     const { app, runner } = await makeHarness();
-    const financeCookie = await login(app, "finance@agent-gateway.local");
+    const frontendCookie = await login(app, "frontend@bytedance.com");
     const created = await app.inject({
       method: "POST",
       url: "/api/agents",
-      headers: { cookie: financeCookie },
-      payload: { name: "Revocable Finance Agent" },
+      headers: { cookie: frontendCookie },
+      payload: { name: "Revocable Frontend Agent" },
     });
     const agentId = created.json().agent.id as string;
 
     const active = await app.inject({
       method: "POST",
       url: `/api/agents/${agentId}/messages`,
-      headers: { cookie: financeCookie },
+      headers: { cookie: frontendCookie },
       payload: { content: "Run npm test" },
     });
     expect(active.statusCode).toBe(202);
@@ -589,7 +659,7 @@ describe("HTTP identity and authorization boundary", () => {
     const revoked = await app.inject({
       method: "POST",
       url: `/api/agents/${agentId}/revoke`,
-      headers: { cookie: financeCookie },
+      headers: { cookie: frontendCookie },
     });
     expect(revoked.statusCode).toBe(200);
     expect(revoked.json()).toMatchObject({
@@ -600,7 +670,7 @@ describe("HTTP identity and authorization boundary", () => {
     const denied = await app.inject({
       method: "POST",
       url: `/api/agents/${agentId}/messages`,
-      headers: { cookie: financeCookie },
+      headers: { cookie: frontendCookie },
       payload: { content: "Run npm test again" },
     });
     expect(denied.statusCode).toBe(403);
@@ -613,7 +683,7 @@ describe("HTTP identity and authorization boundary", () => {
     const audit = await app.inject({
       method: "GET",
       url: "/api/authorization-decisions?limit=20",
-      headers: { cookie: financeCookie },
+      headers: { cookie: frontendCookie },
     });
     expect(audit.json().decisions).toEqual(
       expect.arrayContaining([
@@ -626,20 +696,20 @@ describe("HTTP identity and authorization boundary", () => {
 
   it("does not let another user revoke an Agent", async () => {
     const { app, service } = await makeHarness();
-    const financeCookie = await login(app, "finance@agent-gateway.local");
+    const frontendCookie = await login(app, "frontend@bytedance.com");
     const created = await app.inject({
       method: "POST",
       url: "/api/agents",
-      headers: { cookie: financeCookie },
-      payload: { name: "Finance Agent" },
+      headers: { cookie: frontendCookie },
+      payload: { name: "Frontend Agent" },
     });
     const agentId = created.json().agent.id as string;
-    const hrCookie = await login(app, "hr@agent-gateway.local");
+    const backendCookie = await login(app, "backend@bytedance.com");
 
     const denied = await app.inject({
       method: "POST",
       url: `/api/agents/${agentId}/revoke`,
-      headers: { cookie: hrCookie },
+      headers: { cookie: backendCookie },
     });
     expect(denied.statusCode).toBe(403);
     expect(denied.json()).toMatchObject({
@@ -651,31 +721,31 @@ describe("HTTP identity and authorization boundary", () => {
 
   it("discovers and forwards a consented capability request without Agent disclosure", async () => {
     const { app } = await makeHarness();
-    const hrCookie = await login(app, "hr@agent-gateway.local");
+    const backendCookie = await login(app, "backend@bytedance.com");
     const discovery = await app.inject({
       method: "POST",
       url: "/api/capability-discovery",
-      headers: { cookie: hrCookie },
+      headers: { cookie: backendCookie },
       payload: {
-        prompt: "Estimate the budget impact of hiring 12 engineers.",
+        prompt: "Implement an accessible profile page with loading and error states.",
       },
     });
     expect(discovery.statusCode).toBe(200);
     expect(discovery.json()).toMatchObject({
       required: true,
-      capability: "finance.cost-analysis",
-      providerDepartment: "finance",
+      capability: "frontend.interface-implementation",
+      providerDepartment: "frontend",
     });
     expect(discovery.body).not.toContain("Agent");
 
     const spoofed = await app.inject({
       method: "POST",
       url: "/api/delegation-requests",
-      headers: { cookie: hrCookie },
+      headers: { cookie: backendCookie },
       payload: {
-        requiredCapability: "finance.cost-analysis",
-        prompt: "Estimate the cost for alice@example.com and 12 engineers.",
-        sanitizedTaskSummary: "Aggregate headcount and salary bands",
+        requiredCapability: "frontend.interface-implementation",
+        prompt: "Implement the profile page for alice@example.com with 12 interface states.",
+        sanitizedTaskSummary: "Spoofed interface summary",
       },
     });
     expect(spoofed.statusCode).toBe(400);
@@ -683,10 +753,10 @@ describe("HTTP identity and authorization boundary", () => {
     const mismatchedCapability = await app.inject({
       method: "POST",
       url: "/api/delegation-requests",
-      headers: { cookie: hrCookie },
+      headers: { cookie: backendCookie },
       payload: {
-        requiredCapability: "finance.cost-analysis",
-        prompt: "Synthesize evidence from recent research studies.",
+        requiredCapability: "frontend.interface-implementation",
+        prompt: "Create a QA release regression test plan.",
       },
     });
     expect(mismatchedCapability.statusCode).toBe(400);
@@ -694,19 +764,19 @@ describe("HTTP identity and authorization boundary", () => {
     const created = await app.inject({
       method: "POST",
       url: "/api/delegation-requests",
-      headers: { cookie: hrCookie },
+      headers: { cookie: backendCookie },
       payload: {
-        requiredCapability: "finance.cost-analysis",
-        prompt: "Estimate the cost for alice@example.com and 12 engineers.",
+        requiredCapability: "frontend.interface-implementation",
+        prompt: "Implement the profile page for alice@example.com with 12 interface states.",
       },
     });
     expect(created.statusCode).toBe(201);
     expect(created.json()).toMatchObject({
       request: {
         box: "outgoing",
-        requiredCapability: "finance.cost-analysis",
+        requiredCapability: "frontend.interface-implementation",
         sanitizedTaskSummary:
-          "Estimate the cost for [personal information redacted] and 12 engineers.",
+          "Implement the profile page for [personal information redacted] with 12 interface states.",
         personalInformation: "possible",
         status: "pending",
       },
@@ -719,35 +789,35 @@ describe("HTTP identity and authorization boundary", () => {
     expect(created.json().request).not.toHaveProperty("agentId");
     const requestId = created.json().request.id as string;
 
-    const researchCookie = await login(app, "research@agent-gateway.local");
+    const qaCookie = await login(app, "qa@bytedance.com");
     const unrelatedInbox = await app.inject({
       method: "GET",
       url: "/api/delegation-requests?box=incoming",
-      headers: { cookie: researchCookie },
+      headers: { cookie: qaCookie },
     });
     expect(unrelatedInbox.json().requests).toEqual([]);
 
-    const financeCookie = await login(app, "finance@agent-gateway.local");
-    const financeInbox = await app.inject({
+    const frontendCookie = await login(app, "frontend@bytedance.com");
+    const frontendInbox = await app.inject({
       method: "GET",
       url: "/api/delegation-requests?box=incoming",
-      headers: { cookie: financeCookie },
+      headers: { cookie: frontendCookie },
     });
-    expect(financeInbox.json().requests).toEqual([
+    expect(frontendInbox.json().requests).toEqual([
       expect.objectContaining({
         id: requestId,
-        requester: { displayName: "HR", department: "hr" },
+        requester: { displayName: "Backend", department: "backend" },
         sanitizedTaskSummary:
-          "Estimate the cost for [personal information redacted] and 12 engineers.",
+          "Implement the profile page for [personal information redacted] with 12 interface states.",
       }),
     ]);
-    expect(financeInbox.body).not.toContain("alice@example.com");
-    expect(financeInbox.json().requests[0]).not.toHaveProperty("agentId");
+    expect(frontendInbox.body).not.toContain("alice@example.com");
+    expect(frontendInbox.json().requests[0]).not.toHaveProperty("agentId");
 
     const rejected = await app.inject({
       method: "POST",
       url: `/api/delegation-requests/${requestId}/reject`,
-      headers: { cookie: financeCookie },
+      headers: { cookie: frontendCookie },
     });
     expect(rejected.statusCode).toBe(200);
     expect(rejected.json()).toMatchObject({
@@ -759,26 +829,26 @@ describe("HTTP identity and authorization boundary", () => {
 
   it("issues the same scoped Trust Pass through request and owner initiated paths", async () => {
     const { app, service } = await makeHarness();
-    const financeCookie = await login(app, "finance@agent-gateway.local");
+    const frontendCookie = await login(app, "frontend@bytedance.com");
     const createdAgent = await app.inject({
       method: "POST",
       url: "/api/agents",
-      headers: { cookie: financeCookie },
-      payload: { name: "Private Finance Agent" },
+      headers: { cookie: frontendCookie },
+      payload: { name: "Private Frontend Agent" },
     });
-    const financeAgent = createdAgent.json().agent as { id: string; workspacePath: string };
-    const financeResource = RESOURCE_FIXTURES.find(
-      (resource) => resource.ownerDepartment === "finance",
+    const frontendAgent = createdAgent.json().agent as { id: string; workspacePath: string };
+    const frontendResource = RESOURCE_FIXTURES.find(
+      (resource) => resource.ownerDepartment === "frontend",
     )!;
 
-    const hrCookie = await login(app, "hr@agent-gateway.local");
+    const backendCookie = await login(app, "backend@bytedance.com");
     const request = await app.inject({
       method: "POST",
       url: "/api/delegation-requests",
-      headers: { cookie: hrCookie },
+      headers: { cookie: backendCookie },
       payload: {
-        requiredCapability: "finance.cost-analysis",
-        prompt: "Estimate the budget impact of hiring 12 engineers.",
+        requiredCapability: "frontend.interface-implementation",
+        prompt: "Implement an accessible profile page with loading and error states.",
       },
     });
     const requestId = request.json().request.id as string;
@@ -786,10 +856,10 @@ describe("HTTP identity and authorization boundary", () => {
     const approved = await app.inject({
       method: "POST",
       url: `/api/delegation-requests/${requestId}/approve`,
-      headers: { cookie: financeCookie },
+      headers: { cookie: frontendCookie },
       payload: {
-        agentId: financeAgent.id,
-        approvedResourceIds: [financeResource.id],
+        agentId: frontendAgent.id,
+        approvedResourceIds: [frontendResource.id],
         expiresInSeconds: 600,
       },
     });
@@ -798,8 +868,8 @@ describe("HTTP identity and authorization boundary", () => {
       contract: {
         source: "request",
         box: "outgoing",
-        grantee: { displayName: "HR", department: "hr" },
-        agent: { id: financeAgent.id, name: "Private Finance Agent" },
+        grantee: { displayName: "Backend", department: "backend" },
+        agent: { id: frontendAgent.id, name: "Private Frontend Agent" },
         allowedActions: ["agent.invoke"],
         resultVisibility: "final_output_only",
         maximumUses: 1,
@@ -814,45 +884,45 @@ describe("HTTP identity and authorization boundary", () => {
     });
     const approvedContractId = approved.json().contract.id as string;
 
-    const hrPasses = await app.inject({
+    const backendPasses = await app.inject({
       method: "GET",
       url: "/api/delegation-contracts?box=incoming",
-      headers: { cookie: hrCookie },
+      headers: { cookie: backendCookie },
     });
-    expect(hrPasses.statusCode).toBe(200);
-    expect(hrPasses.json().contracts).toEqual([
+    expect(backendPasses.statusCode).toBe(200);
+    expect(backendPasses.json().contracts).toEqual([
       expect.objectContaining({
         id: approvedContractId,
         box: "incoming",
-        providerLabel: "Privately managed finance capability",
-        approvedPrompt: "Estimate the budget impact of hiring 12 engineers.",
+        providerLabel: "Privately managed frontend capability",
+        approvedPrompt: "Implement an accessible profile page with loading and error states.",
         approvedInputCount: 1,
       }),
     ]);
-    expect(hrPasses.body).not.toContain(financeAgent.id);
-    expect(hrPasses.body).not.toContain("Private Finance Agent");
-    expect(hrPasses.body).not.toContain(financeAgent.workspacePath);
-    expect(hrPasses.body).not.toContain(financeResource.name);
-    expect(hrPasses.body).not.toContain(financeResource.fileName);
+    expect(backendPasses.body).not.toContain(frontendAgent.id);
+    expect(backendPasses.body).not.toContain("Private Frontend Agent");
+    expect(backendPasses.body).not.toContain(frontendAgent.workspacePath);
+    expect(backendPasses.body).not.toContain(frontendResource.name);
+    expect(backendPasses.body).not.toContain(frontendResource.fileName);
 
     const unauthorizedRevoke = await app.inject({
       method: "POST",
       url: `/api/delegation-contracts/${approvedContractId}/revoke`,
-      headers: { cookie: hrCookie },
+      headers: { cookie: backendCookie },
     });
     expect(unauthorizedRevoke.statusCode).toBe(404);
 
     const revoked = await app.inject({
       method: "POST",
       url: `/api/delegation-contracts/${approvedContractId}/revoke`,
-      headers: { cookie: financeCookie },
+      headers: { cookie: frontendCookie },
     });
     expect(revoked.statusCode).toBe(200);
     expect(revoked.json()).toMatchObject({
       contract: { status: "revoked", policyReasonCode: "DELEGATION_REVOKED" },
       decision: { reasonCode: "DELEGATION_REVOKED" },
     });
-    expect(service.getAgent(financeAgent.id)).toMatchObject({
+    expect(service.getAgent(frontendAgent.id)).toMatchObject({
       status: "ready",
       revokedAt: null,
     });
@@ -860,12 +930,12 @@ describe("HTTP identity and authorization boundary", () => {
     const direct = await app.inject({
       method: "POST",
       url: "/api/delegation-contracts",
-      headers: { cookie: financeCookie },
+      headers: { cookie: frontendCookie },
       payload: {
-        requiredCapability: "finance.cost-analysis",
+        requiredCapability: "frontend.interface-implementation",
         granteeHumanId: "33333333-3333-4333-8333-333333333333",
-        agentId: financeAgent.id,
-        exactPrompt: "Summarize the approved aggregate budget inputs.",
+        agentId: frontendAgent.id,
+        exactPrompt: "Implement the approved profile interface requirements.",
         approvedResourceIds: [],
         expiresInSeconds: 60,
       },
@@ -875,7 +945,7 @@ describe("HTTP identity and authorization boundary", () => {
       contract: {
         source: "owner",
         box: "outgoing",
-        grantee: { displayName: "Research", department: "research" },
+        grantee: { displayName: "QA", department: "qa" },
         allowedActions: ["agent.invoke"],
         resultVisibility: "final_output_only",
         maximumUses: 1,
@@ -886,25 +956,25 @@ describe("HTTP identity and authorization boundary", () => {
 
   it("binds requester-initiated execution to the exact redacted task the owner sees", async () => {
     const { app, store } = await makeHarness();
-    const financeCookie = await login(app, "finance@agent-gateway.local");
+    const frontendCookie = await login(app, "frontend@bytedance.com");
     const createdAgent = await app.inject({
       method: "POST",
       url: "/api/agents",
-      headers: { cookie: financeCookie },
-      payload: { name: "Finance Agent" },
+      headers: { cookie: frontendCookie },
+      payload: { name: "Frontend Agent" },
     });
-    const hrCookie = await login(app, "hr@agent-gateway.local");
+    const backendCookie = await login(app, "backend@bytedance.com");
     const hiddenSuffix = "HIDDEN_UNREVIEWED_INSTRUCTIONS";
     const requestedPrompt =
-      "Estimate the cost for alice@example.com and 12 engineers. " +
+      "Implement the profile page for alice@example.com with 12 interface states. " +
       "Context ".repeat(50) +
       hiddenSuffix;
     const requested = await app.inject({
       method: "POST",
       url: "/api/delegation-requests",
-      headers: { cookie: hrCookie },
+      headers: { cookie: backendCookie },
       payload: {
-        requiredCapability: "finance.cost-analysis",
+        requiredCapability: "frontend.interface-implementation",
         prompt: requestedPrompt,
       },
     });
@@ -916,7 +986,7 @@ describe("HTTP identity and authorization boundary", () => {
     const approved = await app.inject({
       method: "POST",
       url: `/api/delegation-requests/${requested.json().request.id}/approve`,
-      headers: { cookie: financeCookie },
+      headers: { cookie: frontendCookie },
       payload: {
         agentId: createdAgent.json().agent.id,
         approvedResourceIds: [],
@@ -927,7 +997,7 @@ describe("HTTP identity and authorization boundary", () => {
     const incoming = await app.inject({
       method: "GET",
       url: "/api/delegation-contracts?box=incoming",
-      headers: { cookie: hrCookie },
+      headers: { cookie: backendCookie },
     });
     expect(incoming.json().contracts[0].approvedPrompt).toBe(ownerVisibleTask);
     expect(incoming.body).not.toContain(hiddenSuffix);
@@ -940,12 +1010,12 @@ describe("HTTP identity and authorization boundary", () => {
   it("does not publish a Trust Pass when atomic approval evidence fails", async () => {
     const runner = new FakeRunner();
     const { app, repository, store } = await makeHarness({}, runner);
-    const financeCookie = await login(app, "finance@agent-gateway.local");
+    const frontendCookie = await login(app, "frontend@bytedance.com");
     const createdAgent = await app.inject({
       method: "POST",
       url: "/api/agents",
-      headers: { cookie: financeCookie },
-      payload: { name: "Finance Agent" },
+      headers: { cookie: frontendCookie },
+      payload: { name: "Frontend Agent" },
     });
     const exactPrompt = "Estimate one approved aggregate budget.";
     const appendDecisionsToDatabase =
@@ -960,9 +1030,9 @@ describe("HTTP identity and authorization boundary", () => {
     const issue = await app.inject({
       method: "POST",
       url: "/api/delegation-contracts",
-      headers: { cookie: financeCookie },
+      headers: { cookie: frontendCookie },
       payload: {
-        requiredCapability: "finance.cost-analysis",
+        requiredCapability: "frontend.interface-implementation",
         granteeHumanId: "22222222-2222-4222-8222-222222222222",
         agentId: createdAgent.json().agent.id,
         exactPrompt,
@@ -974,7 +1044,7 @@ describe("HTTP identity and authorization boundary", () => {
     const visible = await app.inject({
       method: "GET",
       url: "/api/delegation-contracts?box=outgoing",
-      headers: { cookie: financeCookie },
+      headers: { cookie: frontendCookie },
     });
     expect(visible.json().contracts).toEqual([]);
     expect(store.snapshot().delegationContracts).toEqual([]);
@@ -1001,33 +1071,33 @@ describe("HTTP identity and authorization boundary", () => {
       appendDecisionsToDatabase(database, decisions);
     };
 
-    const hrCookie = await login(app, "hr@agent-gateway.local");
+    const backendCookie = await login(app, "backend@bytedance.com");
     const failedRequest = await app.inject({
       method: "POST",
       url: "/api/delegation-requests",
-      headers: { cookie: hrCookie },
+      headers: { cookie: backendCookie },
       payload: {
-        requiredCapability: "finance.cost-analysis",
-        prompt: "Estimate one aggregate hiring budget.",
+        requiredCapability: "frontend.interface-implementation",
+        prompt: "Implement one accessible profile page.",
       },
     });
     expect(failedRequest.statusCode).toBe(503);
     const requests = await app.inject({
       method: "GET",
       url: "/api/delegation-requests?box=outgoing",
-      headers: { cookie: hrCookie },
+      headers: { cookie: backendCookie },
     });
     expect(requests.json().requests).toEqual([]);
 
-    const financeCookie = await login(app, "finance@agent-gateway.local");
+    const frontendCookie = await login(app, "frontend@bytedance.com");
     const createdAgent = await app.inject({
       method: "POST",
       url: "/api/agents",
-      headers: { cookie: financeCookie },
-      payload: { name: "Finance Agent" },
+      headers: { cookie: frontendCookie },
+      payload: { name: "Frontend Agent" },
     });
     const directPayload = {
-      requiredCapability: "finance.cost-analysis",
+      requiredCapability: "frontend.interface-implementation",
       granteeHumanId: "22222222-2222-4222-8222-222222222222",
       agentId: createdAgent.json().agent.id,
       exactPrompt: "Estimate one approved aggregate budget.",
@@ -1038,14 +1108,14 @@ describe("HTTP identity and authorization boundary", () => {
     const failedIssue = await app.inject({
       method: "POST",
       url: "/api/delegation-contracts",
-      headers: { cookie: financeCookie },
+      headers: { cookie: frontendCookie },
       payload: directPayload,
     });
     expect(failedIssue.statusCode).toBe(503);
     const noPasses = await app.inject({
       method: "GET",
       url: "/api/delegation-contracts?box=outgoing",
-      headers: { cookie: financeCookie },
+      headers: { cookie: frontendCookie },
     });
     expect(noPasses.json().contracts).toEqual([]);
 
@@ -1053,12 +1123,12 @@ describe("HTTP identity and authorization boundary", () => {
     const issued = await app.inject({
       method: "POST",
       url: "/api/delegation-contracts",
-      headers: { cookie: financeCookie },
+      headers: { cookie: frontendCookie },
       payload: directPayload,
     });
     const contractId = issued.json().contract.id as string;
     failedAction = "agent.invoke";
-    const invokeCookie = await login(app, "hr@agent-gateway.local");
+    const invokeCookie = await login(app, "backend@bytedance.com");
     const failedInvocation = await app.inject({
       method: "POST",
       url: `/api/delegation-contracts/${contractId}/invoke`,
@@ -1069,7 +1139,7 @@ describe("HTTP identity and authorization boundary", () => {
     const activeAfterFailedInvocation = await app.inject({
       method: "GET",
       url: "/api/delegation-contracts?box=outgoing",
-      headers: { cookie: financeCookie },
+      headers: { cookie: frontendCookie },
     });
     expect(activeAfterFailedInvocation.json().contracts[0]).toMatchObject({
       id: contractId,
@@ -1082,13 +1152,13 @@ describe("HTTP identity and authorization boundary", () => {
     const failedRevoke = await app.inject({
       method: "POST",
       url: `/api/delegation-contracts/${contractId}/revoke`,
-      headers: { cookie: financeCookie },
+      headers: { cookie: frontendCookie },
     });
     expect(failedRevoke.statusCode).toBe(503);
     const stillActive = await app.inject({
       method: "GET",
       url: "/api/delegation-contracts?box=outgoing",
-      headers: { cookie: financeCookie },
+      headers: { cookie: frontendCookie },
     });
     expect(stillActive.json().contracts[0]).toMatchObject({
       id: contractId,
@@ -1108,34 +1178,34 @@ describe("HTTP identity and authorization boundary", () => {
       "PRIVATE_SESSION_SENTINEL",
     );
     await writeFile(path.join(config.codexHome, "auth.json"), "PRIVATE_AUTH_SENTINEL");
-    const financeCookie = await login(app, "finance@agent-gateway.local");
+    const frontendCookie = await login(app, "frontend@bytedance.com");
     const createdAgent = await app.inject({
       method: "POST",
       url: "/api/agents",
-      headers: { cookie: financeCookie },
+      headers: { cookie: frontendCookie },
       payload: {
-        name: "Hidden Finance Agent",
+        name: "Hidden Frontend Agent",
         instructions: "PRIVATE_AGENT_INSTRUCTION_SENTINEL",
       },
     });
-    const financeAgent = createdAgent.json().agent as {
+    const frontendAgent = createdAgent.json().agent as {
       id: string;
       workspacePath: string;
     };
-    const financeResource = RESOURCE_FIXTURES.find(
-      (resource) => resource.ownerDepartment === "finance",
+    const frontendResource = RESOURCE_FIXTURES.find(
+      (resource) => resource.ownerDepartment === "frontend",
     )!;
     const exactPrompt = "Estimate the approved aggregate hiring budget.";
     const issued = await app.inject({
       method: "POST",
       url: "/api/delegation-contracts",
-      headers: { cookie: financeCookie },
+      headers: { cookie: frontendCookie },
       payload: {
-        requiredCapability: "finance.cost-analysis",
+        requiredCapability: "frontend.interface-implementation",
         granteeHumanId: "22222222-2222-4222-8222-222222222222",
-        agentId: financeAgent.id,
+        agentId: frontendAgent.id,
         exactPrompt,
-        approvedResourceIds: [financeResource.id],
+        approvedResourceIds: [frontendResource.id],
         expiresInSeconds: 600,
       },
     });
@@ -1147,22 +1217,22 @@ describe("HTTP identity and authorization boundary", () => {
       delegatedResourceReads += 1;
       return readResourceForDelegation(resourceId, ownerId);
     };
-    const hrCookie = await login(app, "hr@agent-gateway.local");
+    const backendCookie = await login(app, "backend@bytedance.com");
 
-    const researchCookie = await login(app, "research@agent-gateway.local");
+    const qaCookie = await login(app, "qa@bytedance.com");
     const wrongGrantee = await app.inject({
       method: "POST",
       url: `/api/delegation-contracts/${contractId}/invoke`,
-      headers: { cookie: researchCookie },
+      headers: { cookie: qaCookie },
       payload: { content: exactPrompt },
     });
     expect(wrongGrantee.statusCode).toBe(404);
-    expect(wrongGrantee.body).not.toContain(financeAgent.id);
-    expect(wrongGrantee.body).not.toContain("Hidden Finance Agent");
+    expect(wrongGrantee.body).not.toContain(frontendAgent.id);
+    expect(wrongGrantee.body).not.toContain("Hidden Frontend Agent");
     const wrongGranteeAudit = await app.inject({
       method: "GET",
       url: "/api/authorization-decisions?limit=10",
-      headers: { cookie: researchCookie },
+      headers: { cookie: qaCookie },
     });
     expect(wrongGranteeAudit.json().decisions).toEqual(
       expect.arrayContaining([
@@ -1180,7 +1250,7 @@ describe("HTTP identity and authorization boundary", () => {
         app.inject({
           method: "POST",
           url: `/api/delegation-contracts/${contractId}/invoke`,
-          headers: { cookie: hrCookie },
+          headers: { cookie: backendCookie },
           payload: { content: exactPrompt },
         }),
       ),
@@ -1200,8 +1270,8 @@ describe("HTTP identity and authorization boundary", () => {
           agentName: null,
         },
       });
-      expect(response.body).not.toContain("Hidden Finance Agent");
-      expect(response.body).not.toContain(financeAgent.workspacePath);
+      expect(response.body).not.toContain("Hidden Frontend Agent");
+      expect(response.body).not.toContain(frontendAgent.workspacePath);
     }
 
     const acceptedBody = accepted[0]!.json();
@@ -1220,12 +1290,12 @@ describe("HTTP identity and authorization boundary", () => {
       },
       result: { status: "queued", output: null },
     });
-    expect(JSON.stringify(acceptedBody.contract)).not.toContain(financeAgent.id);
-    expect(JSON.stringify(acceptedBody.contract)).not.toContain("Hidden Finance Agent");
+    expect(JSON.stringify(acceptedBody.contract)).not.toContain(frontendAgent.id);
+    expect(JSON.stringify(acceptedBody.contract)).not.toContain("Hidden Frontend Agent");
 
     const delegatedRequest = runner.requests[0]!;
     expect(delegatedRequest.threadId).toBeNull();
-    expect(delegatedRequest.workspacePath).not.toBe(financeAgent.workspacePath);
+    expect(delegatedRequest.workspacePath).not.toBe(frontendAgent.workspacePath);
     expect(delegatedRequest.workspacePath).toContain(`${path.sep}.delegated${path.sep}`);
     expect(delegatedRequest.codexHome).toBeDefined();
     expect(delegatedRequest.codexHome).not.toBe(config.codexHome);
@@ -1240,7 +1310,7 @@ describe("HTTP identity and authorization boundary", () => {
       path.join(delegatedRequest.workspacePath, "AGENTS.md"),
       "utf8",
     );
-    expect(delegatedInstructions).not.toContain("Hidden Finance Agent");
+    expect(delegatedInstructions).not.toContain("Hidden Frontend Agent");
     expect(delegatedInstructions).not.toContain("PRIVATE_AGENT_INSTRUCTION_SENTINEL");
     expect(await readdir(delegatedRequest.codexHome!)).toEqual(["config.toml"]);
     await expect(
@@ -1254,13 +1324,13 @@ describe("HTTP identity and authorization boundary", () => {
         path.join(delegatedRequest.workspacePath, "approved-input-1.md"),
         "utf8",
       ),
-    ).toContain("Quarterly budget");
-    expect(service.getAgent(financeAgent.id).codexThreadId).toBeNull();
+    ).toContain("Profile page requirements");
+    expect(service.getAgent(frontendAgent.id).codexThreadId).toBeNull();
 
     const changedRetry = await app.inject({
       method: "POST",
       url: `/api/delegation-contracts/${contractId}/invoke`,
-      headers: { cookie: hrCookie },
+      headers: { cookie: backendCookie },
       payload: { content: exactPrompt + " changed" },
     });
     expect(changedRetry.statusCode).toBe(403);
@@ -1270,14 +1340,14 @@ describe("HTTP identity and authorization boundary", () => {
 
     const genericAgentRead = await app.inject({
       method: "GET",
-      url: `/api/agents/${financeAgent.id}`,
-      headers: { cookie: hrCookie },
+      url: `/api/agents/${frontendAgent.id}`,
+      headers: { cookie: backendCookie },
     });
     expect(genericAgentRead.statusCode).toBe(403);
     const genericRunRead = await app.inject({
       method: "GET",
       url: `/api/runs/${acceptedBody.result.id}`,
-      headers: { cookie: hrCookie },
+      headers: { cookie: backendCookie },
     });
     expect(genericRunRead.statusCode).toBe(403);
 
@@ -1287,7 +1357,7 @@ describe("HTTP identity and authorization boundary", () => {
         const result = await app.inject({
           method: "GET",
           url: `/api/delegation-contracts/${contractId}/result`,
-          headers: { cookie: hrCookie },
+          headers: { cookie: backendCookie },
         });
         return result.json().result?.status;
       })
@@ -1295,7 +1365,7 @@ describe("HTTP identity and authorization boundary", () => {
     const resultResponse = await app.inject({
       method: "GET",
       url: `/api/delegation-contracts/${contractId}/result`,
-      headers: { cookie: hrCookie },
+      headers: { cookie: backendCookie },
     });
     expect(resultResponse.json()).toMatchObject({
       contractStatus: "consumed",
@@ -1307,9 +1377,9 @@ describe("HTTP identity and authorization boundary", () => {
       },
     });
     for (const forbidden of [
-      financeAgent.id,
-      financeAgent.workspacePath,
-      "Hidden Finance Agent",
+      frontendAgent.id,
+      frontendAgent.workspacePath,
+      "Hidden Frontend Agent",
       "PRIVATE_AGENT_INSTRUCTION_SENTINEL",
       "must-not-persist",
       "usage",
@@ -1320,12 +1390,12 @@ describe("HTTP identity and authorization boundary", () => {
     }
     await expect(access(delegatedRequest.workspacePath)).rejects.toThrow();
     await expect(access(delegatedRequest.codexHome!)).rejects.toThrow();
-    expect(service.getAgent(financeAgent.id).codexThreadId).toBeNull();
+    expect(service.getAgent(frontendAgent.id).codexThreadId).toBeNull();
 
     const audit = await app.inject({
       method: "GET",
       url: "/api/authorization-decisions?limit=100",
-      headers: { cookie: hrCookie },
+      headers: { cookie: backendCookie },
     });
     const delegatedDecisions = audit
       .json()
@@ -1364,15 +1434,15 @@ describe("HTTP identity and authorization boundary", () => {
     const ownerAudit = await app.inject({
       method: "GET",
       url: "/api/authorization-decisions?limit=100",
-      headers: { cookie: financeCookie },
+      headers: { cookie: frontendCookie },
     });
     expect(ownerAudit.json().decisions).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           humanUserId: "22222222-2222-4222-8222-222222222222",
-          agentId: financeAgent.id,
+          agentId: frontendAgent.id,
           action: "resource.read",
-          targetId: financeResource.id,
+          targetId: frontendResource.id,
           decision: "allow",
           reasonCode: "DELEGATION_ACTIVE",
         }),
@@ -1381,8 +1451,8 @@ describe("HTTP identity and authorization boundary", () => {
 
     const ownerRun = await app.inject({
       method: "POST",
-      url: `/api/agents/${financeAgent.id}/messages`,
-      headers: { cookie: financeCookie },
+      url: `/api/agents/${frontendAgent.id}/messages`,
+      headers: { cookie: frontendCookie },
       payload: { content: "Run npm test" },
     });
     expect(ownerRun.statusCode).toBe(202);
@@ -1392,21 +1462,21 @@ describe("HTTP identity and authorization boundary", () => {
 
   it("rejects an altered task without consuming the active pass", async () => {
     const { app, runner } = await makeHarness();
-    const financeCookie = await login(app, "finance@agent-gateway.local");
+    const frontendCookie = await login(app, "frontend@bytedance.com");
     const createdAgent = await app.inject({
       method: "POST",
       url: "/api/agents",
-      headers: { cookie: financeCookie },
-      payload: { name: "Finance Agent" },
+      headers: { cookie: frontendCookie },
+      payload: { name: "Frontend Agent" },
     });
     const agentId = createdAgent.json().agent.id as string;
     const exactPrompt = "Estimate one approved budget.";
     const issued = await app.inject({
       method: "POST",
       url: "/api/delegation-contracts",
-      headers: { cookie: financeCookie },
+      headers: { cookie: frontendCookie },
       payload: {
-        requiredCapability: "finance.cost-analysis",
+        requiredCapability: "frontend.interface-implementation",
         granteeHumanId: "22222222-2222-4222-8222-222222222222",
         agentId,
         exactPrompt,
@@ -1415,11 +1485,11 @@ describe("HTTP identity and authorization boundary", () => {
       },
     });
     const contractId = issued.json().contract.id as string;
-    const hrCookie = await login(app, "hr@agent-gateway.local");
+    const backendCookie = await login(app, "backend@bytedance.com");
     const changed = await app.inject({
       method: "POST",
       url: `/api/delegation-contracts/${contractId}/invoke`,
-      headers: { cookie: hrCookie },
+      headers: { cookie: backendCookie },
       payload: { content: exactPrompt + " " },
     });
     expect(changed.statusCode).toBe(403);
@@ -1431,7 +1501,7 @@ describe("HTTP identity and authorization boundary", () => {
     const stillActive = await app.inject({
       method: "GET",
       url: "/api/delegation-contracts?box=incoming",
-      headers: { cookie: hrCookie },
+      headers: { cookie: backendCookie },
     });
     expect(stillActive.json().contracts[0]).toMatchObject({
       id: contractId,
@@ -1442,7 +1512,7 @@ describe("HTTP identity and authorization boundary", () => {
     const exact = await app.inject({
       method: "POST",
       url: `/api/delegation-contracts/${contractId}/invoke`,
-      headers: { cookie: hrCookie },
+      headers: { cookie: backendCookie },
       payload: { content: exactPrompt },
     });
     expect(exact.statusCode).toBe(202);
@@ -1452,20 +1522,20 @@ describe("HTTP identity and authorization boundary", () => {
 
   it("refuses delegated execution without the isolated container boundary", async () => {
     const { app, runner } = await makeHarness({ RUNTIME_PROVIDER: "local-process" });
-    const financeCookie = await login(app, "finance@agent-gateway.local");
+    const frontendCookie = await login(app, "frontend@bytedance.com");
     const createdAgent = await app.inject({
       method: "POST",
       url: "/api/agents",
-      headers: { cookie: financeCookie },
-      payload: { name: "Finance Agent" },
+      headers: { cookie: frontendCookie },
+      payload: { name: "Frontend Agent" },
     });
     const exactPrompt = "Estimate the approved aggregate budget.";
     const issued = await app.inject({
       method: "POST",
       url: "/api/delegation-contracts",
-      headers: { cookie: financeCookie },
+      headers: { cookie: frontendCookie },
       payload: {
-        requiredCapability: "finance.cost-analysis",
+        requiredCapability: "frontend.interface-implementation",
         granteeHumanId: "22222222-2222-4222-8222-222222222222",
         agentId: createdAgent.json().agent.id,
         exactPrompt,
@@ -1474,12 +1544,12 @@ describe("HTTP identity and authorization boundary", () => {
       },
     });
     const contractId = issued.json().contract.id as string;
-    const hrCookie = await login(app, "hr@agent-gateway.local");
+    const backendCookie = await login(app, "backend@bytedance.com");
 
     const response = await app.inject({
       method: "POST",
       url: `/api/delegation-contracts/${contractId}/invoke`,
-      headers: { cookie: hrCookie },
+      headers: { cookie: backendCookie },
       payload: { content: exactPrompt },
     });
 
@@ -1491,7 +1561,7 @@ describe("HTTP identity and authorization boundary", () => {
     const passes = await app.inject({
       method: "GET",
       url: "/api/delegation-contracts?box=incoming",
-      headers: { cookie: hrCookie },
+      headers: { cookie: backendCookie },
     });
     expect(passes.json().contracts[0]).toMatchObject({
       id: contractId,
@@ -1503,33 +1573,33 @@ describe("HTTP identity and authorization boundary", () => {
 
   it("does not admit a delegated Run when the owner stops during input preflight", async () => {
     const { app, repository, runner } = await makeHarness();
-    const financeCookie = await login(app, "finance@agent-gateway.local");
+    const frontendCookie = await login(app, "frontend@bytedance.com");
     const createdAgent = await app.inject({
       method: "POST",
       url: "/api/agents",
-      headers: { cookie: financeCookie },
-      payload: { name: "Finance Agent" },
+      headers: { cookie: frontendCookie },
+      payload: { name: "Frontend Agent" },
     });
     const agentId = createdAgent.json().agent.id as string;
     const exactPrompt = "Calculate the approved aggregate budget.";
-    const financeResource = RESOURCE_FIXTURES.find(
-      (resource) => resource.ownerDepartment === "finance",
+    const frontendResource = RESOURCE_FIXTURES.find(
+      (resource) => resource.ownerDepartment === "frontend",
     )!;
     const issued = await app.inject({
       method: "POST",
       url: "/api/delegation-contracts",
-      headers: { cookie: financeCookie },
+      headers: { cookie: frontendCookie },
       payload: {
-        requiredCapability: "finance.cost-analysis",
+        requiredCapability: "frontend.interface-implementation",
         granteeHumanId: "22222222-2222-4222-8222-222222222222",
         agentId,
         exactPrompt,
-        approvedResourceIds: [financeResource.id],
+        approvedResourceIds: [frontendResource.id],
         expiresInSeconds: 600,
       },
     });
     const contractId = issued.json().contract.id as string;
-    const hrCookie = await login(app, "hr@agent-gateway.local");
+    const backendCookie = await login(app, "backend@bytedance.com");
 
     let inputReadEntered!: () => void;
     let releaseInputRead!: () => void;
@@ -1550,14 +1620,14 @@ describe("HTTP identity and authorization boundary", () => {
     const invocationPromise = app.inject({
       method: "POST",
       url: `/api/delegation-contracts/${contractId}/invoke`,
-      headers: { cookie: hrCookie },
+      headers: { cookie: backendCookie },
       payload: { content: exactPrompt },
     });
     await inputReadPending;
     const stopped = await app.inject({
       method: "POST",
       url: `/api/agents/${agentId}/stop`,
-      headers: { cookie: financeCookie },
+      headers: { cookie: frontendCookie },
     });
     expect(stopped.statusCode).toBe(200);
     expect(stopped.json().agent.status).toBe("stopped");
@@ -1568,7 +1638,7 @@ describe("HTTP identity and authorization boundary", () => {
     const result = await app.inject({
       method: "GET",
       url: `/api/delegation-contracts/${contractId}/result`,
-      headers: { cookie: hrCookie },
+      headers: { cookie: backendCookie },
     });
     expect(result.json()).toMatchObject({
       contractStatus: "active",
@@ -1580,20 +1650,20 @@ describe("HTTP identity and authorization boundary", () => {
 
   it("serializes pass revocation against invocation so only one transition wins", async () => {
     const { app, runner } = await makeHarness();
-    const financeCookie = await login(app, "finance@agent-gateway.local");
+    const frontendCookie = await login(app, "frontend@bytedance.com");
     const createdAgent = await app.inject({
       method: "POST",
       url: "/api/agents",
-      headers: { cookie: financeCookie },
-      payload: { name: "Finance Agent" },
+      headers: { cookie: frontendCookie },
+      payload: { name: "Frontend Agent" },
     });
     const exactPrompt = "Calculate one approved budget scenario.";
     const issued = await app.inject({
       method: "POST",
       url: "/api/delegation-contracts",
-      headers: { cookie: financeCookie },
+      headers: { cookie: frontendCookie },
       payload: {
-        requiredCapability: "finance.cost-analysis",
+        requiredCapability: "frontend.interface-implementation",
         granteeHumanId: "22222222-2222-4222-8222-222222222222",
         agentId: createdAgent.json().agent.id,
         exactPrompt,
@@ -1602,19 +1672,19 @@ describe("HTTP identity and authorization boundary", () => {
       },
     });
     const contractId = issued.json().contract.id as string;
-    const hrCookie = await login(app, "hr@agent-gateway.local");
+    const backendCookie = await login(app, "backend@bytedance.com");
 
     const [invocation, revocation] = await Promise.all([
       app.inject({
         method: "POST",
         url: `/api/delegation-contracts/${contractId}/invoke`,
-        headers: { cookie: hrCookie },
+        headers: { cookie: backendCookie },
         payload: { content: exactPrompt },
       }),
       app.inject({
         method: "POST",
         url: `/api/delegation-contracts/${contractId}/revoke`,
-        headers: { cookie: financeCookie },
+        headers: { cookie: frontendCookie },
       }),
     ]);
 
@@ -1633,7 +1703,7 @@ describe("HTTP identity and authorization boundary", () => {
     const ownerView = await app.inject({
       method: "GET",
       url: "/api/delegation-contracts?box=outgoing",
-      headers: { cookie: financeCookie },
+      headers: { cookie: frontendCookie },
     });
     expect(ownerView.json().contracts[0].status).toMatch(/^(consumed|revoked)$/);
     await app.close();

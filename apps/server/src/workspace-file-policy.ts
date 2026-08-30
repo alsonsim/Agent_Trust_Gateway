@@ -25,6 +25,7 @@ export class WorkspaceFileNotFoundError extends Error {
 const MAX_READ_BYTES = 256 * 1024;
 const protectedDirectoryNames = new Set([".aws", ".kube", ".ssh", "secrets"]);
 const protectedFileNames = new Set([
+  ".gitignore",
   ".npmrc",
   ".pypirc",
   "credentials.json",

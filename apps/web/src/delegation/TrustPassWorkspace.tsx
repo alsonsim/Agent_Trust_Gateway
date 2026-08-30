@@ -69,26 +69,29 @@ function scopedApprovalDraft(
 }
 
 const capabilityByDepartment: Record<Department, CapabilityId> = {
-  finance: "finance.cost-analysis",
-  hr: "hr.people-operations",
-  research: "research.evidence-synthesis",
+  frontend: "frontend.interface-implementation",
+  backend: "backend.service-implementation",
+  qa: "qa.release-validation",
 };
 
 const capabilityLabelByDepartment: Record<Department, string> = {
-  finance: "Finance cost analysis",
-  hr: "HR people operations",
-  research: "Research evidence synthesis",
+  frontend: "Frontend interface implementation",
+  backend: "Backend service implementation",
+  qa: "QA release validation",
 };
 
 const requestExampleByDepartment: Record<Department, string> = {
-  finance: "Synthesize the evidence from recent studies about engineering productivity.",
-  hr: "Analyze the approved quarterly launch budget and contingency, then summarize the available budget capacity.",
-  research: "Analyze the approved quarterly launch budget and contingency, then summarize the available budget capacity.",
+  frontend:
+    "Implement the validated GET /api/profile backend service from the approved contract and include tests.",
+  backend:
+    "Implement an accessible profile page interface from the approved requirements, including loading and error states.",
+  qa:
+    "Implement an accessible profile page interface from the approved requirements, including loading and error states.",
 };
 
 function departmentLabel(department: Department): string {
-  return department === "hr"
-    ? "HR"
+  return department === "qa"
+    ? "QA"
     : department.slice(0, 1).toUpperCase() + department.slice(1);
 }
 
@@ -1029,7 +1032,7 @@ export function TrustPassWorkspace({
                             </select>
                           </label>
                           <fieldset className="resource-selector">
-                            <legend>Approved aggregate inputs</legend>
+                            <legend>Approved protected inputs</legend>
                             {ownedResources.length === 0 ? <span>No protected inputs selected.</span> : ownedResources.map((resource) => (
                               <label className="trust-checkbox" key={resource.id}>
                                 <input type="checkbox" checked={draft.resourceIds.includes(resource.id)} onChange={() => toggleApprovalResource(request.id, resource.id)} disabled={busyKey !== null} />

@@ -11,32 +11,32 @@ import { digestExactPrompt } from "./delegation-digest.js";
 describe("capability broker", () => {
   it("exposes a deterministic, bounded capability catalog", () => {
     expect(CAPABILITY_CATALOG.map((capability) => capability.id)).toEqual([
-      "finance.cost-analysis",
-      "hr.people-operations",
-      "research.evidence-synthesis",
+      "frontend.interface-implementation",
+      "backend.service-implementation",
+      "qa.release-validation",
     ]);
-    expect(getCapabilityDefinition("finance.cost-analysis")).toMatchObject({
-      label: "Finance cost analysis",
-      providerDepartment: "finance",
+    expect(getCapabilityDefinition("frontend.interface-implementation")).toMatchObject({
+      label: "Frontend interface implementation",
+      providerDepartment: "frontend",
     });
     expect(getCapabilityDefinition("unknown.capability")).toBeNull();
   });
 
   it.each([
     [
-      "Estimate the budget impact of hiring 12 engineers.",
-      "hr",
-      "finance.cost-analysis",
+      "Create a typed profile API handler with input validation.",
+      "frontend",
+      "backend.service-implementation",
     ],
     [
-      "Draft an onboarding and employee benefits policy.",
-      "finance",
-      "hr.people-operations",
+      "Implement a React profile page with accessible loading and error states.",
+      "backend",
+      "frontend.interface-implementation",
     ],
     [
-      "Synthesize the evidence across these research studies.",
-      "finance",
-      "research.evidence-synthesis",
+      "Create a release regression test plan for the profile workflow.",
+      "frontend",
+      "qa.release-validation",
     ],
   ] as const)("discovers a missing private capability for %s", (prompt, department, capability) => {
     const discovery = discoverCapability(prompt, department);
@@ -48,14 +48,14 @@ describe("capability broker", () => {
   });
 
   it("does not recommend delegation to the requester's own department", () => {
-    expect(discoverCapability("Review the quarterly budget.", "finance")).toMatchObject({
+    expect(discoverCapability("Implement an accessible React profile page.", "frontend")).toMatchObject({
       required: false,
-      capability: "finance.cost-analysis",
+      capability: "frontend.interface-implementation",
     });
   });
 
   it("returns no capability when the prompt has no catalog signal", () => {
-    expect(discoverCapability("Write a friendly greeting.", "research")).toMatchObject({
+    expect(discoverCapability("Write a friendly greeting.", "qa")).toMatchObject({
       required: false,
       capability: null,
       capabilityLabel: null,
@@ -65,8 +65,8 @@ describe("capability broker", () => {
 
   it("redacts likely personal information from the summary without changing the digest", () => {
     const prompt =
-      "Estimate hiring cost for employee name: Alice Tan, email alice@example.com, phone +65 9123 4567.";
-    const discovery = discoverCapability(prompt, "hr");
+      "Create an API request for employee name: Alice Tan, email alice@example.com, phone +65 9123 4567.";
+    const discovery = discoverCapability(prompt, "frontend");
 
     expect(assessPersonalInformation(prompt)).toBe("possible");
     expect(discovery.personalInformation).toBe("possible");

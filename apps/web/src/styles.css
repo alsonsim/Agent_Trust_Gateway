@@ -235,15 +235,15 @@ textarea:focus-visible {
   font-weight: 800;
 }
 
-.team-finance {
+.team-frontend {
   background: linear-gradient(145deg, #318267, #205f4d);
 }
 
-.team-hr {
+.team-backend {
   background: linear-gradient(145deg, #c66a76, #96505c);
 }
 
-.team-research {
+.team-qa {
   background: linear-gradient(145deg, #7f6ddb, #5846b5);
 }
 
@@ -1530,15 +1530,15 @@ textarea:focus {
   background: #fbfaf7;
 }
 
-.resource-finance {
+.resource-frontend {
   border-top-color: #4b9b7c;
 }
 
-.resource-hr {
+.resource-backend {
   border-top-color: #c77781;
 }
 
-.resource-research {
+.resource-qa {
   border-top-color: #8673df;
 }
 
@@ -2004,6 +2004,11 @@ textarea:focus {
   background: #e4f0f6;
 }
 
+.scenario-agent {
+  color: #1e6781;
+  background: #e1f1f7;
+}
+
 .scenario-target {
   overflow: hidden;
   color: #70716a;
@@ -2037,8 +2042,11 @@ textarea:focus {
 }
 
 .scenario-expected strong {
+  min-width: 0;
   color: #4c4d46;
   font-size: 12px;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .scenario-card .button-resource {
@@ -2052,6 +2060,12 @@ textarea:focus {
   flex-wrap: wrap;
   color: #71726b;
   font-size: 10px;
+}
+
+.scenario-result > span:not(.decision-pill) {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .scenario-decision-heading {

@@ -107,6 +107,14 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
   const codexExecutable = resolveCodexExecutable(env.CODEX_BIN);
   const containerCodexExecutable = resolveContainerCodexExecutable(env.CONTAINER_CODEX_BIN);
   const authToken = env.APP_AUTH_TOKEN?.trim() ?? "";
+  if (
+    env.NODE_ENV === "production" &&
+    (env.LOCAL_INSECURE_RUNTIME_KEY_PASSTHROUGH || env.LOCAL_INSECURE_RUNTIME_NETWORK)
+  ) {
+    throw new Error(
+      "LOCAL_INSECURE_RUNTIME_KEY_PASSTHROUGH and LOCAL_INSECURE_RUNTIME_NETWORK are development-only escape hatches",
+    );
+  }
   const loopbackHosts = new Set(["127.0.0.1", "::1", "localhost"]);
   if (env.NODE_ENV === "production" && !loopbackHosts.has(env.HOST)) {
     if (

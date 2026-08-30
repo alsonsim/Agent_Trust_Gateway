@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import path from "node:path";
 import type { AppConfig } from "./config.js";
 import { isArkConfigured } from "./config.js";
 import { ContainerRemovalUnverifiedError } from "./container-codex-runner.js";
@@ -6,19 +7,20 @@ import { DelegatedCodexHomeManager } from "./delegated-codex-home.js";
 import { HttpError, RunCancelledError } from "./errors.js";
 import type { RuntimeActionFirewall } from "./runtime-action-firewall.js";
 import { JsonStore } from "./store.js";
-import type {
-  Agent,
-  AgentRun,
-  AgentRunner,
-  CreateAgentInput,
-  Database,
-  DelegationContract,
-  Department,
-  Message,
-  RuntimeAuthorizationContext,
-  UpdateAgentInput,
+import {
+  DEPARTMENTS,
+  type Agent,
+  type AgentRun,
+  type AgentRunner,
+  type CreateAgentInput,
+  type Database,
+  type DelegationContract,
+  type Department,
+  type Message,
+  type RuntimeAuthorizationContext,
+  type UpdateAgentInput,
 } from "./types.js";
-import { WorkspaceManager } from "./workspace.js";
+import { runtimeWorkspaceStateId, WorkspaceManager } from "./workspace.js";
 import type { DelegatedWorkspaceInput } from "./workspace.js";
 
 const now = () => new Date().toISOString();
@@ -67,14 +69,45 @@ export class AgentService {
         );
       }
     }
-    for (const department of ["finance", "hr", "research"] as const) {
+    const agentsBeforeProfileMigration = this.store.snapshot().agents;
+    for (const department of DEPARTMENTS) {
       await this.workspaces.ensureProfile(this.workspaces.profile(department));
+    }
+    const ownersByLegacyWorkspace = new Map<string, Set<string>>();
+    for (const agent of agentsBeforeProfileMigration) {
+      const workspaceKey = normalizedWorkspaceKey(agent.workspacePath);
+      const owners = ownersByLegacyWorkspace.get(workspaceKey) ?? new Set<string>();
+      owners.add(agent.ownerId);
+      ownersByLegacyWorkspace.set(workspaceKey, owners);
+    }
+    const importedLegacyWorkspaces = new Set<string>();
+    for (const agent of agentsBeforeProfileMigration) {
+      await this.workspaces.ensureOwnerWorkspace(
+        this.workspaces.profile(agent.department),
+        agent.ownerId,
+      );
+      const workspaceKey = normalizedWorkspaceKey(agent.workspacePath);
+      const owners = ownersByLegacyWorkspace.get(workspaceKey);
+      if (owners?.size === 1 && !importedLegacyWorkspaces.has(workspaceKey)) {
+        await this.workspaces.importLegacyWorkspace(
+          agent,
+          this.workspaces.profile(agent.department),
+        );
+        importedLegacyWorkspaces.add(workspaceKey);
+      }
     }
     await this.store.mutate((database) => {
       const timestamp = now();
-      for (const department of ["finance", "hr", "research"] as const) {
+      for (const department of DEPARTMENTS) {
         const profile = this.workspaces.profile(department);
-        if (!database.workspaceProfiles.some((item) => item.id === profile.id)) {
+        const existingProfile = database.workspaceProfiles.find(
+          (item) => item.id === profile.id,
+        );
+        if (existingProfile) {
+          existingProfile.department = department;
+          existingProfile.workspacePath = profile.workspacePath;
+          existingProfile.updatedAt = timestamp;
+        } else {
           database.workspaceProfiles.push(profile);
         }
       }
@@ -86,15 +119,13 @@ export class AgentService {
         }
       }
       for (const agent of database.agents) {
-        const profile = database.workspaceProfiles.find(
-          (item) => item.id === agent.workspaceProfileId,
+        // The role profile remains shared metadata, while writable files are
+        // isolated by exact owner within that role.
+        agent.workspacePath = this.workspaces.ownerWorkspacePath(
+          agent.department,
+          agent.ownerId,
         );
-        if (profile) {
-          // Legacy UUID workspaces stay on disk for recovery, but new and
-          // migrated Agent execution uses the deterministic department profile.
-          agent.workspacePath = profile.workspacePath;
-          agent.updatedAt = timestamp;
-        }
+        agent.updatedAt = timestamp;
         if (agent.status === "busy") {
           agent.status = "ready";
           agent.updatedAt = now();
@@ -128,10 +159,10 @@ export class AgentService {
     }
   }
 
-  listAgents(department?: Department): Agent[] {
+  listAgents(ownerId?: string): Agent[] {
     const agents = this.store.snapshot().agents;
     return agents
-      .filter((agent) => department === undefined || agent.department === department)
+      .filter((agent) => ownerId === undefined || agent.ownerId === ownerId)
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
   }
 
@@ -152,19 +183,17 @@ export class AgentService {
 
   async createAgent(
     ownerId: string,
-    departmentOrInput: Department | CreateAgentInput,
-    suppliedInput?: CreateAgentInput,
+    department: Department,
+    input: CreateAgentInput,
   ): Promise<Agent> {
-    const department =
-      typeof departmentOrInput === "string"
-        ? departmentOrInput
-        : legacyDepartmentForOwner(ownerId);
-    const input = typeof departmentOrInput === "string" ? suppliedInput : departmentOrInput;
-    if (!input) throw new Error("Agent input is required");
     const timestamp = now();
     const id = randomUUID();
     const profile = this.workspaces.profile(department);
     await this.workspaces.ensureProfile(profile);
+    const ownerWorkspacePath = await this.workspaces.ensureOwnerWorkspace(
+      profile,
+      ownerId,
+    );
     const agent: Agent = {
       id,
       department,
@@ -175,7 +204,7 @@ export class AgentService {
       instructions: input.instructions?.trim() ?? "",
       status: "ready",
       revokedAt: null,
-      workspacePath: profile.workspacePath,
+      workspacePath: ownerWorkspacePath,
       codexThreadId: null,
       lastError: null,
       createdAt: timestamp,
@@ -348,12 +377,13 @@ export class AgentService {
       const profileBusy = database.runs.some((candidate) => {
         if (candidate.status !== "queued" && candidate.status !== "running") return false;
         const candidateAgent = database.agents.find((item) => item.id === candidate.agentId);
-        return candidateAgent?.workspaceProfileId === storedAgent.workspaceProfileId;
+        return candidateAgent?.workspaceProfileId === storedAgent.workspaceProfileId &&
+          candidateAgent.ownerId === storedAgent.ownerId;
       });
       if (profileBusy) {
         throw new HttpError(
           409,
-          "Another Agent is using this shared department workspace",
+          "Another Agent is using this owner's role workspace",
         );
       }
       database.runs.push(run);
@@ -713,11 +743,16 @@ export class AgentService {
         agentId: agentAtStart.id,
         workspaceProfileId: options.delegated
           ? "delegated-" + run.id
-          : agentAtStart.workspaceProfileId,
+          : runtimeWorkspaceStateId(
+              agentAtStart.department,
+              agentAtStart.ownerId,
+            ),
         workspacePath: options.workspacePath,
-        prompt: options.prompt,
+        prompt: options.delegated
+          ? options.prompt
+          : runtimePrompt(agentAtStart, options.prompt),
         threadId: options.threadId,
-        codexHome: options.codexHome,
+        ...(options.codexHome ? { codexHome: options.codexHome } : {}),
       });
       const output = options.delegated
         ? redactDelegatedOutput(result.output, [
@@ -922,8 +957,24 @@ export function redactDelegatedOutput(
   );
 }
 
-function legacyDepartmentForOwner(ownerId: string): Department {
-  if (ownerId === "22222222-2222-4222-8222-222222222222") return "hr";
-  if (ownerId === "33333333-3333-4333-8333-333333333333") return "research";
-  return "finance";
+function runtimePrompt(agent: Agent, userPrompt: string): string {
+  const instructions = agent.instructions.trim() ||
+    "Help the user complete coding tasks in this workspace. Explain material results concisely.";
+  return [
+    "You are the coding Agent named " + agent.name + ".",
+    agent.description ? "Purpose: " + agent.description : "",
+    "",
+    "Agent-specific instructions:",
+    instructions,
+    "",
+    "User request:",
+    userPrompt,
+  ]
+    .filter((line, index, lines) => !(line === "" && lines[index - 1] === ""))
+    .join("\n");
+}
+
+function normalizedWorkspaceKey(workspacePath: string): string {
+  const resolved = path.resolve(workspacePath);
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
 }

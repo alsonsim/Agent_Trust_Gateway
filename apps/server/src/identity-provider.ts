@@ -6,7 +6,7 @@ import {
 } from "node:crypto";
 import { isIP } from "node:net";
 
-export type Department = "finance" | "hr" | "research";
+export type Department = "frontend" | "backend" | "qa";
 
 export interface HumanPrincipal {
   id: string;
@@ -36,27 +36,27 @@ export interface IdentityProvider {
 export const DEMO_PRINCIPALS = [
   {
     id: "11111111-1111-4111-8111-111111111111",
-    email: "finance@agent-gateway.local",
-    displayName: "Finance",
-    department: "finance",
+    email: "frontend@bytedance.com",
+    displayName: "Frontend",
+    department: "frontend",
   },
   {
     id: "22222222-2222-4222-8222-222222222222",
-    email: "hr@agent-gateway.local",
-    displayName: "HR",
-    department: "hr",
+    email: "backend@bytedance.com",
+    displayName: "Backend",
+    department: "backend",
   },
   {
     id: "33333333-3333-4333-8333-333333333333",
-    email: "research@agent-gateway.local",
-    displayName: "Research",
-    department: "research",
+    email: "qa@bytedance.com",
+    displayName: "QA",
+    department: "qa",
   },
 ] as const satisfies readonly HumanPrincipal[];
 
-export const FINANCE_PRINCIPAL = DEMO_PRINCIPALS[0];
-export const HR_PRINCIPAL = DEMO_PRINCIPALS[1];
-export const RESEARCH_PRINCIPAL = DEMO_PRINCIPALS[2];
+export const FRONTEND_PRINCIPAL = DEMO_PRINCIPALS[0];
+export const BACKEND_PRINCIPAL = DEMO_PRINCIPALS[1];
+export const QA_PRINCIPAL = DEMO_PRINCIPALS[2];
 
 const AUTHENTICATION_FAILED = "Authentication failed";
 
@@ -153,7 +153,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isDepartment(value: unknown): value is Department {
-  return value === "finance" || value === "hr" || value === "research";
+  return value === "frontend" || value === "backend" || value === "qa";
 }
 
 function parseDemoPayload(value: unknown): DemoTokenPayload {

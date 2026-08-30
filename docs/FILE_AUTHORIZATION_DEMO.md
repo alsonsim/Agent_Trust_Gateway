@@ -23,6 +23,22 @@ policy reason codes:
 
 Owner mismatches remain attributable as `HUMAN_AGENT_OWNER_MISMATCH`.
 
+## Engineering ownership fixtures
+
+The ownership demo uses three coding roles and synthetic, separately owned
+resources:
+
+| Identity | Email | Resource |
+| --- | --- | --- |
+| Frontend | `frontend@bytedance.com` | **Profile page requirements** (`profile-page-requirements.md`) |
+| Backend | `backend@bytedance.com` | **Profile API contract** (`profile-api-contract.md`) |
+| QA | `qa@bytedance.com` | **Profile release test plan** (`profile-release-test-plan.md`) |
+
+Protected resource content is released only through
+`POST /api/agents/:id/resources/:resourceId/read`. The middleware derives the
+human from the HttpOnly session and the Agent owner from stored server state;
+neither identity is accepted from request JSON.
+
 ## Policy rules
 
 The workspace policy resolves the Agent workspace and requested target through
@@ -34,7 +50,7 @@ It denies:
 - Paths outside the workspace, including `..` traversal.
 - Symlinks that resolve outside the workspace.
 - Symlinks that resolve to protected files.
-- `.env`, `.env.*`, `.npmrc`, `.pypirc`, `credentials.json`, `id_rsa`,
+- `.env`, `.env.*`, `.gitignore`, `.npmrc`, `.pypirc`, `credentials.json`, `id_rsa`,
   `id_ed25519`, `id_dsa`, `.aws`, `.kube`, `.ssh`, `secrets`, `*.pem`, and
   `*.key` paths.
 - Files larger than 256 KiB.
@@ -44,24 +60,36 @@ they never include file contents.
 
 ## Three-minute demo
 
-1. Start the app in demo mode, sign in, create an Agent, and open **Access &
+1. Start the app in demo mode. Sign in as Frontend with
+   `frontend@bytedance.com`, create **Profile UI Agent**, and open **Access &
    audit**.
-2. Start with the selected-Agent summary: owner, Runtime state, Trust Gateway
+2. Read **Profile page requirements**. It is allowed because the human, Agent,
+   and resource share the Frontend owner. Attempt **Profile API contract** next;
+   it is denied with `AGENT_RESOURCE_OWNER_MISMATCH`, and no content is returned.
+3. Start with the selected-Agent summary: owner, Runtime state, Trust Gateway
    state, actual allowed/denied totals, and the latest persisted decision are
-   visible before any interaction.
-3. In **Four-step security demo**, run **Safe file read**. `README.md` is
+   visible before any workspace-file interaction.
+4. In **Five-step security demo**, run **Safe file read**. `README.md` is
    allowed, returned only by the server, and shown in the authorization result.
-4. Run **Protected secret** and **Path traversal**. `.env` returns
+5. Run **Protected secret** and **Path traversal**. `.env` returns
    `PROTECTED_SECRET_FILE`; `../launchpad.json` returns
    `PATH_OUTSIDE_WORKSPACE`. Both cards report that no Run was created.
-5. Run **Dangerous shell command**. The Runtime Action Firewall returns
+6. Run **Dangerous shell command**. The Runtime Action Firewall returns
    `RUNTIME_COMMAND_DENIED` for `rm -rf` before Codex starts, and the result
    confirms that no Run was created.
-6. Use the prominent latest-decision inspector to show action, target, policy
+7. Create an Agent under a second identity, then select **Run scenario** on
+   **Cross-team Agent**. Expect HTTP `403`, `AUTHORIZATION_DENIED`, and
+   `HUMAN_AGENT_OWNER_MISMATCH`; the target is redacted as `Protected Agent`,
+   the denial is audited, and no Runtime starts.
+8. Use the prominent latest-decision inspector to show action, target, policy
    code, explanation, Run creation state, and expandable request metadata.
    Then filter the newest-first timeline by denied, file, shell, or network
    events. Consecutive repeated decisions are grouped without discarding their
    audit evidence.
+
+This implementation does not include Trust Pass delegation. The Backend identity
+cannot borrow, inherit, or temporarily invoke the Frontend Agent; the denial in
+step 7 is the intended policy result.
 
 ## Security console presentation
 
@@ -93,7 +121,7 @@ created, then click it again to confirm it remains available for retry.
 ## Adversarial coverage
 
 `apps/server/src/workspace-file-policy.test.ts` verifies safe reads, `.env`,
-traversal, a symlink to `.env`, a symlink outside the workspace, and oversized
+`.env.local`, `.gitignore`, traversal, a symlink to `.env`, a symlink outside the workspace, and oversized
 files. `apps/server/src/app.test.ts` verifies the authenticated HTTP route,
 secret non-disclosure, traversal denial, and persisted decisions.
 
@@ -104,25 +132,28 @@ It is enforced by the backend, not by the browser UI, and an allowed decision is
 persisted before the backend releases file content. If an allow decision cannot
 be persisted, access fails closed.
 
-## Department workspace isolation
+## Engineering-role workspace isolation
 
-New Agents are bound by the backend to the authenticated Finance, HR, or
-Research department and use that department's persistent workspace profile.
+New Agents are bound by the backend to the authenticated Frontend, Backend, or
+QA role and use an exact-owner writable workspace beneath that role's persistent
+profile. A second Supabase principal assigned the same role receives a separate
+workspace and Runtime Codex home.
 The browser cannot choose a workspace. In the disposable container Runtime,
-only a filtered projection of that department workspace is mounted. Repository
-source, other departments, symlinks, `.env`/`.env.*`, credentials, private
+only a filtered projection of that owner's role workspace is mounted. Repository
+source, other owners or roles, symlinks, `.env`/`.env.*`, credentials, private
 keys, and protected directories are absent from that filesystem projection.
 Safe files such as `README.md` remain available.
 
-The hardened Runtime currently disables direct network access and does not pass
-`ARK_API_KEY` into the Agent container. A server-side model proxy using
-short-lived Runtime credentials is required before connected Codex execution
-can be enabled without reintroducing a long-lived provider credential.
+The hardened Runtime disables direct network access and does not pass
+`ARK_API_KEY` into the Agent container by default. A server-side model proxy
+using short-lived Runtime credentials is the preferred production design. A
+disposable local demo can opt into both network access and key passthrough with
+the documented development-only flags.
 
 ## Runtime Action Firewall
 
-The next Track 1 increment adds a pre-dispatch Runtime Action Firewall to the
-Playground path. Before a Run is created, explicit file reads and writes named
+The pre-dispatch Runtime Action Firewall protects the Playground path. Before a
+Run is created, explicit file reads and writes named
 in the user turn are checked with the workspace policy, dangerous shell commands
 are denied, and direct network clients (`curl`, `wget`, and `ssh`) are denied.
 Every decision is persisted before the runner is called, so a denied action does

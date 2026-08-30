@@ -7,19 +7,14 @@ const actions = [
   "agent.start", "agent.stop", "agent.invoke", "run.read", "resource.read",
   "file.read", "file.write", "shell.execute", "network.request",
   "delegation.request", "delegation.approve", "delegation.reject", "delegation.revoke",
-  "access-request.create", "access-request.approve", "access-request.deny",
-  "access-grant.revoke",
 ];
 const targetTypes = [
   "agent", "run", "resource", "file", "command", "network", "delegation",
-  "capability", "access-request", "access-grant",
+  "capability",
 ];
 const reasonCodes = [
-  "OWNER_MATCH", "HUMAN_AGENT_OWNER_MISMATCH", "HUMAN_AGENT_DEPARTMENT_MISMATCH",
-  "AGENT_REVOKED", "AGENT_RESOURCE_OWNER_MISMATCH", "DEPARTMENT_MATCH",
-  "CROSS_DEPARTMENT_GRANT_REQUIRED", "CROSS_DEPARTMENT_GRANT_ACTIVE",
-  "ACCESS_REQUEST_PENDING", "ACCESS_REQUEST_APPROVED", "ACCESS_REQUEST_DENIED",
-  "ACCESS_GRANT_REVOKED", "WORKSPACE_PATH_ALLOWED", "PATH_OUTSIDE_WORKSPACE",
+  "OWNER_MATCH", "HUMAN_AGENT_OWNER_MISMATCH", "AGENT_REVOKED",
+  "AGENT_RESOURCE_OWNER_MISMATCH", "WORKSPACE_PATH_ALLOWED", "PATH_OUTSIDE_WORKSPACE",
   "PROTECTED_SECRET_FILE", "FILE_TOO_LARGE", "RUNTIME_COMMAND_ALLOWED",
   "RUNTIME_COMMAND_DENIED", "RUNTIME_NETWORK_DENIED", "DELEGATION_REQUESTED",
   "DELEGATION_APPROVED", "DELEGATION_REJECTED", "DELEGATION_ACTIVE",

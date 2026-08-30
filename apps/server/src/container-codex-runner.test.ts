@@ -52,7 +52,7 @@ function runnerConfig() {
 
 const runnerRequest = {
   agentId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-  workspaceProfileId: "department-finance",
+  workspaceProfileId: "department-frontend",
   workspacePath: "/tmp/delegated-workspace",
   prompt: "complete the approved task",
   threadId: null,
@@ -96,7 +96,7 @@ describe("Container Codex runner", () => {
     const args = buildContainerRunArgs(
       {
         agentId: "agent/unsafe",
-        workspaceProfileId: "department-finance",
+        workspaceProfileId: "department-frontend",
         workspacePath: "/tmp/agent-workspace",
         prompt: "write a small program",
         threadId: null,
@@ -150,7 +150,7 @@ describe("Container Codex runner", () => {
     const args = buildContainerRunArgs(
       {
         agentId: "agent",
-        workspaceProfileId: "department-finance",
+        workspaceProfileId: "department-frontend",
         workspacePath: "/tmp/agent-workspace",
         prompt: "write a small program",
         threadId: null,
@@ -182,7 +182,7 @@ describe("Container Codex runner", () => {
     const args = buildContainerRunArgs(
       {
         agentId: "agent",
-        workspaceProfileId: "department-finance",
+        workspaceProfileId: "department-frontend",
         workspacePath: "/safe/projection",
         prompt: "continue",
         threadId: null,
@@ -220,7 +220,7 @@ describe("Container Codex runner", () => {
     const args = buildContainerRunArgs(
       {
         agentId: "agent",
-        workspaceProfileId: "department-finance",
+        workspaceProfileId: "department-frontend",
         workspacePath: "/tmp/workspace",
         prompt: "continue",
         threadId: "thread-123",
@@ -245,7 +245,7 @@ describe("Container Codex runner", () => {
       buildContainerRunArgs(
         {
           agentId: "agent",
-          workspaceProfileId: "department-finance",
+          workspaceProfileId: "department-frontend",
           workspacePath: "/tmp/workspace",
           prompt: "run once",
           threadId: null,

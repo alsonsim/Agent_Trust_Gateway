@@ -32,9 +32,10 @@ flowchart LR
 
 ### Web UI
 
-Authenticates Finance, HR, or Research; lists only owned Agents; manages the
-unchanged lifecycle and Playground; and displays backend-produced policy
-decisions. It never receives Ark or Supabase server keys.
+Authenticates Frontend (`frontend@bytedance.com`), Backend
+(`backend@bytedance.com`), or QA (`qa@bytedance.com`); lists only owned Agents;
+manages the unchanged lifecycle and Playground; and displays backend-produced
+policy decisions. It never receives Ark or Supabase server keys.
 
 ### Fastify API
 
@@ -49,6 +50,21 @@ ownership, fails closed before protected content is returned, and persists
 attributed `ALLOW`/`DENY` evidence. The same policy contract uses local
 synthetic files in demo mode or Supabase Auth, tables, and RLS in Supabase mode.
 
+The engineering fixtures form one coherent profile-feature workflow while
+remaining separately owned:
+
+| Principal | Protected resource | Suggested Agent |
+| --- | --- | --- |
+| Frontend | **Profile page requirements** (`profile-page-requirements.md`) | Profile UI Agent |
+| Backend | **Profile API contract** (`profile-api-contract.md`) | Profile API Agent |
+| QA | **Profile release test plan** (`profile-release-test-plan.md`) | Profile Release Agent |
+
+Ownership remains non-transferable: ordinary Agent, workspace, history, and
+resource routes always require the exact owner. Trust Pass middleware can admit
+one separately scoped delegated Run after owner approval. The grantee receives
+only that approved task and permitted final result; the underlying Agent and
+resources remain private.
+
 `readWorkspaceFile()` is a separate server-enforced file boundary for an
 Agent's assigned workspace. It verifies the authenticated owner, canonicalizes
 the workspace and requested file, blocks traversal and symlink escapes, blocks
@@ -56,28 +72,34 @@ known credential paths, applies a 256 KiB read limit, persists an authorization
 decision, and only then returns allowed content. The audit label is a normalized
 requested path, never file contents.
 
-### Department workspace profiles
+### Engineering-role workspace profiles
 
 The authenticated backend principal, not the browser, supplies an Agent's
 `department`. New Agents receive the deterministic profile
-`department-finance`, `department-hr`, or `department-research`; each profile
-has one persistent workspace under `AGENT_WORKSPACE_ROOT/<department>`. Agents
-in the same department share that workspace and Runs for one profile are
-serialized. Existing UUID-named workspaces are retained on disk during JSON
-store migration and are not deleted or silently exposed to another profile.
+`department-frontend`, `department-backend`, or `department-qa`; each profile
+is a role template under `AGENT_WORKSPACE_ROOT/<role>`. Each exact owner receives
+a private writable child at `<role>/.owners/<hashed-owner-id>`; Agents owned by
+that same principal share it and their Runs are serialized. A different
+principal assigned the same role receives a different child workspace, while
+Agent APIs continue to check the exact stored owner ID. Legacy workspace content
+is copied only when its stored path maps unambiguously to one owner. A path
+shared by multiple owners is left in place for recovery rather than cloned into
+either private workspace.
 
 `ContainerCodexRunner` creates a disposable projection of only the selected
-profile before launching Codex. It excludes symlinks and every path classified
+owner-scoped profile workspace before launching Codex. It excludes symlinks and every path classified
 as protected by `workspace-file-policy.ts`, then mounts that projection as
 `/workspace`. The Runtime receives neither the repository root nor the shared
-control-plane Codex home; it receives a profile-scoped Codex home containing
-only generated CLI configuration and exec policy. The Runtime root filesystem
-is read-only, capabilities are dropped, and its network is disabled.
+control-plane Codex home; it receives an owner-and-role-scoped Codex home
+containing only generated CLI configuration, exec policy, and that owner's
+session state. The Runtime root filesystem is read-only, capabilities are
+dropped, and its network is disabled.
 
-This establishes a real filesystem boundary for department source and secret
+This establishes a real filesystem boundary for role-owned source and secret
 isolation. A network-disabled Runtime cannot make direct model-provider calls;
-a trusted model proxy or workload-identity adapter is the next required
-Runtime milestone before enabling connected Codex turns in this hardened mode.
+a trusted model proxy or workload-identity adapter is the preferred production
+path. A disposable local demo may explicitly enable both documented insecure
+network and key-passthrough flags; production rejects those escape hatches.
 
 ### AgentService
 
@@ -108,8 +130,9 @@ Existing Runs remain readable to their owner for audit and troubleshooting.
 
 ```text
 data/launchpad.json       Agent, message, and Run metadata
-workspaces/AgentID/       Agent-created files
-workspaces/.deleted/      Archived deleted workspaces
+workspaces/frontend/.owners/<hash>/  Frontend owner workspace
+workspaces/backend/.owners/<hash>/   Backend owner workspace
+workspaces/qa/.owners/<hash>/        QA owner workspace
 codex-home/               Codex configuration and sessions
 ```
 
@@ -150,17 +173,16 @@ mount boundary. This is not claimed as complete tool-level interception.
 
 ### Runtime providers
 
-- `CodexRunner` runs Codex inside the application container for ECS.
+- `CodexRunner` is the local-process compatibility provider for development.
 - `ContainerCodexRunner` starts one disposable Docker, Colima, or Podman
   container for every local turn.
 
-the stored Codex thread, and escalate termination after a grace period.
 Both providers use argv-only process execution, bound output and time, resume
 the stored Codex thread, and escalate termination after a grace period. The
-department isolation guarantee applies to `ContainerCodexRunner`; the legacy
+role-workspace isolation guarantee applies to `ContainerCodexRunner`; the legacy
 local-process runner remains a development compatibility path and must not be
-used for shared department workspaces.
-the stored Codex thread, and escalate termination after a grace period.
+used as a multi-tenant boundary. It still uses the same owner-and-role-scoped
+Codex home so local Supabase development does not mix session files.
 
 ## Deployment profiles
 

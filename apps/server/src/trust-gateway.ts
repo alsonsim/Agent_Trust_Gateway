@@ -86,8 +86,8 @@ export class TrustGateway {
       allowed,
       reasonCode: allowed ? "OWNER_MATCH" : "HUMAN_AGENT_OWNER_MISMATCH",
       reason: allowed
-        ? "The authenticated human owns this Agent."
-        : "The authenticated human does not own this Agent.",
+        ? "The authenticated user owns the requested Agent."
+        : "The authenticated user does not own the requested Agent.",
       redactAgent: !allowed,
     });
     if (!allowed) {
@@ -142,7 +142,7 @@ export class TrustGateway {
       targetLabel: agent.name,
       allowed: true,
       reasonCode: "OWNER_MATCH",
-      reason: "The backend assigned the new Agent to the authenticated department workspace.",
+      reason: "The backend assigned the new Agent to the authenticated user.",
     });
     await this.appendAllowedDecision(decision);
     return decision;
@@ -156,6 +156,34 @@ export class TrustGateway {
         ...resource,
         ownedByCurrentUser: true,
       }));
+  }
+
+  async probeCrossOwnerAgent(
+    principal: HumanPrincipal,
+    requestId: string,
+  ): Promise<never> {
+    const crossOwnerAgent = this.agents
+      .listAgents()
+      .find((agent) => agent.ownerId !== principal.id);
+    if (!crossOwnerAgent) {
+      throw new HttpError(
+        404,
+        "Create an Agent under another identity before running this probe.",
+        { code: "CROSS_OWNER_AGENT_NOT_FOUND" },
+      );
+    }
+
+    await this.authorizeAgent(
+      principal,
+      crossOwnerAgent.id,
+      "agent.read",
+      requestId,
+      {
+        targetId: "redacted",
+        targetLabel: "Protected Agent",
+      },
+    );
+    throw new HttpError(500, "Cross-owner authorization probe did not fail closed");
   }
 
   async revokeAgent(
@@ -175,7 +203,7 @@ export class TrustGateway {
         targetLabel: "Protected Agent",
         allowed: false,
         reasonCode: "HUMAN_AGENT_OWNER_MISMATCH",
-        reason: "The authenticated human does not own this Agent.",
+        reason: "The authenticated user does not own the requested Agent.",
         redactAgent: true,
       });
       await this.appendDeniedDecision(decision);
@@ -220,7 +248,7 @@ export class TrustGateway {
         resource,
         false,
         "HUMAN_AGENT_OWNER_MISMATCH",
-        "The authenticated human cannot act through another user's Agent.",
+        "The authenticated user cannot act through an Agent owned by another user.",
         true,
         true,
       );
@@ -248,7 +276,7 @@ export class TrustGateway {
         resource,
         false,
         "AGENT_RESOURCE_OWNER_MISMATCH",
-        "This document belongs to another department and has no active scoped grant.",
+        "The Agent owner and protected resource owner do not match.",
         false,
         true,
       );
@@ -274,7 +302,7 @@ export class TrustGateway {
       resource,
       true,
       "OWNER_MATCH",
-      "Human, Agent, and resource belong to the same department.",
+      "Human, Agent, and resource ownership match.",
     );
     await this.appendAllowedDecision(decision);
     return { resource: result, decision };
@@ -320,7 +348,7 @@ export class TrustGateway {
         targetLabel: "Protected workspace file",
         allowed: false,
         reasonCode: "HUMAN_AGENT_OWNER_MISMATCH",
-        reason: "The authenticated human cannot read files through another user's Agent.",
+        reason: "The authenticated user cannot read files through another user's Agent.",
         redactAgent: true,
       });
       await this.appendDeniedDecision(decision);
@@ -391,7 +419,7 @@ export class TrustGateway {
     limit: number,
   ): Promise<AuthorizationDecision[]> {
     const ownedAgentIds = this.agents
-      .listAgentsByOwner(principal.id)
+      .listAgents(principal.id)
       .map((agent) => agent.id);
     const decisions = await this.securityRepository.listDecisions(
       principal.id,

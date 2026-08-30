@@ -11,7 +11,7 @@ describe("structured authorization denials", () => {
         requestId: "request-1",
         humanUserId: "11111111-1111-4111-8111-111111111111",
         humanEmail: "owner@example.test",
-        humanDepartment: "finance",
+        humanDepartment: "frontend",
         agentId: "99999999-9999-4999-8999-999999999999",
         agentName: "Demo Agent",
         action: "file.read",

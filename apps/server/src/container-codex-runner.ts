@@ -1,5 +1,5 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
-import { copyFile, mkdir, readdir, rm, stat } from "node:fs/promises";
+import { copyFile, mkdir, readdir, rm } from "node:fs/promises";
 import { promisify } from "node:util";
 import path from "node:path";
 import type { AppConfig } from "./config.js";
@@ -9,6 +9,7 @@ import {
   resolveRunnerCodexHome,
 } from "./codex-runner.js";
 import { RunCancelledError } from "./errors.js";
+import { prepareScopedCodexHome, runtimeStateKey } from "./runtime-state.js";
 import { isProtectedWorkspacePath } from "./workspace-file-policy.js";
 import type {
   AgentRunner,
@@ -247,27 +248,20 @@ export class ContainerCodexRunner implements AgentRunner {
     }
 
     const delegatedRun = request.codexHome !== undefined;
-    const workspaceProfileId = request.workspaceProfileId || request.agentId;
+    const stateKey = runtimeStateKey(request);
     const runtimeWorkspace = delegatedRun
       ? request.workspacePath
       : path.join(
           this.config.dataDirectory,
           "runtime-projections",
-          workspaceProfileId,
+          stateKey,
         );
     if (!delegatedRun) {
       await createWorkspaceProjection(request.workspacePath, runtimeWorkspace);
     }
     const runtimeCodexHome = delegatedRun
       ? resolveRunnerCodexHome(request, this.config)
-      : path.join(
-          this.config.dataDirectory,
-          "runtime-codex-homes",
-          workspaceProfileId,
-        );
-    if (!delegatedRun) {
-      await prepareRuntimeCodexHome(this.config.codexHome, runtimeCodexHome);
-    }
+      : await prepareScopedCodexHome(this.config, stateKey);
     const runtimeConfig = { ...this.config, codexHome: runtimeCodexHome };
     const runtimeRequest = {
       ...request,
@@ -419,22 +413,6 @@ async function copySafeTree(source: string, destination: string): Promise<void> 
     const destinationPath = path.join(destination, entry.name);
     if (entry.isDirectory()) await copySafeTree(sourcePath, destinationPath);
     else if (entry.isFile()) await copyFile(sourcePath, destinationPath);
-  }
-}
-
-async function prepareRuntimeCodexHome(source: string, destination: string): Promise<void> {
-  await mkdir(destination, { recursive: true });
-  for (const relativePath of ["config.toml", "execpolicy/runtime-action-firewall.rules"]) {
-    const sourcePath = path.join(source, relativePath);
-    const destinationPath = path.join(destination, relativePath);
-    try {
-      const sourceStat = await stat(sourcePath);
-      if (!sourceStat.isFile()) continue;
-      await mkdir(path.dirname(destinationPath), { recursive: true });
-      await copyFile(sourcePath, destinationPath);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
   }
 }
 

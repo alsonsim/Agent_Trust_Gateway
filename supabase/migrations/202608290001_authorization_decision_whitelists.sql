@@ -27,11 +27,7 @@ alter table public.authorization_decisions
       'delegation.request',
       'delegation.approve',
       'delegation.reject',
-      'delegation.revoke',
-      'access-request.create',
-      'access-request.approve',
-      'access-request.deny',
-      'access-grant.revoke'
+      'delegation.revoke'
     )
   ),
   add constraint authorization_decisions_target_type_check check (
@@ -43,25 +39,15 @@ alter table public.authorization_decisions
       'command',
       'network',
       'delegation',
-      'capability',
-      'access-request',
-      'access-grant'
+      'capability'
     )
   ),
   add constraint authorization_decisions_reason_code_check check (
     reason_code::text in (
       'OWNER_MATCH',
       'HUMAN_AGENT_OWNER_MISMATCH',
-      'HUMAN_AGENT_DEPARTMENT_MISMATCH',
       'AGENT_REVOKED',
       'AGENT_RESOURCE_OWNER_MISMATCH',
-      'DEPARTMENT_MATCH',
-      'CROSS_DEPARTMENT_GRANT_REQUIRED',
-      'CROSS_DEPARTMENT_GRANT_ACTIVE',
-      'ACCESS_REQUEST_PENDING',
-      'ACCESS_REQUEST_APPROVED',
-      'ACCESS_REQUEST_DENIED',
-      'ACCESS_GRANT_REVOKED',
       'WORKSPACE_PATH_ALLOWED',
       'PATH_OUTSIDE_WORKSPACE',
       'PROTECTED_SECRET_FILE',

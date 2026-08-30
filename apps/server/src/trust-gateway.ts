@@ -17,6 +17,7 @@ import type {
   Agent,
   AuthorizationAction,
   AuthorizationDecision,
+  Department,
   ProtectedResource,
   ProtectedResourceSummary,
 } from "./types.js";
@@ -70,7 +71,7 @@ export class TrustGateway {
     options: AgentAuthorizationOptions = {},
   ): Promise<Agent> {
     const agent = this.agents.getAgent(agentId);
-    const allowed = agent.ownerId === principal.id;
+    const allowed = agentDepartment(agent) === principal.department;
     const targetType = options.targetType ?? "agent";
     const targetId = options.targetId ?? agent.id;
     const targetLabel =
@@ -86,8 +87,8 @@ export class TrustGateway {
       allowed,
       reasonCode: allowed ? "OWNER_MATCH" : "HUMAN_AGENT_OWNER_MISMATCH",
       reason: allowed
-        ? "The authenticated user owns the requested Agent."
-        : "The authenticated user does not own the requested Agent.",
+        ? "The authenticated user belongs to the Agent's department."
+        : "The authenticated user does not belong to the Agent's department.",
       redactAgent: !allowed,
     });
     if (!allowed) {
@@ -142,7 +143,7 @@ export class TrustGateway {
       targetLabel: agent.name,
       allowed: true,
       reasonCode: "OWNER_MATCH",
-      reason: "The backend assigned the new Agent to the authenticated user.",
+      reason: "The backend assigned the new Agent to the authenticated department workspace.",
     });
     await this.appendAllowedDecision(decision);
     return decision;
@@ -152,7 +153,7 @@ export class TrustGateway {
     const resources = await this.securityRepository.listResources();
     return resources.map(({ storageKey: _storageKey, ...resource }) => ({
       ...resource,
-      ownedByCurrentUser: resource.ownerId === principal.id,
+      ownedByCurrentUser: resource.ownerDepartment === principal.department,
     }));
   }
 
@@ -162,7 +163,7 @@ export class TrustGateway {
     requestId: string,
   ): Promise<{ agent: Agent; decision: AuthorizationDecision }> {
     const agent = this.agents.getAgent(agentId);
-    if (agent.ownerId !== principal.id) {
+    if (agentDepartment(agent) !== principal.department) {
       const decision = this.makeDecision({
         principal,
         requestId,
@@ -173,7 +174,7 @@ export class TrustGateway {
         targetLabel: "Protected Agent",
         allowed: false,
         reasonCode: "HUMAN_AGENT_OWNER_MISMATCH",
-        reason: "The authenticated user does not own the requested Agent.",
+        reason: "The authenticated user does not belong to the Agent's department.",
         redactAgent: true,
       });
       await this.appendDeniedDecision(decision);
@@ -210,7 +211,7 @@ export class TrustGateway {
     const resource = resources.find((candidate) => candidate.id === resourceId);
     if (!resource) throw new HttpError(404, "Protected resource not found");
 
-    if (agent.ownerId !== principal.id) {
+    if (agentDepartment(agent) !== principal.department) {
       const decision = this.resourceDecision(
         principal,
         requestId,
@@ -218,7 +219,7 @@ export class TrustGateway {
         resource,
         false,
         "HUMAN_AGENT_OWNER_MISMATCH",
-        "The authenticated user cannot act through an Agent owned by another user.",
+        "The authenticated user cannot act through an Agent in another department.",
         true,
       );
       await this.appendDeniedDecision(decision);
@@ -237,7 +238,7 @@ export class TrustGateway {
       await this.appendDeniedDecision(decision);
       throw deniedError(decision);
     }
-    if (agent.ownerId !== resource.ownerId) {
+    if (agentDepartment(agent) !== resource.ownerDepartment) {
       const decision = this.resourceDecision(
         principal,
         requestId,
@@ -245,7 +246,7 @@ export class TrustGateway {
         resource,
         false,
         "AGENT_RESOURCE_OWNER_MISMATCH",
-        "The Agent owner and protected resource owner do not match.",
+        "This document belongs to another department and has no active scoped grant.",
       );
       await this.appendDeniedDecision(decision);
       throw deniedError(decision);
@@ -269,7 +270,7 @@ export class TrustGateway {
       resource,
       true,
       "OWNER_MATCH",
-      "Human, Agent, and resource ownership match.",
+      "Human, Agent, and resource belong to the same department.",
     );
     await this.appendAllowedDecision(decision);
     return { resource: result, decision };
@@ -282,7 +283,7 @@ export class TrustGateway {
     requestId: string,
   ): Promise<AuthorizedWorkspaceFileRead> {
     const agent = this.agents.getAgent(agentId);
-    if (agent.ownerId !== principal.id) {
+    if (agentDepartment(agent) !== principal.department) {
       const decision = this.makeDecision({
         principal,
         requestId,
@@ -293,7 +294,7 @@ export class TrustGateway {
         targetLabel: "Protected workspace file",
         allowed: false,
         reasonCode: "HUMAN_AGENT_OWNER_MISMATCH",
-        reason: "The authenticated user cannot read files through another user's Agent.",
+        reason: "The authenticated user cannot read files through an Agent in another department.",
         redactAgent: true,
       });
       await this.appendDeniedDecision(decision);
@@ -426,7 +427,8 @@ export class TrustGateway {
   private async appendAllowedDecision(decision: AuthorizationDecision): Promise<void> {
     try {
       await this.securityRepository.appendDecision(decision);
-    } catch {
+    } catch (error) {
+      logAuditPersistenceFailure(error);
       throw new HttpError(
         503,
         "Authorization evidence could not be persisted; access failed closed",
@@ -438,7 +440,8 @@ export class TrustGateway {
   private async appendDeniedDecision(decision: AuthorizationDecision): Promise<void> {
     try {
       await this.securityRepository.appendDecision(decision);
-    } catch {
+    } catch (error) {
+      logAuditPersistenceFailure(error);
       // The request remains denied even if the evidence sink is unavailable.
     }
   }
@@ -453,4 +456,35 @@ function deniedError(decision: AuthorizationDecision): HttpError {
 
 function revocationBlocks(action: AuthorizationAction): boolean {
   return action === "agent.start" || action === "agent.invoke";
+}
+
+function agentDepartment(agent: Agent): Department {
+  if (agent.department) return agent.department;
+  if (agent.ownerId === "22222222-2222-4222-8222-222222222222") return "hr";
+  if (agent.ownerId === "33333333-3333-4333-8333-333333333333") return "research";
+  return "finance";
+}
+
+function logAuditPersistenceFailure(error: unknown): void {
+  const diagnostic =
+    error instanceof HttpError
+      ? {
+          event: "authorization_audit_persistence_failed",
+          errorCode: error.code ?? null,
+          statusCode: error.statusCode,
+          repository: safeDiagnosticValue(error.details, "repository"),
+          httpStatus: safeDiagnosticValue(error.details, "httpStatus"),
+          providerErrorCode: safeDiagnosticValue(error.details, "errorCode"),
+        }
+      : {
+          event: "authorization_audit_persistence_failed",
+          errorCode: error instanceof Error ? error.name : "unknown",
+        };
+  console.error(JSON.stringify(diagnostic));
+}
+
+function safeDiagnosticValue(details: unknown, key: string): string | number | null {
+  if (!details || typeof details !== "object" || !(key in details)) return null;
+  const value = (details as Record<string, unknown>)[key];
+  return typeof value === "string" || typeof value === "number" ? value : null;
 }

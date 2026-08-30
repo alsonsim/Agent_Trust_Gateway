@@ -49,4 +49,33 @@ describe("SupabaseSecurityRepository", () => {
       },
     });
   });
+
+  it("maps a file path target to a UUID while preserving its audit label", async () => {
+    let body = "";
+    const fetchImplementation: typeof fetch = async (_input, init) => {
+      body = String(init?.body ?? "");
+      return new Response(null, { status: 201 });
+    };
+    const repository = new SupabaseSecurityRepository(
+      "https://example.supabase.co",
+      "publishable-key",
+      "secret-key",
+      fetchImplementation,
+    );
+
+    await repository.appendDecision({
+      ...decision,
+      action: "file.read",
+      targetType: "file",
+      targetId: "README.md",
+      targetLabel: "README.md",
+      reasonCode: "WORKSPACE_PATH_ALLOWED",
+    });
+
+    expect(JSON.parse(body)).toMatchObject({
+      target_id: decision.id,
+      target_label: "README.md",
+      action: "file.read",
+    });
+  });
 });

@@ -41,6 +41,7 @@ async function agentFixture(): Promise<Agent> {
     description: "",
     instructions: "",
     status: "ready",
+    revokedAt: null,
     workspacePath,
     codexThreadId: null,
     lastError: null,
@@ -101,5 +102,34 @@ describe("RuntimeActionFirewall", () => {
       });
       expect(decisions.at(-1)).toMatchObject({ action, decision: "deny", reasonCode });
     }
+  });
+
+  it("normalizes direct shell evaluation before denying dangerous commands", async () => {
+    const decisions: AuthorizationDecision[] = [];
+    const firewall = new RuntimeActionFirewall(recordingRepository(decisions));
+    const agent = await agentFixture();
+
+    await expect(
+      firewall.evaluateShell(
+        agent,
+        "Please execute:\n```bash\nrm -rf ./demo-folder\n```",
+        context,
+      ),
+    ).rejects.toMatchObject({
+      statusCode: 403,
+      code: "RUNTIME_ACTION_DENIED",
+      details: expect.objectContaining({
+        action: "shell.execute",
+        decision: "deny",
+        reasonCode: "RUNTIME_COMMAND_DENIED",
+      }),
+    });
+    expect(decisions).toEqual([
+      expect.objectContaining({
+        targetLabel: "rm -rf",
+        decision: "deny",
+        reasonCode: "RUNTIME_COMMAND_DENIED",
+      }),
+    ]);
   });
 });

@@ -72,7 +72,7 @@ async function evaluateWorkspaceFilePath(
   }
 
   const requestedRelativePath = path.relative(workspaceRoot, candidate);
-  if (isProtectedPath(requestedRelativePath)) {
+  if (isProtectedWorkspacePath(requestedRelativePath)) {
     return {
       allowed: false,
       reasonCode: "PROTECTED_SECRET_FILE",
@@ -103,7 +103,7 @@ async function evaluateWorkspaceFilePath(
     );
   }
   const canonicalRelativePath = path.relative(workspaceRoot, canonicalPath);
-  if (isProtectedPath(canonicalRelativePath)) {
+  if (isProtectedWorkspacePath(canonicalRelativePath)) {
     return deny(
       "PROTECTED_SECRET_FILE",
       "Protected configuration and credential files cannot be read by this Agent.",
@@ -151,7 +151,7 @@ async function evaluateMissingWriteTarget(
       targetLabel,
     );
   }
-  if (isProtectedPath(path.relative(workspaceRoot, canonicalParent))) {
+  if (isProtectedWorkspacePath(path.relative(workspaceRoot, canonicalParent))) {
     return deny(
       "PROTECTED_SECRET_FILE",
       "Protected configuration and credential files cannot be read by this Agent.",
@@ -172,7 +172,8 @@ function isInside(root: string, candidate: string): boolean {
   return relative === "" || (!relative.startsWith(".." + path.sep) && relative !== "..");
 }
 
-function isProtectedPath(relativePath: string): boolean {
+/** Shared classifier for API authorization and Runtime workspace projection. */
+export function isProtectedWorkspacePath(relativePath: string): boolean {
   const segments = relativePath.split(path.sep).filter(Boolean);
   return segments.some((segment) => {
     const lower = segment.toLowerCase();

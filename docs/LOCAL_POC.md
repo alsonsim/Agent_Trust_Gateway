@@ -13,7 +13,7 @@ Requirements:
 - An Ark API key and Responses-capable endpoint
 
 ```bash
-ARK_API_KEY=your-ark-api-key ARK_MODEL=ep-your-endpoint-id npm run poc
+bash scripts/start-local-poc.sh
 ```
 
 Open <http://localhost:3000>. Press `Ctrl+C` to stop the server and remove this
@@ -26,10 +26,9 @@ Force an engine with `CONTAINER_ENGINE=docker` or
 
 Persistent state defaults to:
 
-- macOS: `~/.volc-agent-launchpad/`
-- Linux: `.local/`
-
-Set `LOCAL_POC_DATA_ROOT` to use another directory.
+The script reads root `.env` as dotenv data without executing it. Exported
+caller values take precedence, while the host control plane always uses
+`<repository>/.local/` for metadata, workspaces, and Codex state.
 
 Each turn mounts only the selected Agent workspace and Codex session directory.
 Default limits are 2 CPUs, 2 GiB memory, 256 processes, dropped capabilities,
@@ -87,9 +86,7 @@ podman run --rm docker.io/library/alpine:3.20 echo PODMAN_OK
 
 ```bash
 CONTAINER_ENGINE=podman \
-ARK_API_KEY=your-ark-api-key \
-ARK_MODEL=ep-your-endpoint-id \
-npm run poc
+bash scripts/start-local-poc.sh
 ```
 
 This flow was verified on veLinux 2 with rootless Podman 4.3.1. A `vfs` storage
@@ -100,9 +97,7 @@ build.
 
 ```bash
 CONTAINER_RUNTIME_APT_PACKAGES='ca-certificates git ripgrep python3 build-essential' \
-ARK_API_KEY=your-ark-api-key \
-ARK_MODEL=ep-your-endpoint-id \
-npm run poc
+bash scripts/start-local-poc.sh
 ```
 
 For restricted networks, configure:
@@ -124,9 +119,9 @@ docker image inspect volc-agent-runtime:local
 curl http://localhost:3000/api/system
 ```
 
-If a bind mount is rejected, set `LOCAL_POC_DATA_ROOT` to a directory shared
-with the container VM. On Linux, the startup script automatically uses the host
-UID/GID and validates workspace write access.
+If a bind mount is rejected, configure the container VM to share the repository
+directory. On Linux, the startup script automatically uses the host UID/GID and
+validates workspace write access.
 
 Remove only the default Runtime image:
 

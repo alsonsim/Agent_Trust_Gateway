@@ -2,6 +2,7 @@ export type AgentStatus = "ready" | "busy" | "stopped" | "error";
 export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 export type MessageRole = "user" | "assistant";
 export type Department = "finance" | "hr" | "research";
+export const DEPARTMENTS = ["finance", "hr", "research"] as const satisfies readonly Department[];
 export type AuthorizationDecisionValue = "allow" | "deny";
 export type AuthorizationAction =
   | "agent.create"
@@ -21,7 +22,11 @@ export type AuthorizationAction =
   | "delegation.request"
   | "delegation.approve"
   | "delegation.reject"
-  | "delegation.revoke";
+  | "delegation.revoke"
+  | "access-request.create"
+  | "access-request.approve"
+  | "access-request.deny"
+  | "access-grant.revoke";
 export type DelegationRequestStatus =
   | "pending"
   | "approved"
@@ -39,6 +44,8 @@ export const DEFAULT_LEGACY_OWNER_ID = "11111111-1111-4111-8111-111111111111";
 
 export interface Agent {
   id: string;
+  department: Department;
+  workspaceProfileId: string;
   ownerId: string;
   name: string;
   description: string;
@@ -48,6 +55,14 @@ export interface Agent {
   workspacePath: string;
   codexThreadId: string | null;
   lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface WorkspaceProfile {
+  id: string;
+  department: Department;
+  workspacePath: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -148,6 +163,28 @@ export interface DelegationContract {
   revokedAt: string | null;
 }
 
+export type DocumentAccessRequestStatus =
+  | "pending"
+  | "approved"
+  | "denied"
+  | "revoked"
+  | "expired";
+
+export interface DocumentAccessRequest {
+  id: string;
+  resourceId: string;
+  requesterUserId: string;
+  requesterDepartment: Department;
+  sourceDepartment: Department;
+  status: DocumentAccessRequestStatus;
+  reason: string;
+  reviewedByUserId: string | null;
+  reviewedAt: string | null;
+  expiresAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface AuthorizationDecision {
   id: string;
   requestId: string;
@@ -165,15 +202,25 @@ export interface AuthorizationDecision {
     | "command"
     | "network"
     | "delegation"
-    | "capability";
+    | "capability"
+    | "access-request"
+    | "access-grant";
   targetId: string;
   targetLabel: string;
   decision: AuthorizationDecisionValue;
   reasonCode:
     | "OWNER_MATCH"
     | "HUMAN_AGENT_OWNER_MISMATCH"
+    | "HUMAN_AGENT_DEPARTMENT_MISMATCH"
     | "AGENT_REVOKED"
     | "AGENT_RESOURCE_OWNER_MISMATCH"
+    | "DEPARTMENT_MATCH"
+    | "CROSS_DEPARTMENT_GRANT_REQUIRED"
+    | "CROSS_DEPARTMENT_GRANT_ACTIVE"
+    | "ACCESS_REQUEST_PENDING"
+    | "ACCESS_REQUEST_APPROVED"
+    | "ACCESS_REQUEST_DENIED"
+    | "ACCESS_GRANT_REVOKED"
     | "WORKSPACE_PATH_ALLOWED"
     | "PATH_OUTSIDE_WORKSPACE"
     | "PROTECTED_SECRET_FILE"
@@ -199,6 +246,7 @@ export interface AuthorizationDecision {
 export interface Database {
   version: 3;
   agents: Agent[];
+  workspaceProfiles: WorkspaceProfile[];
   messages: Message[];
   runs: AgentRun[];
   protectedResources: ProtectedResource[];
@@ -206,6 +254,7 @@ export interface Database {
   knownHumans: KnownHuman[];
   delegationRequests: DelegationRequest[];
   delegationContracts: DelegationContract[];
+  documentAccessRequests: DocumentAccessRequest[];
 }
 
 export interface CreateAgentInput {
@@ -228,6 +277,7 @@ export interface RunnerResult {
 
 export interface RunnerRequest {
   agentId: string;
+  workspaceProfileId: string;
   workspacePath: string;
   prompt: string;
   threadId: string | null;

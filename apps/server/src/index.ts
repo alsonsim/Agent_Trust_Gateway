@@ -1,7 +1,7 @@
 import path from "node:path";
 import { AgentService } from "./agent-service.js";
 import { createApp } from "./app.js";
-import { loadConfig, writeCodexConfig } from "./config.js";
+import { ensureWritableDataDirectory, loadConfig, writeCodexConfig } from "./config.js";
 import { DelegationService } from "./delegation-service.js";
 import {
   DemoIdentityProvider,
@@ -20,6 +20,7 @@ import { TrustGateway } from "./trust-gateway.js";
 import { WorkspaceManager } from "./workspace.js";
 
 const config = loadConfig();
+await ensureWritableDataDirectory(config.dataDirectory);
 await writeCodexConfig(config);
 await writeRuntimeExecPolicy(config.codexHome);
 

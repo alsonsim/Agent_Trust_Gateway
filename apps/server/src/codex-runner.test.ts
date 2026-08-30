@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildCodexArgs,
   buildCodexChildEnvironment,
+  buildWindowsCmdCommand,
   parseCodexEventLine,
   resolveRunnerCodexHome,
 } from "./codex-runner.js";
@@ -12,6 +13,7 @@ describe("Codex runner protocol", () => {
     const args = buildCodexArgs(
       {
         agentId: "agent",
+        workspaceProfileId: "department-finance",
         workspacePath: "/tmp/workspace",
         prompt: "build a calculator",
         threadId: null,
@@ -34,6 +36,7 @@ describe("Codex runner protocol", () => {
     const args = buildCodexArgs(
       {
         agentId: "agent",
+        workspaceProfileId: "department-finance",
         workspacePath: "/tmp/workspace",
         prompt: "add tests",
         threadId: "thread-123",
@@ -108,5 +111,17 @@ describe("Codex runner protocol", () => {
     expect(() =>
       resolveRunnerCodexHome({ codexHome: "relative/home" }, config),
     ).toThrow("absolute path");
+  });
+
+  it("quotes Windows .cmd arguments before invoking the command shell", () => {
+    const command = buildWindowsCmdCommand("codex.cmd", [
+      "exec",
+      "message with & a percent % and a quote \"",
+    ]);
+
+    expect(command).toContain('"codex.cmd"');
+    expect(command).toContain("^&");
+    expect(command).toContain("%%");
+    expect(command).toContain('^"');
   });
 });

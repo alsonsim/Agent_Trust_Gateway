@@ -29,7 +29,8 @@ type SafeCommand =
   | "sudo"
   | "chmod 777"
   | "docker run --privileged"
-  | "git push";
+  | "git push"
+  | "unrecognized shell command";
 
 interface RuntimePolicyResult {
   action: AuthorizationAction;
@@ -54,11 +55,7 @@ export class RuntimeActionFirewall {
       const decision = makeDecision(agent, context, policy);
       decisions.push(decision);
       if (!policy.allowed) {
-        try {
-          await this.securityRepository.appendDecisions(decisions);
-        } catch {
-          // The action remains denied even if the evidence sink is unavailable.
-        }
+        await this.appendDeniedDecisions(decisions);
         throw new HttpError(403, "Runtime action denied by Agent Trust Gateway", {
           code: "RUNTIME_ACTION_DENIED",
           details: decision,
@@ -66,6 +63,39 @@ export class RuntimeActionFirewall {
       }
     }
     if (decisions.length === 0) return;
+    await this.appendAllowedDecisions(decisions);
+  }
+
+  async evaluateShell(
+    agent: Agent,
+    command: string,
+    context: RuntimeAuthorizationContext,
+  ): Promise<AuthorizationDecision> {
+    const normalizedCommand = normalizeShellCommand(command);
+    const detectedCommand = detectShellCommand(normalizedCommand);
+    const action: RuntimeAction =
+      detectedCommand === "curl" || detectedCommand === "wget" || detectedCommand === "ssh"
+        ? { kind: "network.request", client: detectedCommand }
+        : {
+            kind: "shell.execute",
+            command: detectedCommand ?? "unrecognized shell command",
+          };
+    const policy = await evaluateRuntimeAction(agent.workspacePath, action);
+    const decision = makeDecision(agent, context, policy);
+    if (policy.allowed) {
+      await this.appendAllowedDecisions([decision]);
+      return decision;
+    }
+    await this.appendDeniedDecisions([decision]);
+    throw new HttpError(403, "Runtime action denied by Agent Trust Gateway", {
+      code: "RUNTIME_ACTION_DENIED",
+      details: decision,
+    });
+  }
+
+  private async appendAllowedDecisions(
+    decisions: readonly AuthorizationDecision[],
+  ): Promise<void> {
     try {
       await this.securityRepository.appendDecisions(decisions);
     } catch {
@@ -74,6 +104,16 @@ export class RuntimeActionFirewall {
         "Runtime authorization evidence could not be persisted; execution failed closed",
         { code: "AUTHORIZATION_AUDIT_UNAVAILABLE" },
       );
+    }
+  }
+
+  private async appendDeniedDecisions(
+    decisions: readonly AuthorizationDecision[],
+  ): Promise<void> {
+    try {
+      await this.securityRepository.appendDecisions(decisions);
+    } catch {
+      // Denial remains in force even if the evidence sink is unavailable.
     }
   }
 }
@@ -98,31 +138,64 @@ export function extractRuntimeActions(prompt: string): RuntimeAction[] {
     if (candidate && looksLikePath(candidate)) add({ kind: "file.write", path: candidate });
   }
 
-  if (/\brm\s+-(?=[a-z]*r)(?=[a-z]*f)[a-z]+\b/i.test(prompt)) {
-    add({ kind: "shell.execute", command: "rm -rf" });
+  const normalizedShellInput = normalizeShellCommand(prompt);
+  const shellCommand = detectBlockedShellCommand(normalizedShellInput);
+  if (shellCommand === "curl" || shellCommand === "wget" || shellCommand === "ssh") {
+    add({ kind: "network.request", client: shellCommand });
+  } else if (shellCommand) {
+    add({ kind: "shell.execute", command: shellCommand });
   }
-  if (/\bsudo\b/i.test(prompt)) add({ kind: "shell.execute", command: "sudo" });
-  if (/\bchmod\s+777\b/i.test(prompt)) {
-    add({ kind: "shell.execute", command: "chmod 777" });
-  }
-  if (/\bdocker\s+run\b[\s\S]{0,160}?--privileged\b/i.test(prompt)) {
-    add({ kind: "shell.execute", command: "docker run --privileged" });
-  }
-  if (/\bgit\s+push\b/i.test(prompt)) add({ kind: "shell.execute", command: "git push" });
-  if (/\bcurl\b/i.test(prompt)) add({ kind: "network.request", client: "curl" });
-  if (/\bwget\b/i.test(prompt)) add({ kind: "network.request", client: "wget" });
-  if (/\bssh\b/i.test(prompt)) add({ kind: "network.request", client: "ssh" });
-
-  for (const [pattern, command] of [
-    [/\bnpm\s+test\b/i, "npm test"],
-    [/\bnpm\s+run\s+test\b/i, "npm run test"],
-    [/\bnpm\s+run\s+build\b/i, "npm run build"],
-    [/\bgit\s+status\b/i, "git status"],
-    [/\bgit\s+diff\b/i, "git diff"],
-  ] as const) {
-    if (pattern.test(prompt)) add({ kind: "shell.execute", command });
+  for (const [pattern, safeCommand] of safeShellCommands) {
+    if (pattern.test(normalizedShellInput)) {
+      add({ kind: "shell.execute", command: safeCommand });
+    }
   }
   return actions;
+}
+
+export function normalizeShellCommand(command: string): string {
+  return command
+    .trim()
+    .replace(/^```(?:bash|sh|shell|zsh)?\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .replace(/^(?:run|please\s+execute|execute|command)\s*:\s*/i, "")
+    .replace(/^[`"']+|[`"']+$/g, "")
+    .trim();
+}
+
+function detectShellCommand(command: string): SafeCommand | "curl" | "wget" | "ssh" | null {
+  return detectBlockedShellCommand(command) ?? detectSafeShellCommand(command);
+}
+
+function detectBlockedShellCommand(command: string): SafeCommand | "curl" | "wget" | "ssh" | null {
+  if (/\brm\s+(?:--\S+\s+)*-(?=[a-z]*r)(?=[a-z]*f)[a-z]+\b/i.test(command)) {
+    return "rm -rf";
+  }
+  if (/\bsudo\b/i.test(command)) return "sudo";
+  if (/\bchmod\s+777\b/i.test(command)) return "chmod 777";
+  if (/\bdocker\s+run\b[\s\S]{0,160}?--privileged\b/i.test(command)) {
+    return "docker run --privileged";
+  }
+  if (/\bgit\s+push\b/i.test(command)) return "git push";
+  if (/\bcurl\b/i.test(command)) return "curl";
+  if (/\bwget\b/i.test(command)) return "wget";
+  if (/\bssh\b/i.test(command)) return "ssh";
+  return null;
+}
+
+const safeShellCommands = [
+  [/\bnpm\s+test\b/i, "npm test"],
+  [/\bnpm\s+run\s+test\b/i, "npm run test"],
+  [/\bnpm\s+run\s+build\b/i, "npm run build"],
+  [/\bgit\s+status\b/i, "git status"],
+  [/\bgit\s+diff\b/i, "git diff"],
+] as const;
+
+function detectSafeShellCommand(command: string): SafeCommand | null {
+  for (const [pattern, safeCommand] of safeShellCommands) {
+    if (pattern.test(command)) return safeCommand;
+  }
+  return null;
 }
 
 async function evaluateRuntimeAction(

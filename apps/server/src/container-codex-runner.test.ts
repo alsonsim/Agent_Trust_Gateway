@@ -1,5 +1,8 @@
 import type { ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { PassThrough } from "node:stream";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -12,10 +15,12 @@ vi.mock("node:child_process", () => childProcessMocks);
 
 import { loadConfig } from "./config.js";
 import {
+  buildContainerCliEnvironment,
   buildContainerRunArgs,
   ContainerCodexRunner,
   ContainerRemovalUnverifiedError,
   containerName,
+  createWorkspaceProjection,
 } from "./container-codex-runner.js";
 
 function missingContainerError(): Error & { stderr: string } {
@@ -47,6 +52,7 @@ function runnerConfig() {
 
 const runnerRequest = {
   agentId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  workspaceProfileId: "department-finance",
   workspacePath: "/tmp/delegated-workspace",
   prompt: "complete the approved task",
   threadId: null,
@@ -82,12 +88,15 @@ describe("Container Codex runner", () => {
       RUNTIME_PROVIDER: "container",
       CONTAINER_ENGINE: "podman",
       CONTAINER_RUNTIME_IMAGE: "runtime:test",
+      CODEX_BIN: "codex.cmd",
+      CONTAINER_CODEX_BIN: "codex-runtime-command",
       CONTAINER_USER: "501:20",
       RUNTIME_INSTANCE_ID: "test-instance",
     });
     const args = buildContainerRunArgs(
       {
         agentId: "agent/unsafe",
+        workspaceProfileId: "department-finance",
         workspacePath: "/tmp/agent-workspace",
         prompt: "write a small program",
         threadId: null,
@@ -100,6 +109,8 @@ describe("Container Codex runner", () => {
       "launchpad-test-instance-agent-unsafe",
     );
     expect(args).toContain("runtime:test");
+    expect(args).toContain("codex-runtime-command");
+    expect(args).not.toContain("codex.cmd");
     expect(args).toContain("type=bind,src=/tmp/agent-workspace,dst=/workspace");
     expect(args).toContain(
       "type=bind,src=/tmp/delegated-codex-home,dst=/codex-home",
@@ -112,7 +123,92 @@ describe("Container Codex runner", () => {
     expect(args).toContain("/workspace");
     expect(args).toContain("io.codejam.instance-id=test-instance");
     expect(args).toContain("keep-id");
-    expect(args).not.toContain("secret-that-must-not-appear-in-argv");
+    expect(args.join(" ")).not.toContain("secret-that-must-not-appear-in-argv");
+    expect(args).not.toContain("ARK_API_KEY");
+    expect(args).not.toContain("ARK_MODEL");
+    expect(args.join(" ")).not.toContain("ep-test");
+    expect(args).toContain("none");
+    expect(args).toContain("--read-only");
+    const environment = buildContainerCliEnvironment(config, false);
+    expect(environment.ARK_API_KEY).toBeUndefined();
+    expect(environment.ARK_MODEL).toBeUndefined();
+  });
+
+  it("forwards Ark environment names only when the insecure local passthrough is enabled", () => {
+    const secret = "secret-that-must-stay-out-of-docker-argv";
+    const model = "ep-secret-model-id";
+    const config = loadConfig({
+      NODE_ENV: "test",
+      ARK_API_KEY: secret,
+      ARK_MODEL: model,
+      CODEX_HOME: "/tmp/codex-home",
+      RUNTIME_PROVIDER: "container",
+      CONTAINER_ENGINE: "docker",
+      CONTAINER_RUNTIME_IMAGE: "runtime:test",
+      LOCAL_INSECURE_RUNTIME_KEY_PASSTHROUGH: "true",
+    });
+    const args = buildContainerRunArgs(
+      {
+        agentId: "agent",
+        workspaceProfileId: "department-finance",
+        workspacePath: "/tmp/agent-workspace",
+        prompt: "write a small program",
+        threadId: null,
+      },
+      config,
+    );
+
+    expect(args).toContain("ARK_API_KEY");
+    expect(args).toContain("ARK_MODEL");
+    expect(args.join(" ")).not.toContain(secret);
+    expect(args.join(" ")).not.toContain(model);
+    expect(args.join(" ")).not.toContain("ARK_API_KEY=" + secret);
+    expect(args.join(" ")).not.toContain("ARK_MODEL=" + model);
+
+    const environment = buildContainerCliEnvironment(
+      config,
+      config.localInsecureRuntimeKeyPassthrough,
+    );
+    expect(environment.ARK_API_KEY).toBe(secret);
+    expect(environment.ARK_MODEL).toBe(model);
+  });
+
+  it("does not pass the host workspace path into the Runtime projection contract", () => {
+    const config = loadConfig({
+      NODE_ENV: "test",
+      CODEX_HOME: "/tmp/codex-home",
+      RUNTIME_PROVIDER: "container",
+    });
+    const args = buildContainerRunArgs(
+      {
+        agentId: "agent",
+        workspaceProfileId: "department-finance",
+        workspacePath: "/safe/projection",
+        prompt: "continue",
+        threadId: null,
+      },
+      config,
+    );
+    expect(args).toContain("type=bind,src=/safe/projection,dst=/workspace");
+    expect(args).not.toContain(".env");
+  });
+
+  it("projects README.md but excludes protected workspace files", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "launchpad-projection-"));
+    const source = path.join(root, "workspace");
+    const projection = path.join(root, "projection");
+    await mkdir(source, { recursive: true });
+    await writeFile(path.join(source, "README.md"), "safe");
+    await writeFile(path.join(source, ".env"), "SECRET=must-not-mount");
+
+    await createWorkspaceProjection(source, projection);
+
+    await expect(readFile(path.join(projection, "README.md"), "utf8")).resolves.toBe(
+      "safe",
+    );
+    await expect(
+      readFile(path.join(projection, ".env"), "utf8"),
+    ).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("resumes a thread inside the mounted Runtime workspace", () => {
@@ -124,6 +220,7 @@ describe("Container Codex runner", () => {
     const args = buildContainerRunArgs(
       {
         agentId: "agent",
+        workspaceProfileId: "department-finance",
         workspacePath: "/tmp/workspace",
         prompt: "continue",
         threadId: "thread-123",
@@ -148,6 +245,7 @@ describe("Container Codex runner", () => {
       buildContainerRunArgs(
         {
           agentId: "agent",
+          workspaceProfileId: "department-finance",
           workspacePath: "/tmp/workspace",
           prompt: "run once",
           threadId: null,

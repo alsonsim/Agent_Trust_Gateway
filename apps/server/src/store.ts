@@ -1,10 +1,16 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { DEFAULT_LEGACY_OWNER_ID, type Agent, type Database } from "./types.js";
+import {
+  DEFAULT_LEGACY_OWNER_ID,
+  type Agent,
+  type Database,
+  type Department,
+} from "./types.js";
 
 const emptyDatabase = (): Database => ({
   version: 3,
   agents: [],
+  workspaceProfiles: [],
   messages: [],
   runs: [],
   protectedResources: [],
@@ -12,27 +18,46 @@ const emptyDatabase = (): Database => ({
   knownHumans: [],
   delegationRequests: [],
   delegationContracts: [],
+  documentAccessRequests: [],
 });
+
+type LegacyAgent = Omit<
+  Agent,
+  "ownerId" | "department" | "workspaceProfileId" | "revokedAt"
+> & {
+  ownerId?: string;
+  department?: Department;
+  workspaceProfileId?: string;
+  revokedAt?: string | null;
+};
 
 interface VersionOneDatabase {
   version: 1;
-  agents: Array<Omit<Agent, "ownerId"> & { ownerId?: string }>;
+  agents: LegacyAgent[];
   messages: Database["messages"];
   runs: Database["runs"];
 }
 
 interface VersionTwoDatabase {
   version: 2;
-  agents: Database["agents"];
+  agents: LegacyAgent[];
   messages: Database["messages"];
   runs: Database["runs"];
   protectedResources: Database["protectedResources"];
   authorizationDecisions: Database["authorizationDecisions"];
 }
 
+type StoredVersionThreeDatabase = Omit<
+  Partial<Database>,
+  "version" | "agents"
+> & {
+  version: 3;
+  agents: LegacyAgent[];
+};
+
 function parseDatabase(raw: string): { database: Database; migrated: boolean } {
   const parsed = JSON.parse(raw) as
-    | Partial<Database>
+    | StoredVersionThreeDatabase
     | VersionOneDatabase
     | VersionTwoDatabase;
   if (!Array.isArray(parsed.agents)) {
@@ -43,47 +68,32 @@ function parseDatabase(raw: string): { database: Database; migrated: boolean } {
     return {
       migrated: true,
       database: {
-        version: 3,
-        agents: legacy.agents.map((agent) => ({
-          ...agent,
-          ownerId: agent.ownerId || DEFAULT_LEGACY_OWNER_ID,
-          revokedAt: null,
-        })),
+        ...emptyDatabase(),
+        agents: legacy.agents.map((agent) => migrateAgent(agent)),
         messages: Array.isArray(legacy.messages) ? legacy.messages : [],
         runs: Array.isArray(legacy.runs) ? legacy.runs : [],
-        protectedResources: [],
-        authorizationDecisions: [],
-        knownHumans: [],
-        delegationRequests: [],
-        delegationContracts: [],
       },
     };
   }
   if (parsed.version === 2) {
-    const versionTwo = parsed as VersionTwoDatabase;
+    const legacy = parsed as VersionTwoDatabase;
     if (
-      !Array.isArray(versionTwo.messages) ||
-      !Array.isArray(versionTwo.runs) ||
-      !Array.isArray(versionTwo.protectedResources) ||
-      !Array.isArray(versionTwo.authorizationDecisions)
+      !Array.isArray(legacy.messages) ||
+      !Array.isArray(legacy.runs) ||
+      !Array.isArray(legacy.protectedResources) ||
+      !Array.isArray(legacy.authorizationDecisions)
     ) {
       throw new Error("Unsupported database format");
     }
     return {
       migrated: true,
       database: {
-        version: 3,
-        agents: versionTwo.agents.map((agent) => ({
-          ...agent,
-          revokedAt: agent.revokedAt ?? null,
-        })),
-        messages: versionTwo.messages,
-        runs: versionTwo.runs,
-        protectedResources: versionTwo.protectedResources,
-        authorizationDecisions: versionTwo.authorizationDecisions,
-        knownHumans: [],
-        delegationRequests: [],
-        delegationContracts: [],
+        ...emptyDatabase(),
+        agents: legacy.agents.map((agent) => migrateAgent(agent)),
+        messages: legacy.messages,
+        runs: legacy.runs,
+        protectedResources: legacy.protectedResources,
+        authorizationDecisions: legacy.authorizationDecisions,
       },
     };
   }
@@ -93,30 +103,75 @@ function parseDatabase(raw: string): { database: Database; migrated: boolean } {
     !Array.isArray(parsed.runs) ||
     !Array.isArray(parsed.protectedResources) ||
     !Array.isArray(parsed.authorizationDecisions) ||
-    !Array.isArray(parsed.knownHumans) ||
-    !Array.isArray(parsed.delegationRequests) ||
-    !Array.isArray(parsed.delegationContracts)
+    !isOptionalArray(parsed.workspaceProfiles) ||
+    !isOptionalArray(parsed.documentAccessRequests) ||
+    !isOptionalArray(parsed.knownHumans) ||
+    !isOptionalArray(parsed.delegationRequests) ||
+    !isOptionalArray(parsed.delegationContracts)
   ) {
     throw new Error("Unsupported database format");
   }
-  const database = parsed as Database;
-  const agents = database.agents.map((agent) => ({
-    ...agent,
-    revokedAt: agent.revokedAt ?? null,
-  }));
+  const agents = parsed.agents.map((agent) => migrateAgent(agent));
   let removedLegacyRequesterPrompt = false;
-  const delegationRequests = database.delegationRequests.map((request) => {
+  const delegationRequests = (parsed.delegationRequests ?? []).map((request) => {
     if (!("requestedPrompt" in request)) return request;
     removedLegacyRequesterPrompt = true;
     const { requestedPrompt: _requestedPrompt, ...sanitizedRequest } = request as
       DelegationRequestWithLegacyPrompt;
     return sanitizedRequest;
   });
+  const database: Database = {
+    version: 3,
+    agents,
+    workspaceProfiles: parsed.workspaceProfiles ?? [],
+    messages: parsed.messages,
+    runs: parsed.runs,
+    protectedResources: parsed.protectedResources,
+    authorizationDecisions: parsed.authorizationDecisions,
+    knownHumans: parsed.knownHumans ?? [],
+    delegationRequests,
+    delegationContracts: parsed.delegationContracts ?? [],
+    documentAccessRequests: parsed.documentAccessRequests ?? [],
+  };
   return {
-    database: { ...database, agents, delegationRequests },
+    database,
     migrated:
-      database.agents.some((agent) => agent.revokedAt === undefined) ||
+      parsed.agents.some(
+        (agent) =>
+          agent.revokedAt === undefined ||
+          agent.department === undefined ||
+          agent.workspaceProfileId === undefined,
+      ) ||
+      parsed.workspaceProfiles === undefined ||
+      parsed.documentAccessRequests === undefined ||
+      parsed.knownHumans === undefined ||
+      parsed.delegationRequests === undefined ||
+      parsed.delegationContracts === undefined ||
       removedLegacyRequesterPrompt,
+  };
+}
+
+function isOptionalArray(value: unknown): boolean {
+  return value === undefined || Array.isArray(value);
+}
+
+function legacyDepartment(ownerId: string): Department {
+  if (ownerId === "22222222-2222-4222-8222-222222222222") return "hr";
+  if (ownerId === "33333333-3333-4333-8333-333333333333") return "research";
+  return "finance";
+}
+
+function migrateAgent(
+  agent: LegacyAgent,
+): Agent {
+  const ownerId = agent.ownerId || DEFAULT_LEGACY_OWNER_ID;
+  const department = agent.department ?? legacyDepartment(ownerId);
+  return {
+    ...agent,
+    ownerId,
+    department,
+    workspaceProfileId: agent.workspaceProfileId ?? "department-" + department,
+    revokedAt: agent.revokedAt ?? null,
   };
 }
 

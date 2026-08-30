@@ -3,6 +3,7 @@ import cors from "@fastify/cors";
 import fastifyStatic from "@fastify/static";
 import Fastify, {
   type FastifyInstance,
+  type FastifyReply,
   type FastifyRequest,
 } from "fastify";
 import { timingSafeEqual } from "node:crypto";
@@ -17,7 +18,7 @@ import {
   type HumanPrincipal,
 } from "./identity-provider.js";
 import type { TrustGateway } from "./trust-gateway.js";
-import type { Agent, AuthorizationAction } from "./types.js";
+import type { Agent, AuthorizationAction, AuthorizationDecision } from "./types.js";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -50,6 +51,10 @@ const messageBody = z.object({
 });
 const workspaceFileReadBody = z.object({
   path: z.string().trim().min(1).max(1_024),
+});
+const runtimeActionEvaluationBody = z.object({
+  type: z.literal("shell"),
+  command: z.string().trim().min(1).max(10_000),
 });
 const loginBody = z.object({
   email: z.string().trim().email().max(320),
@@ -307,14 +312,14 @@ export async function createApp(
       agents:
         config.authMode === "legacy"
           ? service.listAgents()
-          : service.listAgents(principal.id),
+          : service.listAgentsByOwner(principal.id),
     };
   });
 
   app.post("/api/agents", async (request, reply) => {
     const principal = requirePrincipal(request);
     const body = createAgentBody.parse(request.body);
-    const agent = await service.createAgent(principal.id, body);
+    const agent = await service.createAgent(principal.id, principal.department, body);
     await gateway.recordAgentCreated(principal, agent, String(request.id));
     return reply.code(201).send({ agent });
   });
@@ -381,6 +386,21 @@ export async function createApp(
     return reply.code(202).send(result);
   });
 
+  app.post("/api/agents/:id/runtime-actions/evaluate", async (request) => {
+    const { id } = agentIdParams.parse(request.params);
+    await authorizeAgent(request, id, "agent.invoke");
+    const body = runtimeActionEvaluationBody.parse(request.body);
+    const principal = requirePrincipal(request);
+    return {
+      decision: await service.evaluateRuntimeShellAction(id, body.command, {
+        humanUserId: principal.id,
+        humanEmail: principal.email,
+        humanDepartment: principal.department,
+        requestId: String(request.id),
+      }),
+    };
+  });
+
   app.get("/api/runs/:id", async (request) => {
     const { id } = runIdParams.parse(request.params);
     if (config.authMode !== "legacy") {
@@ -424,15 +444,22 @@ export async function createApp(
     );
   });
 
-  app.post("/api/agents/:id/files/read", async (request) => {
+  app.post("/api/agents/:id/files/read", async (request, reply) => {
     const { id } = agentIdParams.parse(request.params);
     const body = workspaceFileReadBody.parse(request.body);
-    return gateway.readWorkspaceFile(
-      requirePrincipal(request),
-      id,
-      body.path,
-      String(request.id),
-    );
+    try {
+      return await gateway.readWorkspaceFile(
+        requirePrincipal(request),
+        id,
+        body.path,
+        String(request.id),
+      );
+    } catch (error) {
+      if (isDecisionDenial(error)) {
+        return sendDeniedDecision(reply, error.details, error.code, error.message);
+      }
+      throw error;
+    }
   });
 
   app.get("/api/authorization-decisions", async (request) => {
@@ -474,6 +501,9 @@ export async function createApp(
             ? frameworkStatus
             : 500;
     if (statusCode >= 500) request.log.error(appError);
+    if (isDecisionDenial(error)) {
+      return sendDeniedDecision(reply, error.details, error.code, appError.message);
+    }
     const publicMessage =
       statusCode >= 500 && !(error instanceof HttpError)
         ? "Internal server error"
@@ -504,6 +534,34 @@ export async function createApp(
   }
 
   return app;
+}
+
+function isDecisionDenial(
+  error: unknown,
+): error is HttpError & {
+  code: "AUTHORIZATION_DENIED" | "RUNTIME_ACTION_DENIED";
+  details: AuthorizationDecision;
+} {
+  if (!(error instanceof HttpError) || error.statusCode !== 403) return false;
+  if (error.code !== "AUTHORIZATION_DENIED" && error.code !== "RUNTIME_ACTION_DENIED") return false;
+  const decision = error.details;
+  return !!decision && typeof decision === "object" &&
+    (decision as Partial<AuthorizationDecision>).decision === "deny";
+}
+
+function sendDeniedDecision(
+  reply: FastifyReply,
+  decision: AuthorizationDecision,
+  code: "AUTHORIZATION_DENIED" | "RUNTIME_ACTION_DENIED",
+  message: string,
+) {
+  return reply.code(403).send({
+    statusCode: 403,
+    code,
+    error: "Forbidden",
+    message,
+    decision,
+  });
 }
 
 function requirePrincipal(request: FastifyRequest): HumanPrincipal {

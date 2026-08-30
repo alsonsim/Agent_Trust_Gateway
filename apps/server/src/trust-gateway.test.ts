@@ -16,11 +16,14 @@ import type {
 const timestamp = new Date().toISOString();
 const financeAgent: Agent = {
   id: "99999999-9999-4999-8999-999999999999",
+  department: "finance",
+  workspaceProfileId: "department-finance",
   ownerId: FINANCE_PRINCIPAL.id,
   name: "Finance Agent",
   description: "",
   instructions: "",
   status: "ready",
+  revokedAt: null,
   workspacePath: "/workspace",
   codexThreadId: null,
   lastError: null,
@@ -72,6 +75,42 @@ function repository(overrides: Partial<SecurityRepository> = {}): SecurityReposi
 }
 
 describe("TrustGateway fail-closed behavior", () => {
+  it("denies a different human even when they share the Agent department", async () => {
+    const recorded: AuthorizationDecision[] = [];
+    const gateway = makeGateway(
+      repository({
+        appendDecision: async (decision) => {
+          recorded.push(decision);
+        },
+      }),
+    );
+
+    await expect(
+      gateway.authorizeAgent(
+        {
+          ...FINANCE_PRINCIPAL,
+          id: "77777777-7777-4777-8777-777777777777",
+          email: "finance-reviewer@agent-gateway.local",
+          displayName: "Finance Reviewer",
+        },
+        financeAgent.id,
+        "agent.read",
+        "same-department-request",
+      ),
+    ).rejects.toMatchObject({
+      statusCode: 403,
+      code: "AUTHORIZATION_DENIED",
+    });
+    expect(recorded).toEqual([
+      expect.objectContaining({
+        agentId: null,
+        targetLabel: "Protected Agent",
+        decision: "deny",
+        reasonCode: "HUMAN_AGENT_OWNER_MISMATCH",
+      }),
+    ]);
+  });
+
   it("lists only protected resources owned by the authenticated human", async () => {
     const hrResource: ProtectedResource = {
       ...financeResource,

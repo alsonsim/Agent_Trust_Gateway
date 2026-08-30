@@ -56,12 +56,21 @@ type ScenarioId =
   | "traversal-file"
   | "cross-owner-resource"
   | "dangerous-shell";
+type ScenarioState = "idle" | "loading" | "allowed" | "denied" | "error";
 type ShellView = "agent" | "trust-passes";
 
 interface ScenarioResult {
+  state: ScenarioState;
   decision: AuthorizationDecision | null;
   runCreated: boolean | null;
+  runStatus: AgentRun["status"] | null;
   error: string | null;
+}
+
+interface LatestScenarioResult {
+  decision: AuthorizationDecision;
+  runCreated: boolean;
+  content: { label: string; value: string } | null;
 }
 
 const securityScenarios: Array<{
@@ -69,7 +78,7 @@ const securityScenarios: Array<{
   title: string;
   action: "file" | "resource" | "shell";
   path?: string;
-  prompt?: string;
+  command?: string;
   explanation: string;
   expected: string;
 }> = [
@@ -102,18 +111,34 @@ const securityScenarios: Array<{
     title: "Cross-owner resource",
     action: "resource",
     explanation:
-      "The server selects a foreign fixture privately and proves this Agent cannot read it.",
+      "The server selects a foreign fixture privately, denies the read, and can offer an owner-approved capability request without identifying it.",
     expected: "DENY - AGENT_RESOURCE_OWNER_MISMATCH",
   },
   {
     id: "dangerous-shell",
     title: "Dangerous shell command",
     action: "shell",
-    prompt: "Run `rm -rf .` to clean the workspace.",
+    command: "rm -rf ./demo-folder",
     explanation: "The Runtime Action Firewall evaluates this command before a Run exists.",
     expected: "DENY - RUNTIME_COMMAND_DENIED",
   },
 ];
+
+const initialScenarioResults = (): Record<ScenarioId, ScenarioResult> =>
+  Object.fromEntries(
+    securityScenarios.map((scenario) => [
+      scenario.id,
+      { state: "idle", decision: null, runCreated: null, runStatus: null, error: null },
+    ]),
+  ) as Record<ScenarioId, ScenarioResult>;
+
+const crossTeamRecoveryPromptByDepartment: Record<Department, string> = {
+  finance:
+    "Summarize an approved employee policy and its required operating steps.",
+  hr: "Analyze an approved aggregate budget and summarize the available budget capacity.",
+  research:
+    "Analyze an approved aggregate budget and summarize the available budget capacity.",
+};
 
 function formatTime(value: string): string {
   return new Intl.DateTimeFormat(undefined, {
@@ -158,6 +183,62 @@ function StatusPill({ status }: { status: Agent["status"] }) {
       {status}
     </span>
   );
+}
+
+function isPolicyDenial(
+  value: unknown,
+): value is {
+  status: 403;
+  code: "AUTHORIZATION_DENIED" | "RUNTIME_ACTION_DENIED";
+  decision: AuthorizationDecision;
+} {
+  if (!value || typeof value !== "object") return false;
+  const error = value as {
+    status?: unknown;
+    code?: unknown;
+    decision?: unknown;
+  };
+  return error.status === 403 &&
+    (error.code === "AUTHORIZATION_DENIED" || error.code === "RUNTIME_ACTION_DENIED") &&
+    !!error.decision && typeof error.decision === "object";
+}
+
+function isCrossTeamPolicyDenial(
+  value: unknown,
+): value is {
+  status: 403;
+  code: "AUTHORIZATION_DENIED";
+  decision: AuthorizationDecision;
+} {
+  return isPolicyDenial(value) &&
+    value.code === "AUTHORIZATION_DENIED" &&
+    (value.decision.reasonCode === "HUMAN_AGENT_OWNER_MISMATCH" ||
+      value.decision.reasonCode === "AGENT_RESOURCE_OWNER_MISMATCH");
+}
+
+function privacySafeDecision(decision: AuthorizationDecision): AuthorizationDecision {
+  if (decision.reasonCode === "AGENT_RESOURCE_OWNER_MISMATCH") {
+    return {
+      ...decision,
+      targetId: "redacted",
+      targetLabel: "Protected resource",
+    };
+  }
+  if (decision.reasonCode === "HUMAN_AGENT_OWNER_MISMATCH") {
+    return {
+      ...decision,
+      agentId: null,
+      agentName: null,
+      targetId: "redacted",
+      targetLabel:
+        decision.targetType === "resource"
+          ? "Protected resource"
+          : decision.targetType === "file"
+            ? "Protected workspace file"
+            : "Protected Agent",
+    };
+  }
+  return decision;
 }
 
 function RevokedPill() {
@@ -208,11 +289,10 @@ export default function App() {
   });
   const [resources, setResources] = useState<ProtectedResourceSummary[]>([]);
   const [decisions, setDecisions] = useState<AuthorizationDecision[]>([]);
-  const [latestDecision, setLatestDecision] = useState<AuthorizationDecision | null>(null);
-  const [latestRunCreated, setLatestRunCreated] = useState<boolean | null>(null);
-  const [scenarioResults, setScenarioResults] = useState<
-    Partial<Record<ScenarioId, ScenarioResult>>
-  >({});
+  const [latestScenarioResult, setLatestScenarioResult] = useState<LatestScenarioResult | null>(null);
+  const [scenarioResults, setScenarioResults] = useState<Record<ScenarioId, ScenarioResult>>(
+    initialScenarioResults,
+  );
   const [auditFilter, setAuditFilter] = useState<AuditFilter>("all");
   const [resourceRead, setResourceRead] = useState<
     ProtectedResourceRead["resource"] | null
@@ -226,6 +306,7 @@ export default function App() {
   const mountedRef = useRef(true);
   const pollingRunIds = useRef(new Set<string>());
   const sessionGenerationRef = useRef(0);
+  const capabilityOfferRequestRef = useRef(0);
   selectedIdRef.current = selectedId;
 
   const selected = useMemo(
@@ -241,7 +322,7 @@ export default function App() {
     [decisions, selected?.id],
   );
 
-  const summaryLatestDecision = latestDecision ?? selectedDecisions[0] ?? null;
+  const summaryLatestDecision = latestScenarioResult?.decision ?? selectedDecisions[0] ?? null;
   const allowedDecisionCount = selectedDecisions.filter(
     (decision) => decision.decision === "allow",
   ).length;
@@ -290,6 +371,7 @@ export default function App() {
     setActiveRun(null);
     setShowCreate(false);
     setShowSettings(false);
+    capabilityOfferRequestRef.current += 1;
     setShellView("agent");
     setActiveView("playground");
     setCapabilityChecking(false);
@@ -297,9 +379,8 @@ export default function App() {
     setTrustPassCounts({ pendingApprovals: 0, approvedTasks: 0 });
     setResources([]);
     setDecisions([]);
-    setLatestDecision(null);
-    setLatestRunCreated(null);
-    setScenarioResults({});
+    setLatestScenarioResult(null);
+    setScenarioResults(initialScenarioResults());
     setAuditFilter("all");
     setResourceRead(null);
     setWorkspaceFilePath("README.md");
@@ -366,7 +447,7 @@ export default function App() {
     const generation = sessionGenerationRef.current;
     const result = await api.authorizationDecisions(50);
     if (mountedRef.current && generation === sessionGenerationRef.current) {
-      setDecisions(result.decisions);
+      setDecisions(result.decisions.map(privacySafeDecision));
     }
   }, []);
 
@@ -386,8 +467,10 @@ export default function App() {
       setAgents(agentResult.agents);
       setSelectedId(agentResult.agents[0]?.id ?? null);
       setSystem(nextSystem);
-      setResources(resourceResult.resources);
-      setDecisions(decisionResult.decisions);
+      setResources(
+        resourceResult.resources.filter((resource) => resource.ownedByCurrentUser),
+      );
+      setDecisions(decisionResult.decisions.map(privacySafeDecision));
     },
     [resetAuthenticatedState],
   );
@@ -398,14 +481,12 @@ export default function App() {
         invalidateSession("Your session expired. Sign in again to continue.");
         return;
       }
-      if (
-        reason instanceof ApiError &&
-        reason.status === 403 &&
-        reason.code === "AUTHORIZATION_DENIED" &&
-        reason.decision
-      ) {
-        setLatestDecision(reason.decision);
-        setLatestRunCreated(false);
+      if (isPolicyDenial(reason)) {
+        setLatestScenarioResult({
+          decision: privacySafeDecision(reason.decision),
+          runCreated: false,
+          content: null,
+        });
         setResourceRead(null);
         setWorkspaceFileRead(null);
         setSecurityError(null);
@@ -419,6 +500,35 @@ export default function App() {
     },
     [invalidateSession, refreshDecisions],
   );
+
+  const discoverPrivateCapabilityOffer = async (
+    task: string,
+    generation: number,
+    agentId: string,
+  ): Promise<void> => {
+    const requestSequence = ++capabilityOfferRequestRef.current;
+    try {
+      const discovery = await api.discoverCapability(task);
+      if (
+        generation !== sessionGenerationRef.current ||
+        selectedIdRef.current !== agentId ||
+        requestSequence !== capabilityOfferRequestRef.current
+      ) {
+        return;
+      }
+      if (discovery.required && discovery.capability) {
+        setCapabilityRequestSeed({ prompt: task, discovery });
+      }
+    } catch (reason) {
+      if (
+        requestSequence === capabilityOfferRequestRef.current &&
+        reason instanceof ApiError &&
+        reason.status === 401
+      ) {
+        handleRequestError(reason);
+      }
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -464,9 +574,8 @@ export default function App() {
     setPrompt("");
     setActiveRun(null);
     setShowSettings(false);
-    setLatestDecision(null);
-    setLatestRunCreated(null);
-    setScenarioResults({});
+    setLatestScenarioResult(null);
+    setScenarioResults(initialScenarioResults());
     setAuditFilter("all");
     setResourceRead(null);
     setWorkspaceFileRead(null);
@@ -566,12 +675,21 @@ export default function App() {
     if (!selected || !requestedPath) return;
     const generation = sessionGenerationRef.current;
     const agentId = selected.id;
-    const busyId = scenarioId ?? "workspace-file";
-    setSecurityBusyId(busyId);
+    if (scenarioId) {
+      setScenarioResults((current) => ({
+        ...current,
+        [scenarioId]: {
+          state: "loading",
+          decision: null,
+          runCreated: null,
+          runStatus: null,
+          error: null,
+        },
+      }));
+    } else {
+      setSecurityBusyId("workspace-file");
+    }
     setSecurityError(null);
-    setLatestDecision(null);
-    setLatestRunCreated(null);
-    setLatestRunCreated(null);
     setResourceRead(null);
     setWorkspaceFileRead(null);
     try {
@@ -583,45 +701,69 @@ export default function App() {
         return;
       }
       setWorkspaceFileRead(result);
-      setLatestDecision(result.decision);
-      setLatestRunCreated(false);
+      setLatestScenarioResult({
+        decision: result.decision,
+        runCreated: false,
+        content: { label: result.path, value: result.content },
+      });
       if (scenarioId) {
         setScenarioResults((current) => ({
           ...current,
-          [scenarioId]: { decision: result.decision, runCreated: false, error: null },
+          [scenarioId]: {
+            state: "allowed",
+            decision: result.decision,
+            runCreated: false,
+            runStatus: null,
+            error: null,
+          },
         }));
       }
       void refreshDecisions().catch((reason) => handleRequestError(reason, "security"));
     } catch (reason) {
       if (generation === sessionGenerationRef.current) {
-        if (reason instanceof ApiError && reason.decision) {
-          setLatestDecision(reason.decision);
-          setLatestRunCreated(false);
+        if (isPolicyDenial(reason)) {
+          const decision = privacySafeDecision(reason.decision);
+          setLatestScenarioResult({ decision, runCreated: false, content: null });
           if (scenarioId) {
             setScenarioResults((current) => ({
               ...current,
-              [scenarioId]: { decision: reason.decision, runCreated: false, error: null },
+              [scenarioId]: {
+                state: "denied",
+                decision,
+                runCreated: false,
+                runStatus: null,
+                error: null,
+              },
             }));
           }
           void refreshDecisions().catch(() => undefined);
+          return;
         } else {
           const message = reason instanceof Error ? reason.message : String(reason);
           setSecurityError(message);
           if (scenarioId) {
             setScenarioResults((current) => ({
               ...current,
-              [scenarioId]: { decision: null, runCreated: null, error: message },
+              [scenarioId]: {
+                state: "error",
+                decision: null,
+                runCreated: null,
+                runStatus: null,
+                error: message,
+              },
             }));
           }
         }
       }
     } finally {
-      if (generation === sessionGenerationRef.current) setSecurityBusyId(null);
+      if (!scenarioId && generation === sessionGenerationRef.current) setSecurityBusyId(null);
     }
   };
 
   const runSecurityScenario = async (scenario: (typeof securityScenarios)[number]) => {
-    if (!selected) return;
+    if (!selected || !principal) return;
+    capabilityOfferRequestRef.current += 1;
+    setCapabilityRequestSeed(null);
     if (scenario.action === "file" && scenario.path) {
       await attemptWorkspaceFileRead(scenario.path, scenario.id);
       return;
@@ -629,10 +771,18 @@ export default function App() {
     if (scenario.action === "resource") {
       const generation = sessionGenerationRef.current;
       const agentId = selected.id;
-      setSecurityBusyId(scenario.id);
+      setScenarioResults((current) => ({
+        ...current,
+        [scenario.id]: {
+          state: "loading",
+          decision: null,
+          runCreated: null,
+          runStatus: null,
+          error: null,
+        },
+      }));
       setSecurityError(null);
-      setLatestDecision(null);
-      setLatestRunCreated(null);
+      setLatestScenarioResult(null);
       setResourceRead(null);
       try {
         await api.demonstrateCrossOwnerResourceDenial(agentId);
@@ -649,70 +799,109 @@ export default function App() {
         ) {
           return;
         }
-        if (reason instanceof ApiError && reason.decision) {
-          setLatestDecision(reason.decision);
-          setLatestRunCreated(false);
+        if (isPolicyDenial(reason)) {
+          const decision = privacySafeDecision(reason.decision);
+          setLatestScenarioResult({
+            decision,
+            runCreated: false,
+            content: null,
+          });
           setScenarioResults((current) => ({
             ...current,
             [scenario.id]: {
-              decision: reason.decision,
+              state: "denied",
+              decision,
               runCreated: false,
+              runStatus: null,
               error: null,
             },
           }));
           void refreshDecisions().catch(() => undefined);
+          if (reason.decision.reasonCode === "AGENT_RESOURCE_OWNER_MISMATCH") {
+            await discoverPrivateCapabilityOffer(
+              crossTeamRecoveryPromptByDepartment[principal.department],
+              generation,
+              agentId,
+            );
+          }
         } else {
           const message = reason instanceof Error ? reason.message : String(reason);
           setSecurityError(message);
           setScenarioResults((current) => ({
             ...current,
-            [scenario.id]: { decision: null, runCreated: null, error: message },
+            [scenario.id]: {
+              state: "error",
+              decision: null,
+              runCreated: null,
+              runStatus: null,
+              error: message,
+            },
           }));
         }
-      } finally {
-        if (generation === sessionGenerationRef.current) setSecurityBusyId(null);
       }
       return;
     }
-    if (!scenario.prompt) return;
+    if (!scenario.command) return;
     const generation = sessionGenerationRef.current;
     const agentId = selected.id;
-    setSecurityBusyId(scenario.id);
+    setScenarioResults((current) => ({
+      ...current,
+      [scenario.id]: {
+        state: "loading",
+        decision: null,
+        runCreated: null,
+        runStatus: null,
+        error: null,
+      },
+    }));
     setSecurityError(null);
-    setLatestDecision(null);
-    setLatestRunCreated(null);
+    setLatestScenarioResult(null);
     try {
-      const result = await api.sendMessage(agentId, scenario.prompt);
+      const result = await api.evaluateRuntimeShellAction(agentId, scenario.command);
       if (generation !== sessionGenerationRef.current || selectedIdRef.current !== agentId) return;
-      setMessages((current) => [...current, result.message]);
-      setActiveRun(result.run);
-      setLatestRunCreated(true);
+      setLatestScenarioResult({ decision: result.decision, runCreated: false, content: null });
       setScenarioResults((current) => ({
         ...current,
-        [scenario.id]: { decision: null, runCreated: true, error: null },
+        [scenario.id]: {
+          state: "allowed",
+          decision: result.decision,
+          runCreated: false,
+          runStatus: null,
+          error: null,
+        },
       }));
-      await Promise.all([refreshAgents(), refreshDecisions()]);
-      await pollRun(result.run.id, agentId, generation);
+      await refreshDecisions();
     } catch (reason) {
       if (generation !== sessionGenerationRef.current) return;
-      if (reason instanceof ApiError && reason.decision) {
-        setLatestDecision(reason.decision);
-        setLatestRunCreated(false);
+      if (isPolicyDenial(reason)) {
+        const decision = privacySafeDecision(reason.decision);
+        setLatestScenarioResult({ decision, runCreated: false, content: null });
         setScenarioResults((current) => ({
           ...current,
-          [scenario.id]: { decision: reason.decision, runCreated: false, error: null },
+          [scenario.id]: {
+            state: "denied",
+            decision,
+            runCreated: false,
+            runStatus: null,
+            error: null,
+          },
         }));
         void refreshDecisions().catch(() => undefined);
+        return;
       } else {
         const message = reason instanceof Error ? reason.message : String(reason);
         setSecurityError(message);
         setScenarioResults((current) => ({
           ...current,
-          [scenario.id]: { decision: null, runCreated: null, error: message },
+          [scenario.id]: {
+            state: "error",
+            decision: null,
+            runCreated: null,
+            runStatus: null,
+            error: message,
+          },
         }));
       }
-    } finally {
-      if (generation === sessionGenerationRef.current) setSecurityBusyId(null);
     }
   };
 
@@ -818,6 +1007,8 @@ export default function App() {
     if (!selected || !prompt.trim()) return;
     const content = prompt.trim();
     const generation = sessionGenerationRef.current;
+    capabilityOfferRequestRef.current += 1;
+    setCapabilityRequestSeed(null);
     setError(null);
     if (authConfig?.mode !== "legacy") {
       setCapabilityChecking(true);
@@ -870,6 +1061,9 @@ export default function App() {
       await pollRun(result.run.id, selected.id, generation);
     } catch (reason) {
       handleRequestError(reason);
+      if (isCrossTeamPolicyDenial(reason)) {
+        await discoverPrivateCapabilityOffer(content, generation, selected.id);
+      }
       setActiveRun(null);
       if (!(reason instanceof ApiError && reason.status === 401)) {
         void refreshAgents().catch(() => undefined);
@@ -883,7 +1077,7 @@ export default function App() {
     const agentId = selected.id;
     setSecurityBusyId(resourceId);
     setSecurityError(null);
-    setLatestDecision(null);
+    setLatestScenarioResult(null);
     setResourceRead(null);
     try {
       const result = await api.readResource(agentId, resourceId);
@@ -894,8 +1088,11 @@ export default function App() {
         return;
       }
       setResourceRead(result.resource);
-      setLatestDecision(result.decision);
-      setLatestRunCreated(false);
+      setLatestScenarioResult({
+        decision: result.decision,
+        runCreated: false,
+        content: { label: result.resource.summary.fileName, value: result.resource.content },
+      });
       void refreshDecisions().catch((reason) => handleRequestError(reason, "security"));
     } catch (reason) {
       if (generation === sessionGenerationRef.current) {
@@ -1249,7 +1446,9 @@ export default function App() {
                   ? "Set ARK_API_KEY and ARK_MODEL in .env before using the Playground."
                   : system.runtimeProvider === "container"
                     ? "The local container engine or Agent Runtime image is unavailable. Rerun npm run poc."
-                    : "Codex CLI was not found. Use the Docker image or install @openai/codex."}
+                    : "Codex CLI was not found at " +
+                      (system.codexExecutable ?? "the configured executable") +
+                      ". Install @openai/codex, or set CODEX_BIN to an existing executable."}
               </p>
             </div>
           </div>
@@ -1611,7 +1810,7 @@ export default function App() {
                     <span className="boundary-icon">◆</span>
                     <span>
                       Action
-                      <strong>{latestDecision?.action ?? "resource.read"}</strong>
+                      <strong>{latestScenarioResult?.decision.action ?? "resource.read"}</strong>
                     </span>
                   </div>
                 </div>
@@ -1643,7 +1842,7 @@ export default function App() {
                     <div className="scenario-grid">
                       {securityScenarios.map((scenario) => {
                         const result = scenarioResults[scenario.id];
-                        const isRunning = securityBusyId === scenario.id;
+                        const isRunning = result?.state === "loading";
                         return (
                           <article className="scenario-card" key={scenario.id}>
                             <div className="scenario-card-top">
@@ -1671,18 +1870,32 @@ export default function App() {
                               type="button"
                               className="button button-resource"
                               onClick={() => void runSecurityScenario(scenario)}
-                              disabled={securityBusyId !== null}
+                              disabled={isRunning}
                             >
                               {isRunning ? <Spinner /> : "Run scenario"}
                             </button>
                             <div className="scenario-result" aria-live="polite">
-                              {result?.decision ? (
+                              {result?.state === "loading" ? (
+                                <span>Submitting to the Trust Gateway...</span>
+                              ) : (result?.state === "denied" || result?.state === "allowed") && result.decision ? (
                                 <>
-                                  <DecisionPill decision={result.decision.decision} />
-                                  <span>{result.decision.reasonCode}</span>
-                                  <small>{result.runCreated ? "Run created" : "No Run created"}</small>
+                                  <div className="scenario-decision-heading">
+                                    <DecisionPill decision={result.decision.decision} />
+                                    <strong>{result.decision.decision === "deny" ? "DENY" : "ALLOW"}</strong>
+                                  </div>
+                                  <dl className="scenario-decision-details">
+                                    <div><dt>Action</dt><dd><code>{result.decision.action}</code></dd></div>
+                                    <div><dt>Target</dt><dd>{result.decision.targetLabel}</dd></div>
+                                    <div><dt>Policy code</dt><dd><code>{result.decision.reasonCode}</code></dd></div>
+                                    <div><dt>Explanation</dt><dd>{result.decision.reason}</dd></div>
+                                    <div><dt>Run created</dt><dd>{result.runCreated ? "Yes" : "No — blocked before Runtime dispatch"}</dd></div>
+                                  </dl>
+                                  {result.runStatus && <small>Final Run status: {result.runStatus}</small>}
+                                  {result.decision.decision === "allow" && scenario.action === "file" && workspaceFileRead?.decision.id === result.decision.id && (
+                                    <pre className="scenario-file-content">{workspaceFileRead.content}</pre>
+                                  )}
                                 </>
-                              ) : result?.error ? (
+                              ) : result?.state === "error" && result.error ? (
                                 <span className="scenario-error">{result.error}</span>
                               ) : (
                                 <span>Actual result will appear here.</span>
@@ -1770,33 +1983,31 @@ export default function App() {
                         <span className="eyebrow">Latest result</span>
                         <h3>Authorization decision</h3>
                       </div>
-                      {latestDecision && <DecisionPill decision={latestDecision.decision} />}
+                      {latestScenarioResult && <DecisionPill decision={latestScenarioResult.decision.decision} />}
                     </div>
-                    {latestDecision ? (
+                    {latestScenarioResult ? (
                       <>
                         <dl className="decision-details">
                           <div>
                             <dt>Action</dt>
-                            <dd><code>{latestDecision.action}</code></dd>
+                            <dd><code>{latestScenarioResult.decision.action}</code></dd>
                           </div>
                           <div>
                             <dt>Target</dt>
-                            <dd>{latestDecision.targetLabel}</dd>
+                            <dd>{latestScenarioResult.decision.targetLabel}</dd>
                           </div>
                           <div>
                             <dt>Policy code</dt>
-                            <dd><code>{latestDecision.reasonCode}</code></dd>
+                            <dd><code>{latestScenarioResult.decision.reasonCode}</code></dd>
                           </div>
                           <div>
                             <dt>Explanation</dt>
-                            <dd>{latestDecision.reason}</dd>
+                            <dd>{latestScenarioResult.decision.reason}</dd>
                           </div>
                           <div>
                             <dt>Run created</dt>
                             <dd>
-                              {latestRunCreated === null
-                                ? "Not reported for this request"
-                                : latestRunCreated
+                              {latestScenarioResult.runCreated
                                   ? "Yes - the Runtime accepted it"
                                   : "No - blocked before Runtime dispatch"}
                             </dd>
@@ -1805,36 +2016,50 @@ export default function App() {
                         <details className="decision-technical">
                           <summary>Technical details</summary>
                           <dl>
-                            <div><dt>Decision ID</dt><dd><code>{latestDecision.id}</code></dd></div>
-                            <div><dt>Request ID</dt><dd><code>{latestDecision.requestId}</code></dd></div>
-                            <div><dt>Timestamp</dt><dd>{formatDateTime(latestDecision.createdAt)}</dd></div>
-                            <div><dt>Human</dt><dd>{latestDecision.humanEmail}</dd></div>
+                            <div><dt>Decision ID</dt><dd><code>{latestScenarioResult.decision.id}</code></dd></div>
+                            <div><dt>Request ID</dt><dd><code>{latestScenarioResult.decision.requestId}</code></dd></div>
+                            <div><dt>Timestamp</dt><dd>{formatDateTime(latestScenarioResult.decision.createdAt)}</dd></div>
+                            <div><dt>Human</dt><dd>{latestScenarioResult.decision.humanEmail}</dd></div>
                           </dl>
                         </details>
-                        {latestDecision.decision === "allow" && resourceRead && (
+                        {latestScenarioResult.decision.decision === "allow" && latestScenarioResult.content && (
                           <div className="resource-content">
                             <span>
-                              <strong>{resourceRead.summary.fileName}</strong>
+                              <strong>{latestScenarioResult.content.label}</strong>
                               Server-returned content
                             </span>
-                            <pre>{resourceRead.content}</pre>
+                            <pre>{latestScenarioResult.content.value}</pre>
                           </div>
                         )}
-                        {latestDecision.decision === "allow" && workspaceFileRead && (
-                          <div className="resource-content">
-                            <span>
-                              <strong>{workspaceFileRead.path}</strong>
-                              Server-returned content
-                            </span>
-                            <pre>{workspaceFileRead.content}</pre>
-                          </div>
-                        )}
-                        {latestDecision.decision === "deny" && (
+                        {latestScenarioResult.decision.decision === "deny" && (
                           <div className="denial-proof">
                             Protected content was not returned. The denial was recorded by the
                             middleware.
                           </div>
                         )}
+                        {latestScenarioResult.decision.decision === "deny" &&
+                          capabilityRequestSeed && (
+                            <div className="capability-recovery" role="status">
+                              <span className="privacy-chip">Private discovery</span>
+                              <strong>A matching capability can be requested safely</strong>
+                              <p>
+                                {capabilityRequestSeed.discovery.capabilityLabel ??
+                                  "A privately managed capability"} may handle the sanitized task
+                                below. No foreign Agent, resource, workspace, or history was
+                                disclosed.
+                              </p>
+                              <blockquote>
+                                {capabilityRequestSeed.discovery.sanitizedTaskSummary}
+                              </blockquote>
+                              <button
+                                type="button"
+                                className="button button-primary"
+                                onClick={() => setShellView("trust-passes")}
+                              >
+                                Review private approval request
+                              </button>
+                            </div>
+                          )}
                       </>
                     ) : (
                       <div className="decision-placeholder">
@@ -1949,13 +2174,13 @@ export default function App() {
               </div>
               <button type="button" onClick={() => setShowCreate(false)}>×</button>
             </div>
-            <div className="owner-note owner-note-modal">
+              <div className="owner-note owner-note-modal">
               <span className={"team-avatar team-" + principal.department}>
                 {initials(principal.displayName)}
               </span>
               <div>
-                <strong>{principal.displayName} will own this Agent</strong>
-                <span>The backend derives ownership from your authenticated session.</span>
+                <strong>{principal.displayName} will create an Agent in the shared department workspace</strong>
+                <span>The backend derives the department workspace profile from your authenticated session.</span>
               </div>
             </div>
             <label>

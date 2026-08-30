@@ -7,6 +7,7 @@ import { loadConfig } from "./config.js";
 import { ContainerRemovalUnverifiedError } from "./container-codex-runner.js";
 import { digestExactPrompt } from "./delegation-digest.js";
 import { RunCancelledError } from "./errors.js";
+import { FINANCE_PRINCIPAL, HR_PRINCIPAL } from "./identity-provider.js";
 import { JsonStore } from "./store.js";
 import {
   DEFAULT_LEGACY_OWNER_ID,
@@ -227,6 +228,24 @@ describe("Agent lifecycle", () => {
 
     finish({ output: "done", threadId: "thread", usage: null });
     await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+  });
+
+  it("derives a shared deterministic workspace profile from the authenticated department", async () => {
+    const service = await makeService();
+    const financeOne = await service.createAgent(FINANCE_PRINCIPAL.id, "finance", {
+      name: "Finance One",
+    });
+    const financeTwo = await service.createAgent(FINANCE_PRINCIPAL.id, "finance", {
+      name: "Finance Two",
+    });
+    const hrAgent = await service.createAgent(HR_PRINCIPAL.id, "hr", { name: "HR" });
+
+    expect(financeOne).toMatchObject({
+      department: "finance",
+      workspaceProfileId: "department-finance",
+    });
+    expect(financeTwo.workspacePath).toBe(financeOne.workspacePath);
+    expect(hrAgent.workspacePath).not.toBe(financeOne.workspacePath);
   });
 
   it("revokes an active Agent, cancels its run, and rejects future dispatch", async () => {

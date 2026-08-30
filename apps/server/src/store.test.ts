@@ -15,7 +15,7 @@ afterEach(async () => {
 });
 
 describe("JsonStore", () => {
-  it("migrates legacy single-user state to the current owned database", async () => {
+  it("migrates legacy single-user state to a department-profile version 3 database", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "launchpad-store-migration-test-"));
     temporaryDirectories.push(root);
     const databasePath = path.join(root, "db.json");
@@ -48,13 +48,19 @@ describe("JsonStore", () => {
     expect(store.snapshot()).toMatchObject({
       version: 3,
       agents: [
-        { ownerId: "11111111-1111-4111-8111-111111111111" },
+        {
+          ownerId: "11111111-1111-4111-8111-111111111111",
+          department: "finance",
+          workspaceProfileId: "department-finance",
+        },
       ],
       protectedResources: [],
       authorizationDecisions: [],
+      workspaceProfiles: [],
       knownHumans: [],
       delegationRequests: [],
       delegationContracts: [],
+      documentAccessRequests: [],
     });
   });
 
@@ -81,6 +87,7 @@ describe("JsonStore", () => {
     expect(store.snapshot()).toEqual({
       version: 3,
       agents: [],
+      workspaceProfiles: [],
       messages: [],
       runs: [],
       protectedResources: [],
@@ -88,6 +95,7 @@ describe("JsonStore", () => {
       knownHumans: [],
       delegationRequests: [],
       delegationContracts: [],
+      documentAccessRequests: [],
     });
   });
 

@@ -53,6 +53,8 @@ export interface AuthConfiguration {
 
 export interface Agent {
   id: string;
+  department: Department;
+  workspaceProfileId: string;
   ownerId: string;
   name: string;
   description: string;
@@ -94,6 +96,8 @@ export interface SystemInfo {
   arkConfigured: boolean;
   arkBaseUrl: string;
   arkModel: string | null;
+  codexExecutable: string;
+  codexExecutableSource: "configured" | "platform-default";
   codexAvailable: boolean;
   codexSandboxMode: string;
   runtimeProvider: "local-process" | "container";

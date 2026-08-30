@@ -128,6 +128,24 @@ async function login(app: Awaited<ReturnType<typeof createApp>>, email: string) 
 }
 
 describe("HTTP identity and authorization boundary", () => {
+  it("reports the resolved Codex executable and availability", async () => {
+    const { app, config } = await makeHarness();
+    const cookie = await login(app, "finance@agent-gateway.local");
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/system",
+      headers: { cookie },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      codexExecutable: config.codexBin,
+      codexExecutableSource: config.codexBinSource,
+      codexAvailable: true,
+    });
+    await app.close();
+  });
+
   it("requires a session and scopes Agent creation/listing to its owner", async () => {
     const { app } = await makeHarness();
     const denied = await app.inject({ method: "GET", url: "/api/agents" });
@@ -221,7 +239,16 @@ describe("HTTP identity and authorization boundary", () => {
     expect(denied.statusCode).toBe(403);
     expect(denied.body).not.toContain("Compensation bands (synthetic)");
     expect(denied.json()).toMatchObject({
+      statusCode: 403,
+      code: "AUTHORIZATION_DENIED",
+      error: "Forbidden",
       decision: {
+        id: expect.any(String),
+        requestId: expect.any(String),
+        agentId,
+        humanEmail: "finance@agent-gateway.local",
+        action: "resource.read",
+        targetType: "resource",
         decision: "deny",
         reasonCode: "AGENT_RESOURCE_OWNER_MISMATCH",
         targetId: "redacted",
@@ -301,7 +328,7 @@ describe("HTTP identity and authorization boundary", () => {
     expect(allowed.statusCode).toBe(200);
     expect(allowed.json()).toMatchObject({
       path: "README.md",
-      content: expect.stringContaining("Finance Agent workspace"),
+      content: expect.stringContaining("finance department workspace"),
       decision: {
         action: "file.read",
         targetType: "file",
@@ -319,7 +346,10 @@ describe("HTTP identity and authorization boundary", () => {
     expect(secretDenied.statusCode).toBe(403);
     expect(secretDenied.body).not.toContain(secret);
     expect(secretDenied.json()).toMatchObject({
+      statusCode: 403,
       code: "AUTHORIZATION_DENIED",
+      error: "Forbidden",
+      message: "Access denied by Agent Trust Gateway",
       decision: {
         action: "file.read",
         decision: "deny",
@@ -394,7 +424,7 @@ describe("HTTP identity and authorization boundary", () => {
     await app.close();
   });
 
-  it("denies a Runtime Action Firewall command before the Agent runner starts", async () => {
+  it("denies a dangerous Playground chat command before creating a Run or starting the runner", async () => {
     const { app, service, runner } = await makeHarness();
     const cookie = await login(app, "finance@agent-gateway.local");
     const created = await app.inject({
@@ -409,11 +439,13 @@ describe("HTTP identity and authorization boundary", () => {
       method: "POST",
       url: `/api/agents/${agentId}/messages`,
       headers: { cookie },
-      payload: { content: "Run `rm -rf .` to clean the workspace." },
+      payload: { content: "Run this shell command: rm -rf /workspace/test" },
     });
     expect(denied.statusCode).toBe(403);
     expect(denied.json()).toMatchObject({
+      statusCode: 403,
       code: "RUNTIME_ACTION_DENIED",
+      error: "Forbidden",
       decision: {
         action: "shell.execute",
         targetLabel: "rm -rf",
@@ -434,6 +466,103 @@ describe("HTTP identity and authorization boundary", () => {
         decision.action === "shell.execute" && decision.decision === "deny",
       ),
     ).toBe(true);
+    await app.close();
+  });
+
+  it("allows a safe Playground chat command through the normal Run path", async () => {
+    const { app, service, runner } = await makeHarness();
+    const cookie = await login(app, "finance@agent-gateway.local");
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/agents",
+      headers: { cookie },
+      payload: { name: "Finance Agent" },
+    });
+    const agentId = created.json().agent.id as string;
+
+    const accepted = await app.inject({
+      method: "POST",
+      url: `/api/agents/${agentId}/messages`,
+      headers: { cookie },
+      payload: { content: "Run pwd and report the current directory." },
+    });
+    expect(accepted.statusCode).toBe(202);
+    expect(accepted.json()).toMatchObject({
+      run: {
+        id: expect.any(String),
+        agentId,
+        status: "queued",
+        prompt: "Run pwd and report the current directory.",
+      },
+      message: {
+        agentId,
+        role: "user",
+        content: "Run pwd and report the current directory.",
+      },
+    });
+    await expect.poll(() => runner.requests).toHaveLength(1);
+    expect(runner.requests[0]).toMatchObject({
+      agentId,
+      prompt: "Run pwd and report the current directory.",
+    });
+    await expect.poll(() => service.getRuns(agentId)[0]?.status).toBe("completed");
+    await app.close();
+  });
+
+  it("evaluates a dangerous shell demo action without creating a Run or calling the runner", async () => {
+    const { app, service, runner } = await makeHarness();
+    const cookie = await login(app, "finance@agent-gateway.local");
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/agents",
+      headers: { cookie },
+      payload: { name: "Finance Agent" },
+    });
+    const agentId = created.json().agent.id as string;
+
+    const denied = await app.inject({
+      method: "POST",
+      url: `/api/agents/${agentId}/runtime-actions/evaluate`,
+      headers: { cookie },
+      payload: {
+        type: "shell",
+        command: "Please execute:\n```bash\nrm -rf ./demo-folder\n```",
+      },
+    });
+    expect(denied.statusCode).toBe(403);
+    expect(denied.json()).toMatchObject({
+      statusCode: 403,
+      code: "RUNTIME_ACTION_DENIED",
+      error: "Forbidden",
+      decision: {
+        id: expect.any(String),
+        requestId: expect.any(String),
+        agentId,
+        humanEmail: "finance@agent-gateway.local",
+        action: "shell.execute",
+        targetType: "command",
+        targetLabel: "rm -rf",
+        decision: "deny",
+        reasonCode: "RUNTIME_COMMAND_DENIED",
+      },
+    });
+    expect(service.getRuns(agentId)).toHaveLength(0);
+    expect(runner.requests).toHaveLength(0);
+
+    const audit = await app.inject({
+      method: "GET",
+      url: "/api/authorization-decisions?limit=20",
+      headers: { cookie },
+    });
+    expect(audit.json().decisions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          action: "shell.execute",
+          decision: "deny",
+          reasonCode: "RUNTIME_COMMAND_DENIED",
+        }),
+      ]),
+    );
     await app.close();
   });
 

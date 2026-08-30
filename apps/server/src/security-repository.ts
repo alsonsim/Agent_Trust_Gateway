@@ -265,7 +265,15 @@ export class SupabaseSecurityRepository implements SecurityRepository {
   }
 
   async appendDecision(decision: AuthorizationDecision): Promise<void> {
-    await this.appendDecisions([decision]);
+    await this.request<unknown>(
+      "/rest/v1/authorization_decisions",
+      this.secretKey,
+      {
+        method: "POST",
+        body: JSON.stringify(mapSupabaseDecision(decision)),
+        prefer: "return=minimal",
+      },
+    );
   }
 
   async appendDecisions(decisions: readonly AuthorizationDecision[]): Promise<void> {
@@ -275,23 +283,7 @@ export class SupabaseSecurityRepository implements SecurityRepository {
       this.secretKey,
       {
         method: "POST",
-        body: JSON.stringify(decisions.map((decision) => ({
-          id: decision.id,
-          request_id: decision.requestId,
-          human_user_id: decision.humanUserId,
-          human_email: decision.humanEmail,
-          human_department: decision.humanDepartment,
-          agent_id: decision.agentId,
-          agent_name: decision.agentName,
-          action: decision.action,
-          target_type: decision.targetType,
-          target_id: decision.targetId,
-          target_label: decision.targetLabel,
-          decision: decision.decision,
-          reason_code: decision.reasonCode,
-          reason: decision.reason,
-          created_at: decision.createdAt,
-        }))),
+        body: JSON.stringify(decisions.map(mapSupabaseDecision)),
         prefer: "return=minimal",
       },
     );
@@ -344,12 +336,56 @@ export class SupabaseSecurityRepository implements SecurityRepository {
       },
       ...(options.body ? { body: options.body } : {}),
     });
-    if (!response.ok) {
-      throw new HttpError(503, "Supabase security repository is unavailable");
-    }
     const responseBody = await response.text();
+    if (!response.ok) {
+      throw new HttpError(503, "Supabase security repository is unavailable", {
+        code: "SUPABASE_REPOSITORY_UNAVAILABLE",
+        details: {
+          repository: "supabase",
+          httpStatus: response.status,
+          errorCode: safeSupabaseErrorCode(responseBody),
+        },
+      });
+    }
     if (!responseBody) return undefined as T;
     return JSON.parse(responseBody) as T;
+  }
+}
+
+function isUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+function mapSupabaseDecision(decision: AuthorizationDecision) {
+  return {
+    id: decision.id,
+    request_id: decision.requestId,
+    human_user_id: decision.humanUserId,
+    human_email: decision.humanEmail,
+    human_department: decision.humanDepartment,
+    agent_id: decision.agentId,
+    agent_name: decision.agentName,
+    action: decision.action,
+    target_type: decision.targetType,
+    // Supabase stores target_id as UUID. Paths and commands remain in
+    // target_label; use the decision UUID for non-UUID runtime targets.
+    target_id: isUuid(decision.targetId) ? decision.targetId : decision.id,
+    target_label: decision.targetLabel,
+    decision: decision.decision,
+    reason_code: decision.reasonCode,
+    reason: decision.reason,
+    created_at: decision.createdAt,
+  };
+}
+
+function safeSupabaseErrorCode(responseBody: string): string | null {
+  try {
+    const parsed = JSON.parse(responseBody) as { code?: unknown };
+    return typeof parsed.code === "string" && /^[A-Z0-9_]{1,32}$/i.test(parsed.code)
+      ? parsed.code
+      : null;
+  } catch {
+    return null;
   }
 }
 

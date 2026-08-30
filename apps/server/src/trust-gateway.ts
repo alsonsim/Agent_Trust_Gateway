@@ -86,8 +86,8 @@ export class TrustGateway {
       allowed,
       reasonCode: allowed ? "OWNER_MATCH" : "HUMAN_AGENT_OWNER_MISMATCH",
       reason: allowed
-        ? "The authenticated user owns the requested Agent."
-        : "The authenticated user does not own the requested Agent.",
+        ? "The authenticated human owns this Agent."
+        : "The authenticated human does not own this Agent.",
       redactAgent: !allowed,
     });
     if (!allowed) {
@@ -142,7 +142,7 @@ export class TrustGateway {
       targetLabel: agent.name,
       allowed: true,
       reasonCode: "OWNER_MATCH",
-      reason: "The backend assigned the new Agent to the authenticated user.",
+      reason: "The backend assigned the new Agent to the authenticated department workspace.",
     });
     await this.appendAllowedDecision(decision);
     return decision;
@@ -175,7 +175,7 @@ export class TrustGateway {
         targetLabel: "Protected Agent",
         allowed: false,
         reasonCode: "HUMAN_AGENT_OWNER_MISMATCH",
-        reason: "The authenticated user does not own the requested Agent.",
+        reason: "The authenticated human does not own this Agent.",
         redactAgent: true,
       });
       await this.appendDeniedDecision(decision);
@@ -220,7 +220,7 @@ export class TrustGateway {
         resource,
         false,
         "HUMAN_AGENT_OWNER_MISMATCH",
-        "The authenticated user cannot act through an Agent owned by another user.",
+        "The authenticated human cannot act through another user's Agent.",
         true,
         true,
       );
@@ -248,7 +248,7 @@ export class TrustGateway {
         resource,
         false,
         "AGENT_RESOURCE_OWNER_MISMATCH",
-        "The Agent owner and protected resource owner do not match.",
+        "This document belongs to another department and has no active scoped grant.",
         false,
         true,
       );
@@ -274,7 +274,7 @@ export class TrustGateway {
       resource,
       true,
       "OWNER_MATCH",
-      "Human, Agent, and resource ownership match.",
+      "Human, Agent, and resource belong to the same department.",
     );
     await this.appendAllowedDecision(decision);
     return { resource: result, decision };
@@ -320,7 +320,7 @@ export class TrustGateway {
         targetLabel: "Protected workspace file",
         allowed: false,
         reasonCode: "HUMAN_AGENT_OWNER_MISMATCH",
-        reason: "The authenticated user cannot read files through another user's Agent.",
+        reason: "The authenticated human cannot read files through another user's Agent.",
         redactAgent: true,
       });
       await this.appendDeniedDecision(decision);
@@ -391,7 +391,7 @@ export class TrustGateway {
     limit: number,
   ): Promise<AuthorizationDecision[]> {
     const ownedAgentIds = this.agents
-      .listAgents(principal.id)
+      .listAgentsByOwner(principal.id)
       .map((agent) => agent.id);
     const decisions = await this.securityRepository.listDecisions(
       principal.id,
@@ -484,7 +484,8 @@ export class TrustGateway {
   private async appendAllowedDecision(decision: AuthorizationDecision): Promise<void> {
     try {
       await this.securityRepository.appendDecision(decision);
-    } catch {
+    } catch (error) {
+      logAuditPersistenceFailure(error);
       throw new HttpError(
         503,
         "Authorization evidence could not be persisted; access failed closed",
@@ -496,7 +497,8 @@ export class TrustGateway {
   private async appendDeniedDecision(decision: AuthorizationDecision): Promise<void> {
     try {
       await this.securityRepository.appendDecision(decision);
-    } catch {
+    } catch (error) {
+      logAuditPersistenceFailure(error);
       // The request remains denied even if the evidence sink is unavailable.
     }
   }
@@ -511,4 +513,28 @@ function deniedError(decision: AuthorizationDecision): HttpError {
 
 function revocationBlocks(action: AuthorizationAction): boolean {
   return action === "agent.start" || action === "agent.invoke";
+}
+
+function logAuditPersistenceFailure(error: unknown): void {
+  const diagnostic =
+    error instanceof HttpError
+      ? {
+          event: "authorization_audit_persistence_failed",
+          errorCode: error.code ?? null,
+          statusCode: error.statusCode,
+          repository: safeDiagnosticValue(error.details, "repository"),
+          httpStatus: safeDiagnosticValue(error.details, "httpStatus"),
+          providerErrorCode: safeDiagnosticValue(error.details, "errorCode"),
+        }
+      : {
+          event: "authorization_audit_persistence_failed",
+          errorCode: error instanceof Error ? error.name : "unknown",
+        };
+  console.error(JSON.stringify(diagnostic));
+}
+
+function safeDiagnosticValue(details: unknown, key: string): string | number | null {
+  if (!details || typeof details !== "object" || !(key in details)) return null;
+  const value = (details as Record<string, unknown>)[key];
+  return typeof value === "string" || typeof value === "number" ? value : null;
 }

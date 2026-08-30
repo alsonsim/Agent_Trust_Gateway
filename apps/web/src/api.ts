@@ -11,6 +11,13 @@ import type {
   WorkspaceFileRead,
 } from "./types";
 
+export interface ApiErrorBody {
+  error?: string;
+  code?: string;
+  decision?: AuthorizationDecision;
+  details?: unknown;
+}
+
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -18,6 +25,7 @@ export class ApiError extends Error {
     public readonly code: string | null = null,
     public readonly decision: AuthorizationDecision | null = null,
     public readonly details: unknown = null,
+    public readonly body: ApiErrorBody = {},
   ) {
     super(message);
     this.name = "ApiError";
@@ -41,12 +49,7 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
     headers,
     credentials: "same-origin",
   });
-  const data = (await response.json().catch(() => ({}))) as T & {
-    error?: string;
-    code?: string;
-    decision?: AuthorizationDecision;
-    details?: unknown;
-  };
+  const data = (await response.json().catch(() => ({}))) as T & ApiErrorBody;
   if (!response.ok) {
     throw new ApiError(
       data.error ?? "Request failed",
@@ -54,6 +57,7 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
       data.code ?? null,
       data.decision ?? null,
       data.details ?? null,
+      data,
     );
   }
   return data;
@@ -115,6 +119,14 @@ export const api = {
       {
         method: "POST",
         body: JSON.stringify({ content }),
+      },
+    ),
+  evaluateRuntimeShellAction: (id: string, command: string) =>
+    request<{ decision: AuthorizationDecision }>(
+      "/api/agents/" + id + "/runtime-actions/evaluate",
+      {
+        method: "POST",
+        body: JSON.stringify({ type: "shell", command }),
       },
     ),
   run: (id: string) => request<{ run: AgentRun }>("/api/runs/" + id),

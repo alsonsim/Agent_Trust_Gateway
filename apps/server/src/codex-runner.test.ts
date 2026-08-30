@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { buildCodexArgs, parseCodexEventLine } from "./codex-runner.js";
+import {
+  buildCodexArgs,
+  buildWindowsCmdCommand,
+  parseCodexEventLine,
+} from "./codex-runner.js";
 
 describe("Codex runner protocol", () => {
   it("builds a new-session invocation", () => {
@@ -69,5 +73,17 @@ describe("Codex runner protocol", () => {
     expect(parsed.threadId).toBe("thread-123");
     expect(parsed.messages).toEqual(["Done."]);
     expect(parsed.usage).toEqual({ inputTokens: 10, outputTokens: 4 });
+  });
+
+  it("quotes Windows .cmd arguments before invoking the command shell", () => {
+    const command = buildWindowsCmdCommand("codex.cmd", [
+      "exec",
+      "message with & a percent % and a quote \"",
+    ]);
+
+    expect(command).toContain('"codex.cmd"');
+    expect(command).toContain("^&");
+    expect(command).toContain("%%");
+    expect(command).toContain('^"');
   });
 });

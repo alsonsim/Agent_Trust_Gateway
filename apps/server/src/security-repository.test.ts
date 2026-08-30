@@ -184,9 +184,67 @@ describe("SupabaseSecurityRepository", () => {
         action,
         target_type: targetType,
         target_id: targetId,
+        target_label: targetId,
       });
     },
   );
+
+  it("reports only sanitized diagnostics for a Supabase failure", async () => {
+    const providerDetail = "do-not-expose-this-provider-detail";
+    const repository = new SupabaseSecurityRepository(
+      "https://example.supabase.co",
+      "publishable-key",
+      "secret-key",
+      async () =>
+        new Response(
+          JSON.stringify({ code: "42501", message: providerDetail }),
+          { status: 403 },
+        ),
+    );
+
+    const error = await repository.listResources().then(
+      () => null,
+      (reason: unknown) => reason,
+    );
+
+    expect(error).toMatchObject({
+      statusCode: 503,
+      code: "SUPABASE_REPOSITORY_UNAVAILABLE",
+      message: "Supabase security repository is unavailable",
+      details: {
+        repository: "supabase",
+        httpStatus: 403,
+        errorCode: "42501",
+      },
+    });
+    expect((error as Error).message).not.toContain(providerDetail);
+  });
+
+  it.each([
+    ["a non-JSON body", "upstream response with private detail"],
+    ["a non-object JSON body", "null"],
+    [
+      "an unsafe provider code",
+      JSON.stringify({ code: "PGRST301:private-detail", message: "private detail" }),
+    ],
+  ])("discards %s from Supabase diagnostics", async (_description, responseBody) => {
+    const repository = new SupabaseSecurityRepository(
+      "https://example.supabase.co",
+      "publishable-key",
+      "secret-key",
+      async () => new Response(responseBody, { status: 500 }),
+    );
+
+    await expect(repository.listResources()).rejects.toMatchObject({
+      statusCode: 503,
+      code: "SUPABASE_REPOSITORY_UNAVAILABLE",
+      details: {
+        repository: "supabase",
+        httpStatus: 500,
+        errorCode: null,
+      },
+    });
+  });
 });
 
 describe("LocalSecurityRepository", () => {

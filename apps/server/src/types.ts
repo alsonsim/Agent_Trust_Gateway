@@ -2,6 +2,7 @@ export type AgentStatus = "ready" | "busy" | "stopped" | "error";
 export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 export type MessageRole = "user" | "assistant";
 export type Department = "frontend" | "backend" | "qa";
+export const DEPARTMENTS = ["frontend", "backend", "qa"] as const satisfies readonly Department[];
 export type AuthorizationDecisionValue = "allow" | "deny";
 export type AuthorizationAction =
   | "agent.create"
@@ -23,6 +24,8 @@ export const DEFAULT_LEGACY_OWNER_ID = "11111111-1111-4111-8111-111111111111";
 
 export interface Agent {
   id: string;
+  department: Department;
+  workspaceProfileId: string;
   ownerId: string;
   name: string;
   description: string;
@@ -32,6 +35,14 @@ export interface Agent {
   workspacePath: string;
   codexThreadId: string | null;
   lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface WorkspaceProfile {
+  id: string;
+  department: Department;
+  workspacePath: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -109,8 +120,9 @@ export interface AuthorizationDecision {
 }
 
 export interface Database {
-  version: 3;
+  version: 4;
   agents: Agent[];
+  workspaceProfiles: WorkspaceProfile[];
   messages: Message[];
   runs: AgentRun[];
   protectedResources: ProtectedResource[];
@@ -137,6 +149,7 @@ export interface RunnerResult {
 
 export interface RunnerRequest {
   agentId: string;
+  workspaceProfileId: string;
   workspacePath: string;
   prompt: string;
   threadId: string | null;

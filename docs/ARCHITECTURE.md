@@ -71,6 +71,31 @@ known credential paths, applies a 256 KiB read limit, persists an authorization
 decision, and only then returns allowed content. The audit label is a normalized
 requested path, never file contents.
 
+### Engineering-role workspace profiles
+
+The authenticated backend principal, not the browser, supplies an Agent's
+`department`. New Agents receive the deterministic profile
+`department-frontend`, `department-backend`, or `department-qa`; each profile
+has one persistent workspace under `AGENT_WORKSPACE_ROOT/<role>`. The three demo
+identities map one-to-one to these profiles. Agents in the same role share that
+workspace and Runs for one profile are serialized, while Agent APIs still check
+the exact stored owner ID. Existing UUID-named workspaces are retained on disk
+during JSON-store migration and are not silently mounted into another profile.
+
+`ContainerCodexRunner` creates a disposable projection of only the selected
+profile before launching Codex. It excludes symlinks and every path classified
+as protected by `workspace-file-policy.ts`, then mounts that projection as
+`/workspace`. The Runtime receives neither the repository root nor the shared
+control-plane Codex home; it receives a profile-scoped Codex home containing
+only generated CLI configuration and exec policy. The Runtime root filesystem
+is read-only, capabilities are dropped, and its network is disabled.
+
+This establishes a real filesystem boundary for role-owned source and secret
+isolation. A network-disabled Runtime cannot make direct model-provider calls;
+a trusted model proxy or workload-identity adapter is the preferred production
+path. A disposable local demo may explicitly enable both documented insecure
+network and key-passthrough flags; production rejects those escape hatches.
+
 ### AgentService
 
 Coordinates lifecycle state, persistence, workspaces, and Runs. One Agent can
@@ -100,8 +125,9 @@ Existing Runs remain readable to their owner for audit and troubleshooting.
 
 ```text
 data/launchpad.json       Agent, message, and Run metadata
-workspaces/AgentID/       Agent-created files
-workspaces/.deleted/      Archived deleted workspaces
+workspaces/frontend/      Frontend role workspace
+workspaces/backend/       Backend role workspace
+workspaces/qa/            QA role workspace
 codex-home/               Codex configuration and sessions
 ```
 
@@ -142,12 +168,15 @@ mount boundary. This is not claimed as complete tool-level interception.
 
 ### Runtime providers
 
-- `CodexRunner` runs Codex inside the application container for ECS.
+- `CodexRunner` is the local-process compatibility provider for development.
 - `ContainerCodexRunner` starts one disposable Docker, Colima, or Podman
   container for every local turn.
 
 Both providers use argv-only process execution, bound output and time, resume
-the stored Codex thread, and escalate termination after a grace period.
+the stored Codex thread, and escalate termination after a grace period. The
+role-workspace isolation guarantee applies to `ContainerCodexRunner`; the legacy
+local-process runner remains a development compatibility path and must not be
+used as a multi-tenant boundary.
 
 ## Deployment profiles
 

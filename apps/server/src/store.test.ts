@@ -5,14 +5,12 @@ import { afterEach, describe, expect, it } from "vitest";
 import { JsonStore } from "./store.js";
 
 const temporaryDirectories: string[] = [];
-const departmentMigrations = [
-  ["finance", "frontend"],
-  ["hr", "backend"],
-  ["research", "qa"],
-  ["frontend", "frontend"],
-  ["backend", "backend"],
-  ["qa", "qa"],
-] as const;
+const ownerIds = {
+  frontend: "11111111-1111-4111-8111-111111111111",
+  backend: "22222222-2222-4222-8222-222222222222",
+  qa: "33333333-3333-4333-8333-333333333333",
+} as const;
+const timestamp = "2026-08-29T00:00:00.000Z";
 
 afterEach(async () => {
   await Promise.all(
@@ -22,70 +20,99 @@ afterEach(async () => {
   );
 });
 
+async function databasePath(prefix: string): Promise<string> {
+  const root = await mkdtemp(path.join(tmpdir(), prefix));
+  temporaryDirectories.push(root);
+  return path.join(root, "db.json");
+}
+
+function legacyAgent(ownerId = ownerIds.frontend) {
+  return {
+    id: "99999999-9999-4999-8999-999999999999",
+    ownerId,
+    name: "Existing Agent",
+    description: "Preserve me",
+    instructions: "Keep these instructions",
+    status: "ready",
+    revokedAt: null,
+    workspacePath: path.join("legacy", ownerId),
+    codexThreadId: "thread-existing",
+    lastError: null,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+}
+
+function resource(ownerDepartment: string) {
+  return {
+    id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    ownerId: ownerIds.frontend,
+    ownerDepartment,
+    name: "Preserved resource",
+    description: "Legacy description",
+    fileName: "resource.md",
+    storageKey: ownerIds.frontend + "/resource.md",
+    createdAt: timestamp,
+  };
+}
+
+function decision(humanDepartment: string) {
+  return {
+    id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    requestId: "request-1",
+    humanUserId: ownerIds.frontend,
+    humanEmail: "frontend@bytedance.com",
+    humanDepartment,
+    agentId: "99999999-9999-4999-8999-999999999999",
+    agentName: "Existing Agent",
+    action: "agent.read",
+    targetType: "agent",
+    targetId: "99999999-9999-4999-8999-999999999999",
+    targetLabel: "Existing Agent",
+    decision: "allow",
+    reasonCode: "OWNER_MATCH",
+    reason: "Preserved decision",
+    createdAt: timestamp,
+  };
+}
+
 describe("JsonStore", () => {
-  it("migrates legacy single-user state to an owned version 3 database", async () => {
-    const root = await mkdtemp(path.join(tmpdir(), "launchpad-store-migration-test-"));
-    temporaryDirectories.push(root);
-    const databasePath = path.join(root, "db.json");
-    const timestamp = new Date().toISOString();
+  it("migrates version 1 state to the canonical version 4 workspace schema", async () => {
+    const filePath = await databasePath("launchpad-v1-migration-");
+    const { ownerId: _ownerId, revokedAt: _revokedAt, ...agent } = legacyAgent();
     await writeFile(
-      databasePath,
-      JSON.stringify({
-        version: 1,
-        agents: [
-          {
-            id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-            name: "Legacy Agent",
-            description: "",
-            instructions: "",
-            status: "ready",
-            workspacePath: path.join(root, "workspace"),
-            codexThreadId: null,
-            lastError: null,
-            createdAt: timestamp,
-            updatedAt: timestamp,
-          },
-        ],
-        messages: [],
-        runs: [],
-      }),
+      filePath,
+      JSON.stringify({ version: 1, agents: [agent], messages: [], runs: [] }),
       "utf8",
     );
-    const store = new JsonStore(databasePath);
+
+    const store = new JsonStore(filePath);
     await store.initialize();
+
     expect(store.snapshot()).toMatchObject({
-      version: 3,
+      version: 4,
       agents: [
-        { ownerId: "11111111-1111-4111-8111-111111111111" },
+        {
+          ownerId: ownerIds.frontend,
+          department: "frontend",
+          workspaceProfileId: "department-frontend",
+          revokedAt: null,
+          instructions: "Keep these instructions",
+        },
       ],
+      workspaceProfiles: [],
       protectedResources: [],
       authorizationDecisions: [],
     });
   });
 
-  it("migrates version 2 departments while preserving Agents, messages, and runs", async () => {
-    const root = await mkdtemp(path.join(tmpdir(), "launchpad-role-migration-test-"));
-    temporaryDirectories.push(root);
-    const databasePath = path.join(root, "db.json");
-    const timestamp = "2026-08-29T00:00:00.000Z";
-    const agent = {
-      id: "99999999-9999-4999-8999-999999999999",
-      ownerId: "11111111-1111-4111-8111-111111111111",
-      name: "Existing Agent",
-      description: "Preserve me",
-      instructions: "Keep these instructions",
-      status: "ready",
-      revokedAt: null,
-      workspacePath: path.join(root, "workspace"),
-      codexThreadId: "thread-existing",
-      lastError: null,
-      createdAt: timestamp,
-      updatedAt: timestamp,
-    };
+  it("migrates version 2 role values while preserving conversation and resource data", async () => {
+    const filePath = await databasePath("launchpad-v2-migration-");
+    const agent = legacyAgent(ownerIds.backend);
     const message = {
-      id: "88888888-8888-4888-8888-888888888888",
+      id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
       agentId: agent.id,
-      runId: "77777777-7777-4777-8777-777777777777",
+      runId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
       role: "user",
       content: "preserved message",
       createdAt: timestamp,
@@ -103,63 +130,145 @@ describe("JsonStore", () => {
       createdAt: timestamp,
     };
     await writeFile(
-      databasePath,
+      filePath,
       JSON.stringify({
         version: 2,
         agents: [agent],
         messages: [message],
         runs: [run],
-        protectedResources: departmentMigrations.map(
-          ([sourceDepartment], index) => ({
-            id: `resource-${index}`,
-            ownerId: agent.ownerId,
-            ownerDepartment: sourceDepartment,
-            name: `Resource ${index}`,
-            description: "Legacy description",
-            fileName: `resource-${index}.md`,
-            storageKey: `${agent.ownerId}/resource-${index}.md`,
-            createdAt: timestamp,
-          }),
-        ),
-        authorizationDecisions: departmentMigrations.map(
-          ([sourceDepartment], index) => ({
-            id: `decision-${index}`,
-            requestId: `request-${index}`,
-            humanUserId: agent.ownerId,
-            humanEmail: `${sourceDepartment}@agent-gateway.local`,
-            humanDepartment: sourceDepartment,
-            agentId: agent.id,
-            agentName: agent.name,
-            action: "agent.read",
-            targetType: "agent",
-            targetId: agent.id,
-            targetLabel: agent.name,
-            decision: "allow",
-            reasonCode: "OWNER_MATCH",
-            reason: `Decision ${index}`,
-            createdAt: timestamp,
-          }),
-        ),
+        protectedResources: [resource("finance")],
+        authorizationDecisions: [decision("research")],
       }),
       "utf8",
     );
 
-    const store = new JsonStore(databasePath);
+    const store = new JsonStore(filePath);
     await store.initialize();
     const migrated = store.snapshot();
 
-    expect(migrated.version).toBe(3);
-    expect(migrated.agents).toEqual([agent]);
-    expect(migrated.messages).toEqual([message]);
-    expect(migrated.runs).toEqual([run]);
-    const expectedDepartments = departmentMigrations.map(([, expected]) => expected);
-    expect(
-      migrated.protectedResources.map((resource) => resource.ownerDepartment),
-    ).toEqual(expectedDepartments);
-    expect(
-      migrated.authorizationDecisions.map((decision) => decision.humanDepartment),
-    ).toEqual(expectedDepartments);
-    expect(JSON.parse(await readFile(databasePath, "utf8"))).toMatchObject({ version: 3 });
+    expect(migrated).toMatchObject({
+      version: 4,
+      agents: [
+        {
+          id: agent.id,
+          ownerId: ownerIds.backend,
+          department: "backend",
+          workspaceProfileId: "department-backend",
+          instructions: "Keep these instructions",
+        },
+      ],
+      messages: [message],
+      runs: [run],
+    });
+    expect(migrated.protectedResources[0]?.ownerDepartment).toBe("frontend");
+    expect(migrated.authorizationDecisions[0]?.humanDepartment).toBe("qa");
+  });
+
+  it("migrates engineering version 3 data that has no workspace profiles", async () => {
+    const filePath = await databasePath("launchpad-engineering-v3-");
+    const agent = legacyAgent(ownerIds.qa);
+    await writeFile(
+      filePath,
+      JSON.stringify({
+        version: 3,
+        agents: [agent],
+        messages: [],
+        runs: [],
+        protectedResources: [resource("frontend")],
+        authorizationDecisions: [decision("backend")],
+      }),
+      "utf8",
+    );
+
+    const store = new JsonStore(filePath);
+    await store.initialize();
+    const migrated = store.snapshot();
+
+    expect(migrated.version).toBe(4);
+    expect(migrated.workspaceProfiles).toEqual([]);
+    expect(migrated.agents[0]).toMatchObject({
+      ownerId: ownerIds.qa,
+      department: "qa",
+      workspaceProfileId: "department-qa",
+      workspacePath: agent.workspacePath,
+      instructions: agent.instructions,
+    });
+  });
+
+  it("migrates incoming version 3 profiles and every legacy department value", async () => {
+    const filePath = await databasePath("launchpad-incoming-v3-");
+    const agent = {
+      ...legacyAgent(),
+      department: "finance",
+      workspaceProfileId: "department-finance",
+    };
+    await writeFile(
+      filePath,
+      JSON.stringify({
+        version: 3,
+        agents: [agent],
+        workspaceProfiles: [
+          {
+            id: "department-finance",
+            department: "finance",
+            workspacePath: path.join("legacy", "finance"),
+            createdAt: timestamp,
+            updatedAt: timestamp,
+          },
+        ],
+        messages: [],
+        runs: [],
+        protectedResources: [resource("hr")],
+        authorizationDecisions: [decision("research")],
+        documentAccessRequests: [],
+      }),
+      "utf8",
+    );
+
+    const store = new JsonStore(filePath);
+    await store.initialize();
+    const migrated = store.snapshot();
+
+    expect(migrated).toMatchObject({
+      version: 4,
+      agents: [
+        {
+          department: "frontend",
+          workspaceProfileId: "department-frontend",
+          instructions: "Keep these instructions",
+        },
+      ],
+      workspaceProfiles: [
+        { id: "department-frontend", department: "frontend" },
+      ],
+    });
+    expect(migrated.protectedResources[0]?.ownerDepartment).toBe("backend");
+    expect(migrated.authorizationDecisions[0]?.humanDepartment).toBe("qa");
+    expect(JSON.parse(await readFile(filePath, "utf8"))).not.toHaveProperty(
+      "documentAccessRequests",
+    );
+  });
+
+  it("refuses to discard non-empty state from the incomplete access-request scaffold", async () => {
+    const filePath = await databasePath("launchpad-incomplete-v3-");
+    await writeFile(
+      filePath,
+      JSON.stringify({
+        version: 3,
+        agents: [],
+        workspaceProfiles: [],
+        messages: [],
+        runs: [],
+        protectedResources: [],
+        authorizationDecisions: [],
+        documentAccessRequests: [{ id: "must-not-be-lost" }],
+      }),
+      "utf8",
+    );
+
+    await expect(new JsonStore(filePath).initialize()).rejects.toThrow(
+      /non-empty document access request state/i,
+    );
   });
 
   it("does not publish a mutation in memory when persistence fails", async () => {
@@ -179,7 +288,7 @@ describe("JsonStore", () => {
           runId: "run-1",
           role: "user",
           content: "must not become visible",
-          createdAt: new Date().toISOString(),
+          createdAt: timestamp,
         });
       }),
     ).rejects.toThrow();
@@ -193,7 +302,7 @@ describe("JsonStore", () => {
         runId: "run-2",
         role: "user",
         content: "queue recovered",
-        createdAt: new Date().toISOString(),
+        createdAt: timestamp,
       });
     });
     expect(store.snapshot().messages.map((message) => message.content)).toEqual([

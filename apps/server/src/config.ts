@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import path from "node:path";
 import { z } from "zod";
@@ -14,7 +14,8 @@ const envSchema = z.object({
   APP_DATA_DIR: z.string().default(path.resolve(".data")),
   AGENT_WORKSPACE_ROOT: z.string().default(path.resolve("workspaces")),
   CODEX_HOME: z.string().default(path.resolve("codex-home")),
-  CODEX_BIN: z.string().default("codex"),
+  CODEX_BIN: z.string().optional(),
+  CONTAINER_CODEX_BIN: z.string().optional(),
   CODEX_SANDBOX_MODE: z
     .enum(["read-only", "workspace-write", "danger-full-access"])
     .default("workspace-write"),
@@ -48,6 +49,8 @@ const envSchema = z.object({
   AUTH_SESSION_TTL_SECONDS: z.coerce.number().int().min(300).max(86_400).default(28_800),
   AUTH_COOKIE_SECURE: booleanEnvironmentValue.default(false),
   ALLOW_INSECURE_DEMO_AUTH: booleanEnvironmentValue.default(false),
+  LOCAL_INSECURE_RUNTIME_KEY_PASSTHROUGH: booleanEnvironmentValue.default(false),
+  LOCAL_INSECURE_RUNTIME_NETWORK: booleanEnvironmentValue.default(false),
   SUPABASE_URL: z.string().url().optional(),
   SUPABASE_PUBLISHABLE_KEY: z.string().trim().min(1).optional(),
   SUPABASE_ANON_KEY: z.string().trim().min(1).optional(),
@@ -64,9 +67,54 @@ const envSchema = z.object({
 
 export type AppConfig = ReturnType<typeof loadConfig>;
 
+export type CodexExecutableSource = "configured" | "platform-default";
+
+export interface CodexExecutableResolution {
+  executable: string;
+  source: CodexExecutableSource;
+}
+
+export function resolveCodexExecutable(
+  configuredValue: string | undefined,
+  platform = process.platform,
+): CodexExecutableResolution {
+  if (!configuredValue) {
+    return {
+      executable: platform === "win32" ? "codex.cmd" : "codex",
+      source: "platform-default",
+    };
+  }
+  return { executable: configuredValue, source: "configured" };
+}
+
+export function resolveContainerCodexExecutable(
+  configuredValue: string | undefined,
+): CodexExecutableResolution {
+  const executable = configuredValue || "codex";
+  if (/\.cmd$/i.test(executable) || /^[a-z]:[\\/]/i.test(executable) || executable.includes("\\")) {
+    throw new Error(
+      "CONTAINER_CODEX_BIN must name a Linux executable inside the Runtime image, such as codex. Windows paths and .cmd launchers are not supported.",
+    );
+  }
+  return {
+    executable,
+    source: configuredValue ? "configured" : "platform-default",
+  };
+}
+
 export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
   const env = envSchema.parse(environment);
+  const codexExecutable = resolveCodexExecutable(env.CODEX_BIN);
+  const containerCodexExecutable = resolveContainerCodexExecutable(env.CONTAINER_CODEX_BIN);
   const authToken = env.APP_AUTH_TOKEN?.trim() ?? "";
+  if (
+    env.NODE_ENV === "production" &&
+    (env.LOCAL_INSECURE_RUNTIME_KEY_PASSTHROUGH || env.LOCAL_INSECURE_RUNTIME_NETWORK)
+  ) {
+    throw new Error(
+      "LOCAL_INSECURE_RUNTIME_KEY_PASSTHROUGH and LOCAL_INSECURE_RUNTIME_NETWORK are development-only escape hatches",
+    );
+  }
   const loopbackHosts = new Set(["127.0.0.1", "::1", "localhost"]);
   if (env.NODE_ENV === "production" && !loopbackHosts.has(env.HOST)) {
     if (
@@ -105,7 +153,10 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     dataDirectory: path.resolve(env.APP_DATA_DIR),
     workspaceRoot: path.resolve(env.AGENT_WORKSPACE_ROOT),
     codexHome: path.resolve(env.CODEX_HOME),
-    codexBin: env.CODEX_BIN,
+    codexBin: codexExecutable.executable,
+    codexBinSource: codexExecutable.source,
+    containerCodexBin: containerCodexExecutable.executable,
+    containerCodexBinSource: containerCodexExecutable.source,
     codexSandboxMode: env.CODEX_SANDBOX_MODE,
     codexTimeoutMs: env.CODEX_TIMEOUT_MS,
     codexMaxOutputBytes: env.CODEX_MAX_OUTPUT_BYTES,
@@ -124,6 +175,8 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     authSessionTtlSeconds: env.AUTH_SESSION_TTL_SECONDS,
     authCookieSecure: env.AUTH_COOKIE_SECURE,
     allowInsecureDemoAuth: env.ALLOW_INSECURE_DEMO_AUTH,
+    localInsecureRuntimeKeyPassthrough: env.LOCAL_INSECURE_RUNTIME_KEY_PASSTHROUGH,
+    localInsecureRuntimeNetwork: env.LOCAL_INSECURE_RUNTIME_NETWORK,
     supabaseUrl: env.SUPABASE_URL?.replace(/\/+$/, "") ?? "",
     supabasePublicKey,
     supabaseSecretKey,
@@ -162,4 +215,17 @@ export async function writeCodexConfig(config: AppConfig): Promise<void> {
     encoding: "utf8",
     mode: 0o600,
   });
+}
+
+export async function ensureWritableDataDirectory(directory: string): Promise<void> {
+  await mkdir(directory, { recursive: true });
+  const probePath = path.join(
+    directory,
+    ".agent-trust-gateway-write-probe-" + process.pid + "-" + randomBytes(8).toString("hex"),
+  );
+  try {
+    await writeFile(probePath, "ok\n", { encoding: "utf8", mode: 0o600, flag: "wx" });
+  } finally {
+    await rm(probePath, { force: true });
+  }
 }

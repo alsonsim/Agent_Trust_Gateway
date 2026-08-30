@@ -1,8 +1,11 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { copyFile, mkdir, readdir, rm, stat } from "node:fs/promises";
 import { promisify } from "node:util";
+import path from "node:path";
 import type { AppConfig } from "./config.js";
 import { buildCodexArgs, parseCodexEventLine } from "./codex-runner.js";
 import { RunCancelledError } from "./errors.js";
+import { isProtectedWorkspacePath } from "./workspace-file-policy.js";
 import type {
   AgentRunner,
   RunUsage,
@@ -54,12 +57,14 @@ export function buildContainerRunArgs(
     "--label",
     "io.codejam.instance-id=" + config.runtimeInstanceId,
     ...(engineName === "podman" ? ["--userns", "keep-id"] : []),
-    "--network",
-    "bridge",
+    ...(config.localInsecureRuntimeNetwork ? [] : ["--network", "none"]),
     "--security-opt",
     "no-new-privileges",
     "--cap-drop",
     "ALL",
+    "--read-only",
+    "--tmpfs",
+    "/tmp:rw,noexec,nosuid,size=64m",
     "--cpus",
     String(config.containerCpuLimit),
     "--memory",
@@ -69,13 +74,14 @@ export function buildContainerRunArgs(
     "--user",
     config.containerUser,
     "--env",
-    "ARK_API_KEY",
-    "--env",
     "CODEX_HOME=/codex-home",
     "--env",
     "HOME=/tmp",
     "--env",
     "NO_COLOR=1",
+    ...(config.localInsecureRuntimeKeyPassthrough
+      ? ["--env", "ARK_API_KEY", "--env", "ARK_MODEL"]
+      : []),
     "--mount",
     "type=bind,src=" + request.workspacePath + ",dst=/workspace",
     "--mount",
@@ -83,7 +89,7 @@ export function buildContainerRunArgs(
     "--workdir",
     "/workspace",
     config.containerRuntimeImage,
-    "codex",
+    config.containerCodexBin,
     ...buildCodexArgs(request, config.codexSandboxMode, "/workspace"),
   ];
 }
@@ -97,12 +103,12 @@ export class ContainerCodexRunner implements AgentRunner {
     try {
       await execFileAsync(this.config.containerEngine, ["version"], {
         timeout: 5_000,
-        env: this.childEnvironment(),
+        env: buildContainerCliEnvironment(this.config, false),
       });
       await execFileAsync(
         this.config.containerEngine,
         ["image", "inspect", this.config.containerRuntimeImage],
-        { timeout: 5_000, env: this.childEnvironment() },
+        { timeout: 5_000, env: buildContainerCliEnvironment(this.config, false) },
       );
       return true;
     } catch {
@@ -125,7 +131,7 @@ export class ContainerCodexRunner implements AgentRunner {
       active.termination = execFileAsync(
         this.config.containerEngine,
         ["rm", "--force", active.containerName],
-        { timeout: 8_000, env: this.childEnvironment() },
+        { timeout: 8_000, env: buildContainerCliEnvironment(this.config, false) },
       )
         .then(() => undefined)
         .catch(() => {
@@ -142,12 +148,30 @@ export class ContainerCodexRunner implements AgentRunner {
       throw new Error("Agent already has an active Runtime container");
     }
 
+    const workspaceProfileId = request.workspaceProfileId || request.agentId;
+    const runtimeWorkspace = path.join(
+      this.config.dataDirectory,
+      "runtime-projections",
+      workspaceProfileId,
+    );
+    await createWorkspaceProjection(request.workspacePath, runtimeWorkspace);
+    const runtimeCodexHome = path.join(
+      this.config.dataDirectory,
+      "runtime-codex-homes",
+      workspaceProfileId,
+    );
+    await prepareRuntimeCodexHome(this.config.codexHome, runtimeCodexHome);
+    const runtimeConfig = { ...this.config, codexHome: runtimeCodexHome };
+    const runtimeRequest = { ...request, workspacePath: runtimeWorkspace };
     const child = spawn(
       this.config.containerEngine,
-      buildContainerRunArgs(request, this.config),
+      buildContainerRunArgs(runtimeRequest, runtimeConfig),
       {
-        cwd: request.workspacePath,
-        env: this.childEnvironment(),
+        cwd: runtimeWorkspace,
+        env: buildContainerCliEnvironment(
+          this.config,
+          this.config.localInsecureRuntimeKeyPassthrough,
+        ),
         stdio: ["ignore", "pipe", "pipe"],
       },
     );
@@ -232,24 +256,68 @@ export class ContainerCodexRunner implements AgentRunner {
     } finally {
       clearTimeout(timeout);
       this.active.delete(request.agentId);
+      await syncWorkspaceProjection(runtimeWorkspace, request.workspacePath);
+      await rm(runtimeWorkspace, { recursive: true, force: true });
     }
   }
+}
 
-  private childEnvironment(): NodeJS.ProcessEnv {
-    const environment: NodeJS.ProcessEnv = {
-      ARK_API_KEY: this.config.arkApiKey,
-      NO_COLOR: "1",
-    };
-    for (const name of [
-      "PATH",
-      "HOME",
-      "TMPDIR",
-      "LANG",
-      "LC_ALL",
-      "XDG_RUNTIME_DIR",
-    ] as const) {
-      if (process.env[name] !== undefined) environment[name] = process.env[name];
-    }
-    return environment;
+export function buildContainerCliEnvironment(
+  config: AppConfig,
+  includeRuntimeCredentials = false,
+): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = {
+    NO_COLOR: "1",
+  };
+  if (includeRuntimeCredentials) {
+    environment.ARK_API_KEY = config.arkApiKey;
+    environment.ARK_MODEL = config.arkModel;
   }
+  for (const name of [
+    "PATH",
+    "HOME",
+    "TMPDIR",
+    "LANG",
+    "LC_ALL",
+    "XDG_RUNTIME_DIR",
+  ] as const) {
+    if (process.env[name] !== undefined) environment[name] = process.env[name];
+  }
+  return environment;
+}
+
+export async function createWorkspaceProjection(source: string, destination: string): Promise<void> {
+  await rm(destination, { recursive: true, force: true });
+  await copySafeTree(source, destination);
+}
+
+async function copySafeTree(source: string, destination: string): Promise<void> {
+  await mkdir(destination, { recursive: true });
+  for (const entry of await readdir(source, { withFileTypes: true })) {
+    if (isProtectedWorkspacePath(entry.name) || entry.isSymbolicLink()) continue;
+    const sourcePath = path.join(source, entry.name);
+    const destinationPath = path.join(destination, entry.name);
+    if (entry.isDirectory()) await copySafeTree(sourcePath, destinationPath);
+    else if (entry.isFile()) await copyFile(sourcePath, destinationPath);
+  }
+}
+
+async function prepareRuntimeCodexHome(source: string, destination: string): Promise<void> {
+  await mkdir(destination, { recursive: true });
+  for (const relativePath of ["config.toml", "execpolicy/runtime-action-firewall.rules"]) {
+    const sourcePath = path.join(source, relativePath);
+    const destinationPath = path.join(destination, relativePath);
+    try {
+      const sourceStat = await stat(sourcePath);
+      if (!sourceStat.isFile()) continue;
+      await mkdir(path.dirname(destinationPath), { recursive: true });
+      await copyFile(sourcePath, destinationPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
+}
+
+async function syncWorkspaceProjection(source: string, destination: string): Promise<void> {
+  await copySafeTree(source, destination);
 }

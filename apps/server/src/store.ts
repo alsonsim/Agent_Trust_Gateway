@@ -7,131 +7,170 @@ import {
   type Database,
   type Department,
   type ProtectedResource,
+  type WorkspaceProfile,
 } from "./types.js";
 
 const emptyDatabase = (): Database => ({
-  version: 3,
+  version: 4,
   agents: [],
+  workspaceProfiles: [],
   messages: [],
   runs: [],
   protectedResources: [],
   authorizationDecisions: [],
 });
 
-interface VersionOneDatabase {
-  version: 1;
-  agents: Array<
-    Omit<Agent, "ownerId" | "revokedAt"> & {
-      ownerId?: string;
-      revokedAt?: string | null;
-    }
-  >;
-  messages: Database["messages"];
-  runs: Database["runs"];
-}
-
 type LegacyDepartment = Department | "finance" | "hr" | "research";
 
-interface VersionTwoDatabase {
-  version: 2;
-  agents: Array<Omit<Agent, "revokedAt"> & { revokedAt?: string | null }>;
-  messages: Database["messages"];
-  runs: Database["runs"];
-  protectedResources: Array<
-    Omit<ProtectedResource, "ownerDepartment"> & {
-      ownerDepartment: LegacyDepartment;
-    }
-  >;
-  authorizationDecisions: Array<
-    Omit<AuthorizationDecision, "humanDepartment"> & {
-      humanDepartment: LegacyDepartment;
-    }
-  >;
+type LegacyAgent = Omit<
+  Agent,
+  "ownerId" | "department" | "workspaceProfileId" | "revokedAt"
+> & {
+  ownerId?: string;
+  department?: LegacyDepartment;
+  workspaceProfileId?: string;
+  revokedAt?: string | null;
+};
+
+type LegacyWorkspaceProfile = Omit<WorkspaceProfile, "id" | "department"> & {
+  id?: string;
+  department: LegacyDepartment;
+};
+
+type LegacyProtectedResource = Omit<ProtectedResource, "ownerDepartment"> & {
+  ownerDepartment: LegacyDepartment;
+};
+
+type LegacyAuthorizationDecision = Omit<AuthorizationDecision, "humanDepartment"> & {
+  humanDepartment: LegacyDepartment;
+};
+
+interface PersistedDatabaseShape {
+  version?: number;
+  agents?: LegacyAgent[];
+  workspaceProfiles?: LegacyWorkspaceProfile[];
+  messages?: Database["messages"];
+  runs?: Database["runs"];
+  protectedResources?: LegacyProtectedResource[];
+  authorizationDecisions?: LegacyAuthorizationDecision[];
+  // An incoming v3 briefly persisted this unused scaffold. Only an empty
+  // array can be discarded without pretending the unimplemented feature exists.
+  documentAccessRequests?: unknown[];
 }
 
-function migrateDepartment(value: LegacyDepartment): Department {
+function parseDatabase(raw: string): { database: Database; migrated: boolean } {
+  const parsed = JSON.parse(raw) as PersistedDatabaseShape;
+  if (
+    parsed.version !== 1 &&
+    parsed.version !== 2 &&
+    parsed.version !== 3 &&
+    parsed.version !== 4
+  ) {
+    throw new Error("Unsupported database format");
+  }
+  if (!Array.isArray(parsed.agents)) {
+    throw new Error("Unsupported database format");
+  }
+  if (
+    parsed.version === 4 &&
+    (!Array.isArray(parsed.workspaceProfiles) ||
+      !Array.isArray(parsed.messages) ||
+      !Array.isArray(parsed.runs) ||
+      !Array.isArray(parsed.protectedResources) ||
+      !Array.isArray(parsed.authorizationDecisions))
+  ) {
+    throw new Error("Unsupported database format");
+  }
+  if (
+    parsed.documentAccessRequests !== undefined &&
+    (!Array.isArray(parsed.documentAccessRequests) || parsed.documentAccessRequests.length > 0)
+  ) {
+    throw new Error(
+      "Unsupported non-empty document access request state from an incomplete schema",
+    );
+  }
+
+  const database: Database = {
+    version: 4,
+    agents: parsed.agents.map(normalizeAgent),
+    workspaceProfiles: normalizeWorkspaceProfiles(parsed.workspaceProfiles ?? []),
+    messages: arrayOrEmpty(parsed.messages),
+    runs: arrayOrEmpty(parsed.runs),
+    protectedResources: arrayOrEmpty(parsed.protectedResources).map((resource) => ({
+      ...resource,
+      ownerDepartment: migrateDepartment(resource.ownerDepartment),
+    })),
+    authorizationDecisions: arrayOrEmpty(parsed.authorizationDecisions).map(
+      (decision) => ({
+        ...decision,
+        humanDepartment: migrateDepartment(decision.humanDepartment),
+      }),
+    ),
+  };
+
+  const comparableSource = {
+    version: parsed.version,
+    agents: parsed.agents,
+    workspaceProfiles: parsed.workspaceProfiles,
+    messages: parsed.messages,
+    runs: parsed.runs,
+    protectedResources: parsed.protectedResources,
+    authorizationDecisions: parsed.authorizationDecisions,
+  };
+  return {
+    database,
+    migrated:
+      parsed.documentAccessRequests !== undefined ||
+      JSON.stringify(comparableSource) !== JSON.stringify(database),
+  };
+}
+
+function arrayOrEmpty<T>(value: T[] | undefined): T[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function migrateDepartment(
+  value: LegacyDepartment | undefined,
+  ownerId?: string,
+): Department {
   if (value === "finance") return "frontend";
   if (value === "hr") return "backend";
   if (value === "research") return "qa";
   if (value === "frontend" || value === "backend" || value === "qa") return value;
+  if (value === undefined && ownerId) return departmentForOwner(ownerId);
   throw new Error("Unsupported department in database");
 }
 
-function normalizeAgents(
-  agents: Array<Omit<Agent, "revokedAt"> & { revokedAt?: string | null }>,
-): Agent[] {
-  return agents.map((agent) => ({ ...agent, revokedAt: agent.revokedAt ?? null }));
+function departmentForOwner(ownerId: string): Department {
+  if (ownerId === "22222222-2222-4222-8222-222222222222") return "backend";
+  if (ownerId === "33333333-3333-4333-8333-333333333333") return "qa";
+  return "frontend";
 }
 
-function parseDatabase(raw: string): { database: Database; migrated: boolean } {
-  const parsed = JSON.parse(raw) as
-    | Partial<Database>
-    | VersionOneDatabase
-    | VersionTwoDatabase;
-  if (!Array.isArray(parsed.agents)) {
-    throw new Error("Unsupported database format");
-  }
-  if (parsed.version === 1) {
-    const legacy = parsed as VersionOneDatabase;
-    return {
-      migrated: true,
-      database: {
-        version: 3,
-        agents: legacy.agents.map((agent) => ({
-          ...agent,
-          ownerId: agent.ownerId || DEFAULT_LEGACY_OWNER_ID,
-          revokedAt: agent.revokedAt ?? null,
-        })),
-        messages: Array.isArray(legacy.messages) ? legacy.messages : [],
-        runs: Array.isArray(legacy.runs) ? legacy.runs : [],
-        protectedResources: [],
-        authorizationDecisions: [],
-      },
-    };
-  }
-  if (parsed.version === 2) {
-    const legacy = parsed as VersionTwoDatabase;
-    if (
-      !Array.isArray(legacy.messages) ||
-      !Array.isArray(legacy.runs) ||
-      !Array.isArray(legacy.protectedResources) ||
-      !Array.isArray(legacy.authorizationDecisions)
-    ) {
-      throw new Error("Unsupported database format");
-    }
-    return {
-      migrated: true,
-      database: {
-        version: 3,
-        agents: normalizeAgents(legacy.agents),
-        messages: legacy.messages,
-        runs: legacy.runs,
-        protectedResources: legacy.protectedResources.map((resource) => ({
-          ...resource,
-          ownerDepartment: migrateDepartment(resource.ownerDepartment),
-        })),
-        authorizationDecisions: legacy.authorizationDecisions.map((decision) => ({
-          ...decision,
-          humanDepartment: migrateDepartment(decision.humanDepartment),
-        })),
-      },
-    };
-  }
-  if (
-    parsed.version !== 3 ||
-    !Array.isArray(parsed.messages) ||
-    !Array.isArray(parsed.runs) ||
-    !Array.isArray(parsed.protectedResources) ||
-    !Array.isArray(parsed.authorizationDecisions)
-  ) {
-    throw new Error("Unsupported database format");
-  }
-  const database = parsed as Database;
-  const agents = normalizeAgents(database.agents);
+function normalizeAgent(agent: LegacyAgent): Agent {
+  const ownerId = agent.ownerId || DEFAULT_LEGACY_OWNER_ID;
+  const department = migrateDepartment(agent.department, ownerId);
   return {
-    database: { ...database, agents },
-    migrated: database.agents.some((agent) => agent.revokedAt === undefined),
+    ...agent,
+    ownerId,
+    department,
+    workspaceProfileId: "department-" + department,
+    revokedAt: agent.revokedAt ?? null,
   };
+}
+
+function normalizeWorkspaceProfiles(
+  profiles: LegacyWorkspaceProfile[],
+): WorkspaceProfile[] {
+  const normalized = new Map<string, WorkspaceProfile>();
+  for (const profile of profiles) {
+    const department = migrateDepartment(profile.department);
+    const id = "department-" + department;
+    if (!normalized.has(id)) {
+      normalized.set(id, { ...profile, id, department });
+    }
+  }
+  return [...normalized.values()];
 }
 
 export class JsonStore {

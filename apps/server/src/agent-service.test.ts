@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentService } from "./agent-service.js";
 import { loadConfig } from "./config.js";
+import { BACKEND_PRINCIPAL, FRONTEND_PRINCIPAL } from "./identity-provider.js";
 import { JsonStore } from "./store.js";
 import {
   DEFAULT_LEGACY_OWNER_ID,
@@ -96,6 +97,7 @@ describe("Agent lifecycle", () => {
     const databasePath = path.join(root, "data", "db.json");
     const timestamp = "2026-08-29T00:00:00.000Z";
     await mkdir(workspacePath, { recursive: true });
+    await writeFile(path.join(workspacePath, "legacy-note.txt"), "preserve me", "utf8");
     await mkdir(path.dirname(databasePath), { recursive: true });
     await writeFile(
       databasePath,
@@ -128,8 +130,24 @@ describe("Agent lifecycle", () => {
     const service = serviceForRoot(root);
     await service.initialize();
 
-    expect(service.getAgent(agentId).workspacePath).toBe(workspacePath);
-    await expectStandardWorkspaceDirectories(workspacePath);
+    const roleWorkspace = path.join(root, "workspaces", "frontend");
+    expect(service.getAgent(agentId)).toMatchObject({
+      department: "frontend",
+      workspaceProfileId: "department-frontend",
+      workspacePath: roleWorkspace,
+    });
+    await expectStandardWorkspaceDirectories(roleWorkspace);
+    await expect(
+      readFile(
+        path.join(
+          roleWorkspace,
+          "legacy-agent-workspaces",
+          agentId,
+          "legacy-note.txt",
+        ),
+        "utf8",
+      ),
+    ).resolves.toBe("preserve me");
   });
 
   it("creates, updates, stops, starts and deletes an Agent", async () => {
@@ -144,6 +162,18 @@ describe("Agent lifecycle", () => {
     expect(service.listAgents()).toHaveLength(0);
   });
 
+  it("lists Agents by strict owner even when owners share one role workspace", async () => {
+    const service = await makeService();
+    const ownerOne = FRONTEND_PRINCIPAL.id;
+    const ownerTwo = "44444444-4444-4444-8444-444444444444";
+    const first = await service.createAgent(ownerOne, "frontend", { name: "Owner one" });
+    const second = await service.createAgent(ownerTwo, "frontend", { name: "Owner two" });
+
+    expect(first.workspacePath).toBe(second.workspacePath);
+    expect(service.listAgents(ownerOne).map((agent) => agent.id)).toEqual([first.id]);
+    expect(service.listAgents(ownerTwo).map((agent) => agent.id)).toEqual([second.id]);
+  });
+
   it("persists a playground conversation", async () => {
     const service = await makeService();
     const agent = await service.createAgent(DEFAULT_LEGACY_OWNER_ID, "frontend", { name: "Coder" });
@@ -153,6 +183,33 @@ describe("Agent lifecycle", () => {
     expect(messages.map((message) => message.role)).toEqual(["user", "assistant"]);
     expect(messages[1]?.content).toContain("write hello world");
     expect(service.getAgent(agent.id).codexThreadId).toBe("fake-thread");
+  });
+
+  it("injects the selected Agent instructions into the Runtime prompt", async () => {
+    let runtimeRequest: RunnerRequest | null = null;
+    const service = await makeService({
+      run: async (request) => {
+        runtimeRequest = request;
+        return { output: "done", threadId: "thread", usage: null };
+      },
+      cancel: async () => false,
+      isAvailable: async () => true,
+    });
+    const agent = await service.createAgent(DEFAULT_LEGACY_OWNER_ID, "frontend", {
+      name: "Accessibility specialist",
+      description: "Build inclusive profile experiences",
+      instructions: "Use semantic HTML and verify keyboard navigation.",
+    });
+
+    const { run } = await service.sendMessage(agent.id, "Implement the profile header.");
+    await expect.poll(() => runtimeRequest).not.toBeNull();
+    expect(runtimeRequest?.prompt).toContain("Accessibility specialist");
+    expect(runtimeRequest?.prompt).toContain("Build inclusive profile experiences");
+    expect(runtimeRequest?.prompt).toContain(
+      "Use semantic HTML and verify keyboard navigation.",
+    );
+    expect(runtimeRequest?.prompt).toContain("Implement the profile header.");
+    expect(service.getRun(run.id).prompt).toBe("Implement the profile header.");
   });
 
   it("atomically accepts only one concurrent run per Agent", async () => {
@@ -204,6 +261,55 @@ describe("Agent lifecycle", () => {
 
     finish({ output: "done", threadId: "thread", usage: null });
     await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+  });
+
+  it("derives a shared deterministic workspace profile from the authenticated role", async () => {
+    const service = await makeService();
+    const frontendOne = await service.createAgent(FRONTEND_PRINCIPAL.id, "frontend", {
+      name: "Frontend One",
+    });
+    const frontendTwo = await service.createAgent(FRONTEND_PRINCIPAL.id, "frontend", {
+      name: "Frontend Two",
+    });
+    const backendAgent = await service.createAgent(BACKEND_PRINCIPAL.id, "backend", {
+      name: "Backend",
+    });
+
+    expect(frontendOne).toMatchObject({
+      department: "frontend",
+      workspaceProfileId: "department-frontend",
+    });
+    expect(frontendTwo.workspacePath).toBe(frontendOne.workspacePath);
+    expect(backendAgent.workspacePath).not.toBe(frontendOne.workspacePath);
+  });
+
+  it("serializes Runs across different Agents sharing one role workspace", async () => {
+    let finish!: (result: RunnerResult) => void;
+    const pending = new Promise<RunnerResult>((resolve) => {
+      finish = resolve;
+    });
+    const service = await makeService({
+      run: () => pending,
+      cancel: async () => false,
+      isAvailable: async () => true,
+    });
+    const first = await service.createAgent(FRONTEND_PRINCIPAL.id, "frontend", {
+      name: "First frontend Agent",
+    });
+    const second = await service.createAgent(
+      "44444444-4444-4444-8444-444444444444",
+      "frontend",
+      { name: "Second frontend Agent" },
+    );
+
+    const accepted = await service.sendMessage(first.id, "first role task");
+    await expect(service.sendMessage(second.id, "second role task")).rejects.toMatchObject({
+      statusCode: 409,
+      message: expect.stringContaining("shared role workspace"),
+    });
+
+    finish({ output: "done", threadId: "thread", usage: null });
+    await expect.poll(() => service.getRun(accepted.run.id).status).toBe("completed");
   });
 
   it("revokes an active Agent, cancels its run, and rejects future dispatch", async () => {

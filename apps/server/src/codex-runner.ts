@@ -1,6 +1,4 @@
-import { execFile } from "node:child_process";
 import { spawn, type ChildProcess } from "node:child_process";
-import { promisify } from "node:util";
 import type { AppConfig } from "./config.js";
 import { RunCancelledError } from "./errors.js";
 import type {
@@ -9,8 +7,6 @@ import type {
   RunnerRequest,
   RunnerResult,
 } from "./types.js";
-
-const execFileAsync = promisify(execFile);
 
 export interface ParsedEvents {
   messages: string[];
@@ -103,11 +99,22 @@ export class CodexRunner implements AgentRunner {
 
   async isAvailable(): Promise<boolean> {
     try {
-      await execFileAsync(this.config.codexBin, ["--version"], {
-        timeout: 5_000,
-        env: this.childEnvironment(),
+      const child = this.startCodex(["--version"], { stdio: "ignore" });
+      return await new Promise<boolean>((resolve) => {
+        const timeout = setTimeout(() => {
+          child.kill();
+          resolve(false);
+        }, 5_000);
+        timeout.unref();
+        child.once("error", () => {
+          clearTimeout(timeout);
+          resolve(false);
+        });
+        child.once("close", (code) => {
+          clearTimeout(timeout);
+          resolve(code === 0);
+        });
       });
-      return true;
     } catch {
       return false;
     }
@@ -130,11 +137,15 @@ export class CodexRunner implements AgentRunner {
     }
 
     const args = buildCodexArgs(request, this.config.codexSandboxMode);
-    const child = spawn(this.config.codexBin, args, {
-      cwd: request.workspacePath,
-      env: this.childEnvironment(),
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    let child: ChildProcess;
+    try {
+      child = this.startCodex(args, {
+        cwd: request.workspacePath,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (error) {
+      throw this.executableStartError(error);
+    }
     const settled = new Promise<void>((resolve) => {
       child.once("close", () => resolve());
       child.once("error", () => resolve());
@@ -181,8 +192,8 @@ export class CodexRunner implements AgentRunner {
       }
     };
 
-    child.stdout.on("data", (chunk: Buffer) => consume(chunk, "stdout"));
-    child.stderr.on("data", (chunk: Buffer) => consume(chunk, "stderr"));
+    child.stdout!.on("data", (chunk: Buffer) => consume(chunk, "stdout"));
+    child.stderr!.on("data", (chunk: Buffer) => consume(chunk, "stderr"));
 
     const timeout = setTimeout(() => {
       active.timedOut = true;
@@ -191,10 +202,15 @@ export class CodexRunner implements AgentRunner {
     timeout.unref();
 
     try {
-      const exitCode = await new Promise<number>((resolve, reject) => {
-        child.once("error", reject);
-        child.once("close", (code) => resolve(code ?? 1));
-      });
+      let exitCode: number;
+      try {
+        exitCode = await new Promise<number>((resolve, reject) => {
+          child.once("error", reject);
+          child.once("close", (code) => resolve(code ?? 1));
+        });
+      } catch (error) {
+        throw this.executableStartError(error);
+      }
       if (stdout.trim()) {
         parseCodexEventLine(stdout.trim(), parsed);
       }
@@ -208,6 +224,9 @@ export class CodexRunner implements AgentRunner {
         throw new Error("Codex output exceeded CODEX_MAX_OUTPUT_BYTES");
       }
       if (exitCode !== 0) {
+        if (this.usesWindowsCommandShell() && /not recognized|cannot find/i.test(stderr)) {
+          throw this.executableUnavailableError();
+        }
         const detail = parsed.errors.at(-1) ?? stderr.trim() ?? "No error detail";
         throw new Error("Codex exited with code " + exitCode + ": " + detail);
       }
@@ -264,4 +283,72 @@ export class CodexRunner implements AgentRunner {
     }
     return environment;
   }
+
+  private startCodex(
+    args: string[],
+    options: {
+      cwd?: string;
+      stdio: "ignore" | ["ignore", "pipe", "pipe"];
+    },
+  ): ChildProcess {
+    const spawnOptions = {
+      ...options,
+      env: this.childEnvironment(),
+    };
+    if (this.usesWindowsCommandShell()) {
+      return spawn(
+        process.env.ComSpec || "cmd.exe",
+        [
+          "/d",
+          "/v:off",
+          "/s",
+          "/c",
+          buildWindowsCmdCommand(this.config.codexBin, args),
+        ],
+        spawnOptions,
+      );
+    }
+    return spawn(this.config.codexBin, args, spawnOptions);
+  }
+
+  private usesWindowsCommandShell(): boolean {
+    return process.platform === "win32" && this.config.codexBin.toLowerCase().endsWith(".cmd");
+  }
+
+  private executableStartError(error: unknown): Error {
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === "ENOENT"
+    ) {
+      return this.executableUnavailableError();
+    }
+    return error instanceof Error ? error : new Error("Unable to start Codex CLI");
+  }
+
+  private executableUnavailableError(): Error {
+    const configuredGuidance =
+      this.config.codexBinSource === "configured"
+        ? "Set CODEX_BIN to an existing Codex executable, or remove CODEX_BIN to use the platform default."
+        : "Install @openai/codex so it is on PATH, or set CODEX_BIN to an existing Codex executable.";
+    return new Error(
+      "Unable to start Codex CLI at " + this.config.codexBin + ". " + configuredGuidance,
+    );
+  }
+}
+
+export function buildWindowsCmdCommand(executable: string, args: string[]): string {
+  return [executable, ...args]
+    .map((value) =>
+      '"' +
+      value
+        .replace(/\^/g, "^^")
+        .replace(/%/g, "%%")
+        .replace(/([&|<>()])/g, "^$1")
+        .replace(/"/g, '^"')
+        .replace(/[\r\n]/g, " ") +
+      '"',
+    )
+    .join(" ");
 }

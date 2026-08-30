@@ -317,10 +317,17 @@ export class SupabaseSecurityRepository implements SecurityRepository {
       },
       ...(options.body ? { body: options.body } : {}),
     });
-    if (!response.ok) {
-      throw new HttpError(503, "Supabase security repository is unavailable");
-    }
     const responseBody = await response.text();
+    if (!response.ok) {
+      throw new HttpError(503, "Supabase security repository is unavailable", {
+        code: "SUPABASE_REPOSITORY_UNAVAILABLE",
+        details: {
+          repository: "supabase",
+          httpStatus: response.status,
+          errorCode: safeSupabaseErrorCode(responseBody),
+        },
+      });
+    }
     if (!responseBody) return undefined as T;
     return JSON.parse(responseBody) as T;
   }
@@ -394,6 +401,17 @@ async function removeFileIfExists(filePath: string): Promise<void> {
     await unlink(filePath);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+}
+
+function safeSupabaseErrorCode(responseBody: string): string | null {
+  try {
+    const code = asRecord(JSON.parse(responseBody))?.code;
+    return typeof code === "string" && /^[A-Z0-9_]{1,32}$/i.test(code)
+      ? code
+      : null;
+  } catch {
+    return null;
   }
 }
 

@@ -1,14 +1,29 @@
-import { mkdir, rename, writeFile } from "node:fs/promises";
+import { cp, mkdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { Agent, Department } from "./types.js";
+import type { Agent, Department, WorkspaceProfile } from "./types.js";
 
 const STANDARD_WORKSPACE_DIRECTORIES = ["src", "test", "reports"] as const;
+
+export function workspaceProfileId(department: Department): string {
+  return "department-" + department;
+}
 
 export class WorkspaceManager {
   constructor(private readonly root: string) {}
 
-  workspacePath(agentId: string): string {
-    return path.join(this.root, agentId);
+  workspacePath(department: Department): string {
+    return path.join(this.root, department);
+  }
+
+  profile(department: Department): WorkspaceProfile {
+    const timestamp = new Date().toISOString();
+    return {
+      id: workspaceProfileId(department),
+      department,
+      workspacePath: this.workspacePath(department),
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
   }
 
   async initialize(): Promise<void> {
@@ -16,77 +31,115 @@ export class WorkspaceManager {
     await mkdir(path.join(this.root, ".deleted"), { recursive: true });
   }
 
-  async create(agent: Agent, ownerDepartment: Department): Promise<void> {
-    await mkdir(agent.workspacePath, { recursive: false });
-    await this.ensureStandardDirectories(agent);
-    await this.writeInstructions(agent);
-    await writeFile(
-      path.join(agent.workspacePath, ".gitignore"),
+  async ensureProfile(profile: WorkspaceProfile): Promise<void> {
+    await mkdir(profile.workspacePath, { recursive: true });
+    await this.ensureStandardDirectories(profile.workspacePath);
+    await writeOnce(
+      path.join(profile.workspacePath, ".gitignore"),
       [".codex/", "node_modules/", "dist/", ".env", "*.log", ""].join("\n"),
-      "utf8",
     );
-    await writeFile(
-      path.join(agent.workspacePath, "README.md"),
+    await writeOnce(
+      path.join(profile.workspacePath, "README.md"),
       [
-        "# " + agent.name + " workspace",
+        "# " + profile.department + " engineering workspace",
         "",
-        "Files created or edited by the Agent live here.",
-        "The platform-generated AGENTS.md contains the current Agent instructions.",
+        "This persistent workspace is shared by authorized " +
+          profile.department +
+          " engineering Agents.",
+        "Only this role workspace is projected into the Agent Runtime.",
         "",
       ].join("\n"),
-      "utf8",
     );
-    await writeFile(
-      path.join(agent.workspacePath, "PROJECT_BRIEF.md"),
-      projectBrief(ownerDepartment),
-      "utf8",
+    await writeOnce(
+      path.join(profile.workspacePath, "PROJECT_BRIEF.md"),
+      projectBrief(profile.department),
     );
+    await this.writeProfileInstructions(profile);
   }
 
-  async ensureStandardDirectories(agent: Agent): Promise<void> {
+  async importLegacyWorkspace(
+    agent: Agent,
+    profile: WorkspaceProfile,
+  ): Promise<void> {
+    const source = path.resolve(agent.workspacePath);
+    const root = path.resolve(this.root);
+    const destinationRoot = path.resolve(profile.workspacePath);
+    if (source === destinationRoot || !isInside(root, source) || source === root) return;
+
+    try {
+      if (!(await stat(source)).isDirectory()) return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+
+    const destination = path.join(
+      destinationRoot,
+      "legacy-agent-workspaces",
+      agent.id,
+    );
+    await mkdir(path.dirname(destination), { recursive: true });
+    await cp(source, destination, {
+      recursive: true,
+      force: false,
+      errorOnExist: false,
+      preserveTimestamps: true,
+    });
+  }
+
+  async writeInstructions(agent: Agent): Promise<void> {
+    // Shared AGENTS.md contains only role-safe rules. AgentService injects the
+    // selected Agent's own identity and instructions into every Runtime prompt.
+    await this.writeProfileInstructions({
+      id: agent.workspaceProfileId,
+      department: agent.department,
+      workspacePath: agent.workspacePath,
+      createdAt: agent.createdAt,
+      updatedAt: agent.updatedAt,
+    });
+  }
+
+  private async ensureStandardDirectories(workspacePath: string): Promise<void> {
     await Promise.all(
       STANDARD_WORKSPACE_DIRECTORIES.map((directory) =>
-        mkdir(path.join(agent.workspacePath, directory), { recursive: true }),
+        mkdir(path.join(workspacePath, directory), { recursive: true }),
       ),
     );
   }
 
-  async writeInstructions(agent: Agent): Promise<void> {
+  private async writeProfileInstructions(profile: WorkspaceProfile): Promise<void> {
     const content = [
-      "# Platform-managed Agent instructions",
+      "# Platform-managed engineering workspace rules",
       "",
-      "You are the coding Agent named " + agent.name + ".",
-      agent.description ? "Purpose: " + agent.description : "",
-      "",
-      "## Instructions",
-      "",
-      agent.instructions ||
-        "Help the user complete coding tasks in this workspace. Explain material results concisely.",
+      "This is the " + profile.department + " engineering role workspace.",
       "",
       "## Workspace rules",
       "",
-      "- Work only inside this workspace unless the user explicitly requests otherwise.",
+      "- Work only inside this role workspace.",
+      "- Other role workspaces and application source are not mounted.",
       "- Preserve existing user files and avoid destructive operations.",
       "- Build and test changes when practical.",
       "- Never print environment variables or credentials.",
       "",
-      "This file is regenerated when the Agent configuration is updated.",
+      "Agent-specific instructions are supplied separately by the control plane.",
       "",
     ]
       .filter((line, index, lines) => !(line === "" && lines[index - 1] === ""))
       .join("\n");
-    await writeFile(path.join(agent.workspacePath, "AGENTS.md"), content, "utf8");
+    await writeFile(path.join(profile.workspacePath, "AGENTS.md"), content, "utf8");
   }
+}
 
-  async archive(agent: Agent): Promise<string> {
-    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const destination = path.join(
-      this.root,
-      ".deleted",
-      agent.id + "-" + timestamp,
-    );
-    await rename(agent.workspacePath, destination);
-    return destination;
+function isInside(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative !== "" && relative !== ".." && !relative.startsWith(".." + path.sep);
+}
+
+async function writeOnce(filePath: string, content: string): Promise<void> {
+  try {
+    await writeFile(filePath, content, { encoding: "utf8", flag: "wx" });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
   }
 }
 

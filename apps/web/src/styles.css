@@ -2063,9 +2063,62 @@ textarea:focus {
   word-break: break-word;
 }
 
+.scenario-decision-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  color: #24251f;
+  font-size: 14px;
+}
+
+.scenario-decision-details {
+  display: grid;
+  gap: 6px;
+  width: 100%;
+  margin: 10px 0 0;
+}
+
+.scenario-decision-details div {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  gap: 8px;
+}
+
+.scenario-decision-details dt {
+  color: #888980;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.scenario-decision-details dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: #41423b;
+}
+
+.scenario-file-content {
+  width: 100%;
+  max-height: 150px;
+  margin: 10px 0 0;
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid #d8d8cf;
+  background: #fafaf7;
+  white-space: pre-wrap;
+  font: 11px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
 .scenario-result small {
   color: #777870;
   font-size: 9px;
+}
+
+.scenario-denied-label {
+  color: #a94343;
+  font-size: 12px;
 }
 
 .scenario-error {

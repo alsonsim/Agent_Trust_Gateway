@@ -454,7 +454,8 @@ export class TrustGateway {
   private async appendAllowedDecision(decision: AuthorizationDecision): Promise<void> {
     try {
       await this.securityRepository.appendDecision(decision);
-    } catch {
+    } catch (error) {
+      logAuditPersistenceFailure(error);
       throw new HttpError(
         503,
         "Authorization evidence could not be persisted; access failed closed",
@@ -466,7 +467,8 @@ export class TrustGateway {
   private async appendDeniedDecision(decision: AuthorizationDecision): Promise<void> {
     try {
       await this.securityRepository.appendDecision(decision);
-    } catch {
+    } catch (error) {
+      logAuditPersistenceFailure(error);
       // The request remains denied even if the evidence sink is unavailable.
     }
   }
@@ -481,4 +483,28 @@ function deniedError(decision: AuthorizationDecision): HttpError {
 
 function revocationBlocks(action: AuthorizationAction): boolean {
   return action === "agent.start" || action === "agent.invoke";
+}
+
+function logAuditPersistenceFailure(error: unknown): void {
+  const diagnostic =
+    error instanceof HttpError
+      ? {
+          event: "authorization_audit_persistence_failed",
+          errorCode: error.code ?? null,
+          statusCode: error.statusCode,
+          repository: safeDiagnosticValue(error.details, "repository"),
+          httpStatus: safeDiagnosticValue(error.details, "httpStatus"),
+          providerErrorCode: safeDiagnosticValue(error.details, "errorCode"),
+        }
+      : {
+          event: "authorization_audit_persistence_failed",
+          errorCode: error instanceof Error ? error.name : "unknown",
+        };
+  console.error(JSON.stringify(diagnostic));
+}
+
+function safeDiagnosticValue(details: unknown, key: string): string | number | null {
+  if (!details || typeof details !== "object" || !(key in details)) return null;
+  const value = (details as Record<string, unknown>)[key];
+  return typeof value === "string" || typeof value === "number" ? value : null;
 }

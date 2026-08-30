@@ -4,15 +4,16 @@ import { isArkConfigured } from "./config.js";
 import { HttpError, RunCancelledError } from "./errors.js";
 import type { RuntimeActionFirewall } from "./runtime-action-firewall.js";
 import { JsonStore } from "./store.js";
-import type {
-  Agent,
-  AgentRun,
-  AgentRunner,
-  CreateAgentInput,
-  Department,
-  Message,
-  RuntimeAuthorizationContext,
-  UpdateAgentInput,
+import {
+  DEPARTMENTS,
+  type Agent,
+  type AgentRun,
+  type AgentRunner,
+  type CreateAgentInput,
+  type Department,
+  type Message,
+  type RuntimeAuthorizationContext,
+  type UpdateAgentInput,
 } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
 
@@ -33,10 +34,31 @@ export class AgentService {
   async initialize(): Promise<void> {
     await this.store.initialize();
     await this.workspaces.initialize();
-    for (const agent of this.store.snapshot().agents) {
-      await this.workspaces.ensureStandardDirectories(agent);
+    const agentsBeforeProfileMigration = this.store.snapshot().agents;
+    for (const department of DEPARTMENTS) {
+      await this.workspaces.ensureProfile(this.workspaces.profile(department));
+    }
+    for (const agent of agentsBeforeProfileMigration) {
+      await this.workspaces.importLegacyWorkspace(
+        agent,
+        this.workspaces.profile(agent.department),
+      );
     }
     await this.store.mutate((database) => {
+      const timestamp = now();
+      for (const department of DEPARTMENTS) {
+        const profile = this.workspaces.profile(department);
+        const existingProfile = database.workspaceProfiles.find(
+          (item) => item.id === profile.id,
+        );
+        if (existingProfile) {
+          existingProfile.department = department;
+          existingProfile.workspacePath = profile.workspacePath;
+          existingProfile.updatedAt = timestamp;
+        } else {
+          database.workspaceProfiles.push(profile);
+        }
+      }
       for (const run of database.runs) {
         if (run.status === "queued" || run.status === "running") {
           run.status = "cancelled";
@@ -45,6 +67,15 @@ export class AgentService {
         }
       }
       for (const agent of database.agents) {
+        const profile = database.workspaceProfiles.find(
+          (item) => item.id === agent.workspaceProfileId,
+        );
+        if (profile) {
+          // Legacy UUID workspaces stay on disk for recovery, but new and
+          // migrated Agent execution uses the deterministic department profile.
+          agent.workspacePath = profile.workspacePath;
+          agent.updatedAt = timestamp;
+        }
         if (agent.status === "busy") {
           agent.status = "ready";
           agent.updatedAt = now();
@@ -70,27 +101,35 @@ export class AgentService {
 
   async createAgent(
     ownerId: string,
-    ownerDepartment: Department,
+    department: Department,
     input: CreateAgentInput,
   ): Promise<Agent> {
     const timestamp = now();
     const id = randomUUID();
+    const profile = this.workspaces.profile(department);
+    await this.workspaces.ensureProfile(profile);
     const agent: Agent = {
       id,
+      department,
+      workspaceProfileId: profile.id,
       ownerId,
       name: input.name.trim(),
       description: input.description?.trim() ?? "",
       instructions: input.instructions?.trim() ?? "",
       status: "ready",
       revokedAt: null,
-      workspacePath: this.workspaces.workspacePath(id),
+      workspacePath: profile.workspacePath,
       codexThreadId: null,
       lastError: null,
       createdAt: timestamp,
       updatedAt: timestamp,
     };
-    await this.workspaces.create(agent, ownerDepartment);
-    await this.store.mutate((database) => database.agents.push(agent));
+    await this.store.mutate((database) => {
+      if (!database.workspaceProfiles.some((item) => item.id === profile.id)) {
+        database.workspaceProfiles.push(profile);
+      }
+      database.agents.push(agent);
+    });
     return agent;
   }
 
@@ -121,7 +160,7 @@ export class AgentService {
   async deleteAgent(id: string): Promise<{ archivedWorkspace: string }> {
     const agent = this.getAgent(id);
     await this.cancelExecution(id);
-    const archivedWorkspace = await this.workspaces.archive(agent);
+    const archivedWorkspace = agent.workspacePath;
     await this.store.mutate((database) => {
       database.agents = database.agents.filter((item) => item.id !== id);
       database.messages = database.messages.filter((item) => item.agentId !== id);
@@ -240,6 +279,17 @@ export class AgentService {
       if (storedAgent.status === "busy") {
         throw new HttpError(409, "This Agent is already running");
       }
+      const profileBusy = database.runs.some((candidate) => {
+        if (candidate.status !== "queued" && candidate.status !== "running") return false;
+        const candidateAgent = database.agents.find((item) => item.id === candidate.agentId);
+        return candidateAgent?.workspaceProfileId === storedAgent.workspaceProfileId;
+      });
+      if (profileBusy) {
+        throw new HttpError(
+          409,
+          "Another Agent is using this shared role workspace",
+        );
+      }
       database.runs.push(run);
       database.messages.push(message);
       const snapshot = structuredClone(storedAgent);
@@ -260,20 +310,44 @@ export class AgentService {
     return { run, message };
   }
 
+  async evaluateRuntimeShellAction(
+    agentId: string,
+    command: string,
+    runtimeAuthorization: RuntimeAuthorizationContext,
+  ) {
+    const agent = this.getAgent(agentId);
+    this.assertNotRevoked(agent);
+    if (!this.runtimeFirewall) {
+      throw new HttpError(
+        503,
+        "Runtime Action Firewall is not configured for this Agent Runtime",
+        { code: "RUNTIME_ACTION_FIREWALL_UNAVAILABLE" },
+      );
+    }
+    return this.runtimeFirewall.evaluateShell(agent, command, runtimeAuthorization);
+  }
+
   async systemInfo(): Promise<Record<string, unknown>> {
+    const isContainerRuntime = this.config.runtimeProvider === "container";
     return {
       arkConfigured: isArkConfigured(this.config),
       arkBaseUrl: this.config.arkBaseUrl,
       arkModel: this.config.arkModel || null,
+      codexExecutable: isContainerRuntime
+        ? this.config.containerCodexBin
+        : this.config.codexBin,
+      codexExecutableSource: isContainerRuntime
+        ? this.config.containerCodexBinSource
+        : this.config.codexBinSource,
       codexAvailable: await this.runner.isAvailable(),
       codexSandboxMode: this.config.codexSandboxMode,
       runtimeProvider: this.config.runtimeProvider,
       containerEngine:
-        this.config.runtimeProvider === "container"
+        isContainerRuntime
           ? this.config.containerEngine
           : null,
       runtime:
-        this.config.runtimeProvider === "container"
+        isContainerRuntime
           ? "Codex CLI in " + this.config.containerEngine + " Runtime"
           : "Codex CLI in application container",
     };
@@ -293,8 +367,9 @@ export class AgentService {
       }
       const result = await this.runner.run({
         agentId: agentAtStart.id,
+        workspaceProfileId: agentAtStart.workspaceProfileId,
         workspacePath: agentAtStart.workspacePath,
-        prompt: run.prompt,
+        prompt: runtimePrompt(agentAtStart, run.prompt),
         threadId: agentAtStart.codexThreadId,
       });
       const completedAt = now();
@@ -379,4 +454,21 @@ export class AgentService {
       });
     }
   }
+}
+
+function runtimePrompt(agent: Agent, userPrompt: string): string {
+  const instructions = agent.instructions.trim() ||
+    "Help the user complete coding tasks in this workspace. Explain material results concisely.";
+  return [
+    "You are the coding Agent named " + agent.name + ".",
+    agent.description ? "Purpose: " + agent.description : "",
+    "",
+    "Agent-specific instructions:",
+    instructions,
+    "",
+    "User request:",
+    userPrompt,
+  ]
+    .filter((line, index, lines) => !(line === "" && lines[index - 1] === ""))
+    .join("\n");
 }

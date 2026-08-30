@@ -16,13 +16,11 @@ import type {
   ProtectedResourceSummary,
 } from "../types";
 
-type TrustPassTab = "request" | "approved" | "approvals" | "issued";
+type TrustPassTab = "requested-by-you" | "requested-from-you";
 
 const trustPassTabOrder: readonly TrustPassTab[] = [
-  "request",
-  "approved",
-  "approvals",
-  "issued",
+  "requested-by-you",
+  "requested-from-you",
 ];
 
 export interface CapabilityRequestSeed {
@@ -205,7 +203,7 @@ export function TrustPassWorkspace({
   onCountsChange,
   onUnauthorized,
 }: TrustPassWorkspaceProps) {
-  const [tab, setTab] = useState<TrustPassTab>("request");
+  const [tab, setTab] = useState<TrustPassTab>("requested-by-you");
   const [outgoingRequests, setOutgoingRequests] = useState<DelegationRequestView[]>([]);
   const [incomingRequests, setIncomingRequests] = useState<DelegationRequestView[]>([]);
   const [approvedTasks, setApprovedTasks] = useState<GranteeDelegationContractView[]>([]);
@@ -363,7 +361,7 @@ export function TrustPassWorkspace({
     const seededPrompt = requestSeed.prompt.trim();
     discoveryRequestRef.current += 1;
     requestPromptRef.current = seededPrompt;
-    setTab("request");
+    setTab("requested-by-you");
     setRequestPrompt(seededPrompt);
     setDiscovery(requestSeed.discovery);
     setDiscoveryPrompt(seededPrompt);
@@ -680,6 +678,8 @@ export function TrustPassWorkspace({
     (contract) =>
       contract.status === "active" && !isExpired(contract.expiresAt, serverNowMs),
   ).length;
+  const requestedByYouCount = pendingOutgoingRequestCount + activeTaskCount;
+  const requestedFromYouCount = pendingApprovalCount + activeIssuedPassCount;
 
   return (
     <section className="trust-pass-panel" aria-labelledby="trust-pass-title">
@@ -702,10 +702,8 @@ export function TrustPassWorkspace({
         aria-orientation="horizontal"
       >
         {([
-          ["request", "Request capability", pendingOutgoingRequestCount],
-          ["approved", "Approved tasks", activeTaskCount],
-          ["approvals", "Approval inbox", pendingApprovalCount],
-          ["issued", "Issued passes", activeIssuedPassCount],
+          ["requested-by-you", "Requested by you", requestedByYouCount],
+          ["requested-from-you", "Requested from you", requestedFromYouCount],
         ] as Array<[TrustPassTab, string, number]>).map(([value, label, count]) => (
           <button
             type="button"
@@ -759,8 +757,9 @@ export function TrustPassWorkspace({
 
         {loading ? (
           <div className="trust-loading"><Loading /> Loading Trust Passes…</div>
-        ) : tab === "request" ? (
-          <div className="trust-view-grid request-view-grid">
+        ) : tab === "requested-by-you" ? (
+          <div className="trust-grouped-view">
+            <div className="trust-view-grid request-view-grid">
             <article className="trust-card trust-form-card">
               <div className="trust-card-heading">
                 <div>
@@ -874,7 +873,7 @@ export function TrustPassWorkspace({
                           <span>digest {request.taskDigest.slice(0, 10)}</span>
                         </div>
                         {effectiveStatus === "pending" && <p className="pending-copy">No Agent access exists until the owner approves this exact task.</p>}
-                        {effectiveStatus === "approved" && <p className="allowed-copy">Approved. Open Approved tasks to use the one-use pass.</p>}
+                        {effectiveStatus === "approved" && <p className="allowed-copy">Approved. Use the one-use pass in Approved tasks below.</p>}
                         {effectiveStatus === "rejected" && <p className="denied-copy">The owner declined this request. No pass was issued.</p>}
                         {effectiveStatus === "expired" && <p className="denied-copy">The request expired before approval.</p>}
                       </article>
@@ -883,9 +882,9 @@ export function TrustPassWorkspace({
                 </div>
               )}
             </section>
-          </div>
-        ) : tab === "approved" ? (
-          <section className="trust-list-section full-trust-section" aria-labelledby="approved-task-title">
+            </div>
+
+            <section className="trust-list-section full-trust-section" aria-labelledby="approved-task-title">
             <div className="trust-section-heading">
               <div><span className="eyebrow">Approved tasks</span><h2 id="approved-task-title">Run only what the owner approved</h2></div>
               <button className="button button-ghost trust-refresh" onClick={() => void refreshAll()} disabled={busyKey !== null}>Refresh</button>
@@ -967,9 +966,11 @@ export function TrustPassWorkspace({
                 })}
               </div>
             )}
-          </section>
-        ) : tab === "approvals" ? (
-          <section className="trust-list-section full-trust-section" aria-labelledby="approval-inbox-title">
+            </section>
+          </div>
+        ) : (
+          <div className="trust-grouped-view">
+            <section className="trust-list-section full-trust-section" aria-labelledby="approval-inbox-title">
             <div className="trust-section-heading">
               <div><span className="eyebrow">Owner approval</span><h2 id="approval-inbox-title">Review capability requests</h2></div>
               <button className="button button-ghost trust-refresh" onClick={() => void refreshAll()} disabled={busyKey !== null}>Refresh</button>
@@ -1040,9 +1041,9 @@ export function TrustPassWorkspace({
                 })}
               </div>
             )}
-          </section>
-        ) : (
-          <div className="issued-view-grid">
+            </section>
+
+            <div className="issued-view-grid">
             <form className="trust-card trust-form-card" onSubmit={createDirectPass}>
               <div className="trust-card-heading">
                 <div><span className="eyebrow">Owner initiated</span><h2>Issue a one-use pass</h2></div>
@@ -1132,6 +1133,7 @@ export function TrustPassWorkspace({
                 </div>
               )}
             </section>
+            </div>
           </div>
         )}
       </div>

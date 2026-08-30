@@ -54,18 +54,23 @@ Volcengine ECS.
 
 - Node.js 22+
 - npm 10+
-- Docker, Colima, or Podman
+- Docker, Colima, or Podman for container-backed Runs or the packaged web image
 - A Volcengine Ark API key and endpoint that supports the Responses API
 
-Codex CLI is included in the Runtime image and is not required on the host.
+`npm ci` installs the exact Codex CLI version pinned by this repository. Both
+Docker images derive their CLI version from the same package entry, so host and
+container Runs do not silently drift onto different releases.
 
 Set `CODEX_BIN` in the root `.env` to choose the Codex executable. The value is
 used exactly as configured; when it is absent, local-process Runtime uses
 `codex.cmd` on Windows and `codex` on Linux/macOS. Set
 `CONTAINER_CODEX_BIN=codex` for the Linux Runtime image; the server rejects
 Windows paths and `.cmd` launchers for that boundary. `GET /api/system` exposes
-the active Runtime executable name and availability status without exposing
-credentials.
+the probed CLI version, configured execution boundary, local readiness blockers,
+workspace, network, credential, and backend-attested hardening policies without
+exposing credentials. Open the **Runtime** card in the web sidebar to view the
+same information. These checks do not call Ark, so provider health, quota, and
+credential validity are confirmed only by a real Run.
 
 To test only login, ownership, protected files, and the audit UI, Node.js is
 enough—no model key or container engine is required:
@@ -163,8 +168,9 @@ docker --version        # Docker Desktop, Docker Engine, or Colima
 podman --version        # Use this instead when running Podman
 ```
 
-Only one container engine is required. Codex CLI is already included in the
-Runtime image.
+Only one container engine is required. The project-local Codex CLI is installed
+by `npm ci`; the disposable Runtime image installs that same pinned version
+during its build.
 
 ### 2. Clone the repository
 
@@ -256,7 +262,16 @@ Start the application:
 docker compose up --build
 ```
 
-Open <http://localhost:3000>. Stop it without deleting Agent data:
+Open <http://localhost:3000>. Compose runs Codex inside the packaged application
+container, so normal Playground Runs work without nesting or mounting a
+privileged Docker daemon. This profile does not claim per-Run filtered mounts;
+one-use Trust Pass execution stays blocked and the Runtime panel says so.
+Compose requests dropped Linux capabilities, no-new-privileges, and CPU, memory,
+and PID limits; because the application cannot attest its orchestrator launch
+flags, the UI deliberately does not mark those controls as backend-verified. Use
+`scripts/start-local-poc.sh` when the disposable per-Run boundary is required.
+
+Stop it without deleting Agent data:
 
 ```bash
 docker compose down
@@ -265,11 +280,15 @@ docker compose down
 ## Development
 
 ```bash
-npm install
+npm ci
 cp .env.example .env
-npm install --global @openai/codex@0.111.0
 npm run dev
 ```
+
+No global Codex installation is required. Leave `CODEX_BIN` unset to use the
+project-local platform-correct binary. Set it only when intentionally testing a
+different executable; a version mismatch is shown in the Runtime panel and is
+rejected by the backend before dispatch.
 
 - Web UI: <http://localhost:5173>
 - API: <http://localhost:3000>
@@ -341,7 +360,7 @@ cp deploy/volcengine/terraform.tfvars.example \
 | `SUPABASE_URL` | Empty | Required for Supabase Auth and policy storage. |
 | `SUPABASE_PUBLISHABLE_KEY` | Empty | Current public API key; legacy anon key is accepted. |
 | `SUPABASE_SECRET_KEY` | Empty | Backend-only key; legacy service-role key is accepted. |
-| `RUNTIME_PROVIDER` | `local-process` | `container` for disposable local Runtime containers. |
+| `RUNTIME_PROVIDER` | `local-process` | `local-process` for npm development, `application-container` for the packaged web image, or `container` for disposable per-Run isolation. |
 | `LOCAL_INSECURE_RUNTIME_KEY_PASSTHROUGH` | `false` | Local disposable-container opt-in that forwards the Ark key and model. |
 | `LOCAL_INSECURE_RUNTIME_NETWORK` | `false` | Local disposable-container opt-in that permits outbound networking. |
 | `CODEX_SANDBOX_MODE` | `workspace-write` | Codex inner sandbox mode. |
@@ -361,8 +380,10 @@ flowchart LR
     API --> Firewall["Runtime Action Firewall"]
     Firewall --> Runtime
     API --> Runtime{"Runtime provider"}
-    Runtime -->|Local POC| Container["Disposable Docker / Colima / Podman container"]
-    Runtime -->|ECS profile| Codex["Codex CLI in application container"]
+    Runtime -->|npm development| Host["Codex CLI in host Node.js process"]
+    Runtime -->|Packaged web / ECS| Codex["Codex CLI in application container"]
+    Runtime -->|Local isolated POC| Container["Disposable Docker / Colima / Podman container"]
+    Host --> Ark
     Container --> Ark["Volcengine Ark Responses API"]
     Codex --> Ark
 ```
@@ -388,9 +409,11 @@ credential paths such as `.env` are not mounted. Its root is read-only,
 capabilities are dropped, `no-new-privileges` is set, resource limits apply, and
 direct networking is disabled by default.
 
-The existing local-process runner is a development compatibility path, not a
-multi-principal isolation boundary. It still uses an owner-scoped Codex home so
-Windows/Supabase development does not mix session files. Connected container runs require the next
+The local-process and application-container runners are compatibility paths,
+not multi-principal filesystem isolation boundaries. They use logical
+owner-scoped directories and distinct Codex homes, but do not have the filtered
+per-Run mount boundary. The Runtime panel exposes this distinction instead of
+labelling either mode as isolated Docker. Connected container Runs require the next
 milestone, a trusted model proxy/workload-identity adapter. Direct Ark access is
 available only through the two explicit insecure local-debugging opt-ins above,
 which deliberately weaken both credential and network isolation.

@@ -99,10 +99,45 @@ export interface SystemInfo {
   codexExecutable: string;
   codexExecutableSource: "configured" | "platform-default";
   codexAvailable: boolean;
+  codexVersion: string | null;
+  codexExpectedVersion: string;
   codexSandboxMode: string;
-  runtimeProvider: "local-process" | "container";
+  runtimeProvider: "local-process" | "application-container" | "container";
   containerEngine: string | null;
+  containerRuntimeImage: string | null;
+  executionReady: boolean;
+  delegatedRunsAvailable: boolean;
+  blockers: RuntimeBlocker[];
+  capabilities: RuntimeCapabilities;
   runtime: string;
+}
+
+export interface RuntimeBlocker {
+  code: string;
+  message: string;
+}
+
+export interface RuntimeCapabilities {
+  executionBoundary:
+    | "host-process"
+    | "application-container"
+    | "disposable-container";
+  workspaceIsolation: "logical-owner-directory" | "filtered-owner-projection";
+  networkPolicy:
+    | "middleware-and-codex-policy"
+    | "application-container-network"
+    | "container-network-blocked"
+    | "local-debug-network";
+  credentialPolicy:
+    | "server-process-environment"
+    | "application-container-environment"
+    | "not-forwarded"
+    | "local-debug-forwarded";
+  readOnlyRoot: boolean;
+  capabilitiesDropped: boolean;
+  noNewPrivileges: boolean;
+  resourceLimits: boolean;
+  protectedFileProjection: boolean;
 }
 
 export interface ProtectedResourceSummary {

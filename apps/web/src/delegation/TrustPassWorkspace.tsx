@@ -162,7 +162,7 @@ function ScopeFacts({
     <dl className="trust-scope-grid">
       <div><dt>Action</dt><dd><code>agent.invoke</code></dd></div>
       <div><dt>Uses</dt><dd>One Run</dd></div>
-      <div><dt>Inputs</dt><dd>{inputCount} owner-approved</dd></div>
+      <div><dt>Inputs</dt><dd>{inputCount === 0 ? "None" : `${inputCount} approved`}</dd></div>
       <div><dt>Result</dt><dd>Final output only</dd></div>
       <div><dt>Prompt</dt><dd>Exact task only</dd></div>
       <div><dt>Sharing</dt><dd>Cannot be forwarded</dd></div>
@@ -178,8 +178,8 @@ function ScopeFacts({
           )}
           <small>
             {validity.kind === "countdown"
-              ? " Backend expiry is authoritative"
-              : ` ${validity.hint}`}
+              ? " · Backend expiry is authoritative"
+              : ` · ${validity.hint}`}
           </small>
         </dd>
       </div>
@@ -971,7 +971,9 @@ export function TrustPassWorkspace({
                           <span>{departmentLabel(request.providerDepartment)} capability</span>
                           <span>
                             <time dateTime={request.expiresAt}>
-                              {formatRemaining(request.expiresAt, serverNowMs)} remaining
+                              {isExpired(request.expiresAt, serverNowMs)
+                                ? "Expired"
+                                : `${formatRemaining(request.expiresAt, serverNowMs)} remaining`}
                             </time>
                           </span>
                         </div>

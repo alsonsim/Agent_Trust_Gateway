@@ -72,4 +72,29 @@ describe("Codex executable configuration", () => {
       }),
     ).toThrow();
   });
+
+  it("keeps direct Runtime networking disabled unless explicitly enabled", () => {
+    expect(loadConfig({ NODE_ENV: "test" }).localInsecureRuntimeNetwork).toBe(false);
+    expect(
+      loadConfig({
+        NODE_ENV: "test",
+        LOCAL_INSECURE_RUNTIME_NETWORK: "true",
+      }).localInsecureRuntimeNetwork,
+    ).toBe(true);
+  });
+
+  it("rejects local Runtime escape hatches in production", () => {
+    expect(() =>
+      loadConfig({
+        NODE_ENV: "production",
+        LOCAL_INSECURE_RUNTIME_KEY_PASSTHROUGH: "true",
+      }),
+    ).toThrow("development-only escape hatches");
+    expect(() =>
+      loadConfig({
+        NODE_ENV: "production",
+        LOCAL_INSECURE_RUNTIME_NETWORK: "true",
+      }),
+    ).toThrow("development-only escape hatches");
+  });
 });

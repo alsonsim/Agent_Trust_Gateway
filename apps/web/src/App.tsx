@@ -21,22 +21,37 @@ const defaultStarterPrompts = [
 ];
 
 const starterPromptsByDepartment = {
-  finance: [
-    "Read README.md, then create finance-brief.md with a fictional monthly budget table and three validation checks.",
-    "Read README.md, then create expense-review.md with fictional categories, totals, and a review checklist.",
-    "Read README.md, then create forecast-notes.md with fictional assumptions, risks, and next steps.",
+  frontend: [
+    "Read README.md, then create package.json for node --test, create src/profile-view.js for an accessible Profile UI, and create test/profile-view.test.js. Run npm test; use no packages or network.",
+    "Read README.md, then create package.json for node --test, create src/profile-client.js to validate injected GET /api/profile data, and create test/profile-client.test.js. Run npm test; use no packages or network.",
+    "Read README.md, then create package.json for node --test, create src/profile-state.js for loading, success, empty, and error states, and create test/profile-state.test.js. Run npm test; use no packages or network.",
   ],
-  hr: [
-    "Read README.md, then create onboarding-checklist.md for a fictional hire. Include no personal data.",
-    "Read README.md, then create interview-scorecard.md with job-related criteria and a neutral rating guide.",
-    "Read README.md, then create team-handbook-outline.md with generic sections and review notes.",
+  backend: [
+    "Read README.md, then create package.json for node --test, create src/profile-handler.js for validated GET /api/profile responses with id, displayName, biography, team, avatarUrl, and updatedAt, and create test/profile-handler.test.js. Run npm test; use only Node built-ins and no network.",
+    "Read README.md, then create package.json for node --test, create src/profile-schema.js to validate id, displayName, biography, team, avatarUrl, and updatedAt, and create test/profile-schema.test.js. Run npm test; use only Node built-ins and no network.",
+    "Read README.md, then create package.json for node --test, create src/profile-route.js with a Fastify-compatible GET /api/profile registration function, and create test/profile-route.test.js with a fake app. Run npm test; use only Node built-ins and no network.",
   ],
-  research: [
-    "Read README.md, then create research-plan.md with a sample question, three hypotheses, and a validation checklist.",
-    "Read README.md, then create evidence-log.md as a local template for source, claim, confidence, and notes.",
-    "Read README.md, then create experiment-checklist.md for a fictional reproducible experiment using local sample data.",
+  qa: [
+    "Read README.md, then create package.json for node --test and create test/profile.integration.test.js with an in-process node:http server for GET /api/profile status, JSON, and fields. Run npm test; use no external network.",
+    "Read README.md, then create package.json for node --test and create test/profile-errors.integration.test.js for method, missing-field, and invalid-response failures. Run npm test; use only Node built-ins and no network.",
+    "Read README.md, then create package.json for node --test, create test/profile-release.test.js for the UI and API contract, and create reports/profile-release-summary.md. Run npm test; use only Node built-ins and no network.",
   ],
 } satisfies Record<Department, readonly string[]>;
+
+const agentExamplesByDepartment = {
+  frontend: {
+    name: "Frontend Agent",
+    description: "Builds accessible profile experiences",
+  },
+  backend: {
+    name: "Backend Agent",
+    description: "Implements validated profile APIs",
+  },
+  qa: {
+    name: "QA Agent",
+    description: "Tests profile contracts and release flows",
+  },
+} satisfies Record<Department, { name: string; description: string }>;
 
 const emptyForm = {
   name: "",
@@ -46,7 +61,12 @@ const emptyForm = {
 };
 
 type AuditFilter = "all" | "allowed" | "denied" | "file" | "shell" | "network";
-type ScenarioId = "safe-file" | "secret-file" | "traversal-file" | "dangerous-shell";
+type ScenarioId =
+  | "safe-file"
+  | "secret-file"
+  | "traversal-file"
+  | "dangerous-shell"
+  | "cross-owner-agent";
 type ScenarioState = "idle" | "loading" | "allowed" | "denied" | "error";
 
 interface ScenarioResult {
@@ -66,8 +86,9 @@ interface LatestScenarioResult {
 const securityScenarios: Array<{
   id: ScenarioId;
   title: string;
-  action: "file" | "shell";
+  action: "file" | "shell" | "agent";
   path?: string;
+  target?: string;
   command?: string;
   explanation: string;
   expected: string;
@@ -104,6 +125,14 @@ const securityScenarios: Array<{
     explanation: "The Runtime Action Firewall evaluates this command before a Run exists.",
     expected: "DENY - RUNTIME_COMMAND_DENIED",
   },
+  {
+    id: "cross-owner-agent",
+    title: "Cross-team Agent",
+    action: "agent",
+    target: "Protected Agent",
+    explanation: "The backend probes an opaque foreign-owned Agent without exposing its identity.",
+    expected: "DENY - HUMAN_AGENT_OWNER_MISMATCH",
+  },
 ];
 
 const initialScenarioResults = (): Record<ScenarioId, ScenarioResult> =>
@@ -129,8 +158,17 @@ function formatDateTime(value: string): string {
 }
 
 function departmentLabel(department: Department): string {
-  if (department === "hr") return "HR";
+  if (department === "qa") return "QA";
   return department.slice(0, 1).toUpperCase() + department.slice(1);
+}
+
+function isAccountLevelProbe(decision: AuthorizationDecision): boolean {
+  return (
+    decision.agentId === null &&
+    decision.action === "agent.read" &&
+    decision.targetType === "agent" &&
+    decision.reasonCode === "HUMAN_AGENT_OWNER_MISMATCH"
+  );
 }
 
 function starterPromptsFor(
@@ -249,7 +287,24 @@ export default function App() {
     [decisions, selected?.id],
   );
 
-  const summaryLatestDecision = latestScenarioResult?.decision ?? selectedDecisions[0] ?? null;
+  const timelineDecisions = useMemo(
+    () =>
+      decisions
+        .filter(
+          (decision) =>
+            decision.agentId === selected?.id || isAccountLevelProbe(decision),
+        )
+        .sort((left, right) => right.createdAt.localeCompare(left.createdAt)),
+    [decisions, selected?.id],
+  );
+
+  const latestDisplayedDecision = latestScenarioResult?.decision ?? null;
+  const summaryLatestDecision =
+    latestDisplayedDecision?.agentId === selected?.id
+      ? latestDisplayedDecision
+      : (selectedDecisions[0] ?? null);
+  const latestDecisionHasRedactedAgent =
+    latestDisplayedDecision !== null && isAccountLevelProbe(latestDisplayedDecision);
   const allowedDecisionCount = selectedDecisions.filter(
     (decision) => decision.decision === "allow",
   ).length;
@@ -258,7 +313,7 @@ export default function App() {
   ).length;
 
   const filteredDecisions = useMemo(() => {
-    return selectedDecisions.filter((decision) => {
+    return timelineDecisions.filter((decision) => {
       if (auditFilter === "allowed") return decision.decision === "allow";
       if (auditFilter === "denied") return decision.decision === "deny";
       if (auditFilter === "file") return decision.targetType === "file";
@@ -266,7 +321,7 @@ export default function App() {
       if (auditFilter === "network") return decision.action === "network.request";
       return true;
     });
-  }, [auditFilter, selectedDecisions]);
+  }, [auditFilter, timelineDecisions]);
 
   const groupedDecisions = useMemo(() => {
     const groups: Array<{ decision: AuthorizationDecision; count: number }> = [];
@@ -524,6 +579,7 @@ export default function App() {
       setSecurityBusyId("workspace-file");
     }
     setSecurityError(null);
+    setLatestScenarioResult(null);
     setResourceRead(null);
     setWorkspaceFileRead(null);
     try {
@@ -593,13 +649,101 @@ export default function App() {
     }
   };
 
+  const attemptCrossOwnerAgentProbe = async (scenarioId: ScenarioId) => {
+    if (!selected) return;
+    const generation = sessionGenerationRef.current;
+    const agentId = selected.id;
+    setSecurityBusyId(scenarioId);
+    setSecurityError(null);
+    setLatestScenarioResult(null);
+    setResourceRead(null);
+    setWorkspaceFileRead(null);
+    setScenarioResults((current) => ({
+      ...current,
+      [scenarioId]: {
+        state: "loading",
+        decision: null,
+        runCreated: null,
+        runStatus: null,
+        error: null,
+      },
+    }));
+    try {
+      const result = await api.probeCrossOwnerAgent();
+      if (
+        generation !== sessionGenerationRef.current ||
+        selectedIdRef.current !== agentId
+      ) {
+        return;
+      }
+      setLatestScenarioResult({ decision: result.decision, runCreated: false, content: null });
+      setScenarioResults((current) => ({
+        ...current,
+        [scenarioId]: {
+          state: result.decision.decision === "deny" ? "denied" : "allowed",
+          decision: result.decision,
+          runCreated: false,
+          runStatus: null,
+          error: null,
+        },
+      }));
+      void refreshDecisions().catch((reason) => handleRequestError(reason, "security"));
+    } catch (reason) {
+      if (
+        generation !== sessionGenerationRef.current ||
+        selectedIdRef.current !== agentId
+      ) {
+        return;
+      }
+      if (isPolicyDenial(reason)) {
+        setLatestScenarioResult({ decision: reason.decision, runCreated: false, content: null });
+        setScenarioResults((current) => ({
+          ...current,
+          [scenarioId]: {
+            state: "denied",
+            decision: reason.decision,
+            runCreated: false,
+            runStatus: null,
+            error: null,
+          },
+        }));
+        void refreshDecisions().catch(() => undefined);
+      } else {
+        const message = reason instanceof Error ? reason.message : String(reason);
+        setSecurityError(message);
+        setScenarioResults((current) => ({
+          ...current,
+          [scenarioId]: {
+            state: "error",
+            decision: null,
+            runCreated: null,
+            runStatus: null,
+            error: message,
+          },
+        }));
+      }
+    } finally {
+      if (
+        generation === sessionGenerationRef.current &&
+        selectedIdRef.current === agentId
+      ) {
+        setSecurityBusyId(null);
+      }
+    }
+  };
+
   const runSecurityScenario = async (scenario: (typeof securityScenarios)[number]) => {
     if (!selected) return;
     if (scenario.action === "file" && scenario.path) {
       await attemptWorkspaceFileRead(scenario.path, scenario.id);
       return;
     }
-    if (!scenario.command) return;
+    if (scenario.action === "agent") {
+      await attemptCrossOwnerAgentProbe(scenario.id);
+      return;
+    }
+    const command = scenario.command;
+    if (!command) return;
     const generation = sessionGenerationRef.current;
     const agentId = selected.id;
     setScenarioResults((current) => ({
@@ -615,7 +759,7 @@ export default function App() {
     setSecurityError(null);
     setLatestScenarioResult(null);
     try {
-      const result = await api.evaluateRuntimeShellAction(agentId, scenario.command);
+      const result = await api.evaluateRuntimeShellAction(agentId, command);
       if (generation !== sessionGenerationRef.current || selectedIdRef.current !== agentId) return;
       setLatestScenarioResult({ decision: result.decision, runCreated: false, content: null });
       setScenarioResults((current) => ({
@@ -993,13 +1137,14 @@ export default function App() {
           <div className="brand-mark">A</div>
           <span className="eyebrow">Agent Trust Gateway</span>
           <h1>Sign in to your team</h1>
-          <p>Use the Finance, HR, or Research account created in Supabase.</p>
+          <p>Use the assigned account and password for your Frontend, Backend, or QA team.</p>
           {authError && <div className="error-banner" role="alert">{authError}</div>}
           <label>
             Email
             <input
               autoFocus
               type="email"
+              placeholder="name@company.com"
               value={loginEmail}
               onChange={(event) => setLoginEmail(event.target.value)}
               autoComplete="username"
@@ -1461,7 +1606,7 @@ export default function App() {
                   </span>
                 </div>
 
-                <div className="delegation-strip" aria-label="Authorization delegation path">
+                <div className="delegation-strip" aria-label="Authorization attribution path">
                   <div>
                     <span className={"team-avatar team-" + principal.department}>
                       {initials(principal.displayName)}
@@ -1473,10 +1618,16 @@ export default function App() {
                   </div>
                   <span className="delegation-arrow">→</span>
                   <div>
-                    <span className="agent-avatar">{selected.name.slice(0, 1).toUpperCase()}</span>
+                    <span className="agent-avatar">
+                      {latestDecisionHasRedactedAgent
+                        ? "?"
+                        : selected.name.slice(0, 1).toUpperCase()}
+                    </span>
                     <span>
                       Agent
-                      <strong>{selected.name}</strong>
+                      <strong>
+                        {latestDecisionHasRedactedAgent ? "Protected Agent" : selected.name}
+                      </strong>
                     </span>
                   </div>
                   <span className="delegation-arrow">→</span>
@@ -1508,7 +1659,7 @@ export default function App() {
                   <div className="resource-section">
                     <div className="section-heading scenario-heading">
                       <div>
-                        <span className="eyebrow">Four-step security demo</span>
+                        <span className="eyebrow">Five-step security demo</span>
                         <h3>Run a real policy scenario</h3>
                       </div>
                       <span>Server decisions only</span>
@@ -1521,9 +1672,15 @@ export default function App() {
                           <article className="scenario-card" key={scenario.id}>
                             <div className="scenario-card-top">
                               <span className={"scenario-action scenario-" + scenario.action}>
-                                {scenario.action === "file" ? "file.read" : "shell.execute"}
+                                {scenario.action === "file"
+                                  ? "file.read"
+                                  : scenario.action === "shell"
+                                    ? "shell.execute"
+                                    : "agent.read"}
                               </span>
-                              <span className="scenario-target">{scenario.path ?? "rm -rf"}</span>
+                              <span className="scenario-target">
+                                {scenario.path ?? scenario.command ?? scenario.target ?? "Policy target"}
+                              </span>
                             </div>
                             <h4>{scenario.title}</h4>
                             <p>{scenario.explanation}</p>
@@ -1602,7 +1759,7 @@ export default function App() {
                     <div className="section-heading">
                       <div>
                         <span className="eyebrow">Protected resource checks</span>
-                        <h3>Finance, HR, and Research fixtures</h3>
+                        <h3>Frontend, Backend, and QA fixtures</h3>
                       </div>
                       <span>{resources.length} resources</span>
                     </div>
@@ -1674,7 +1831,9 @@ export default function App() {
                             <dd>
                               {latestScenarioResult.runCreated
                                   ? "Yes - the Runtime accepted it"
-                                  : "No - blocked before Runtime dispatch"}
+                                  : latestScenarioResult.decision.decision === "deny"
+                                    ? "No - blocked before Runtime dispatch"
+                                    : "No - middleware-only read; Runtime not needed"}
                             </dd>
                           </div>
                         </dl>
@@ -1715,8 +1874,8 @@ export default function App() {
                   <div className="audit-section">
                   <div className="section-heading">
                     <div>
-                      <span className="eyebrow">Persisted evidence</span>
-                      <h3>Authorization decision timeline</h3>
+                      <span className="eyebrow">Persisted selected-Agent + account evidence</span>
+                      <h3>Selected-Agent and account-probe timeline</h3>
                     </div>
                     <button
                       type="button"
@@ -1772,9 +1931,9 @@ export default function App() {
                     </ol>
                   ) : (
                     <div className="security-empty">
-                      {selectedDecisions.length === 0
+                      {timelineDecisions.length === 0
                         ? "No decisions yet. Run a security scenario to create the first event."
-                        : "No selected-Agent decisions match this filter."}
+                        : "No selected-Agent or account-probe decisions match this filter."}
                     </div>
                   )}
                   </div>
@@ -1829,7 +1988,7 @@ export default function App() {
               Name
               <input
                 autoFocus
-                placeholder="Frontend Builder"
+                placeholder={agentExamplesByDepartment[principal.department].name}
                 value={form.name}
                 onChange={(event) => setForm({ ...form, name: event.target.value })}
                 required
@@ -1839,7 +1998,7 @@ export default function App() {
             <label>
               Description
               <input
-                placeholder="Builds polished React prototypes"
+                placeholder={agentExamplesByDepartment[principal.department].description}
                 value={form.description}
                 onChange={(event) =>
                   setForm({ ...form, description: event.target.value })

@@ -147,6 +147,11 @@ export const api = {
       "/api/agents/" + id + "/revoke",
       { method: "POST" },
     ),
+  probeCrossOwnerAgent: () =>
+    request<{ decision: AuthorizationDecision }>(
+      "/api/authorization-probes/cross-owner-agent",
+      { method: "POST" },
+    ),
   authorizationDecisions: (limit = 50) =>
     request<{ decisions: AuthorizationDecision[] }>(
       "/api/authorization-decisions?limit=" + encodeURIComponent(String(limit)),

@@ -11,10 +11,10 @@ describe("identity providers", () => {
       signingKey: "a-test-signing-key-that-is-at-least-32-bytes",
       tokenTtlSeconds: 600,
     });
-    const session = await provider.signIn({ email: "Finance@agent-gateway.local" });
+    const session = await provider.signIn({ email: "Frontend@bytedance.com" });
     await expect(provider.verifyAccessToken(session.accessToken)).resolves.toMatchObject({
-      displayName: "Finance",
-      department: "finance",
+      displayName: "Frontend",
+      department: "frontend",
     });
     const [header, body, signature] = session.accessToken.split(".");
     const tamperedSignature =
@@ -24,7 +24,7 @@ describe("identity providers", () => {
       statusCode: 401,
     });
     await expect(
-      provider.signIn({ email: "unknown@agent-gateway.local" }),
+      provider.signIn({ email: "unknown@bytedance.com" }),
     ).rejects.toMatchObject({ statusCode: 401 });
   });
 
@@ -41,8 +41,8 @@ describe("identity providers", () => {
         new Response(
           JSON.stringify({
             id: "33333333-3333-4333-8333-333333333333",
-            email: "research@agent-gateway.local",
-            user_metadata: { department: "finance" },
+            email: "qa@bytedance.com",
+            user_metadata: { department: "frontend" },
           }),
           { status: 200 },
         ),
@@ -52,8 +52,8 @@ describe("identity providers", () => {
           JSON.stringify([
             {
               id: "33333333-3333-4333-8333-333333333333",
-              display_name: "Research",
-              department: "research",
+              display_name: "QA",
+              department: "qa",
             },
           ]),
           { status: 200 },
@@ -66,10 +66,10 @@ describe("identity providers", () => {
       fetchImpl: fetchMock,
     });
     const session = await provider.signIn({
-      email: "research@agent-gateway.local",
+      email: "qa@bytedance.com",
       password: "not-logged",
     });
-    expect(session.principal.department).toBe("research");
+    expect(session.principal.department).toBe("qa");
     expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(fetchMock.mock.calls[2]?.[0].toString()).toContain("/rest/v1/profiles");
   });

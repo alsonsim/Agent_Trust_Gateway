@@ -1,8 +1,8 @@
 export type AgentStatus = "ready" | "busy" | "stopped" | "error";
 export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 export type MessageRole = "user" | "assistant";
-export type Department = "finance" | "hr" | "research";
-export const DEPARTMENTS = ["finance", "hr", "research"] as const satisfies readonly Department[];
+export type Department = "frontend" | "backend" | "qa";
+export const DEPARTMENTS = ["frontend", "backend", "qa"] as const satisfies readonly Department[];
 export type AuthorizationDecisionValue = "allow" | "deny";
 export type AuthorizationAction =
   | "agent.create"
@@ -18,11 +18,7 @@ export type AuthorizationAction =
   | "file.read"
   | "file.write"
   | "shell.execute"
-  | "network.request"
-  | "access-request.create"
-  | "access-request.approve"
-  | "access-request.deny"
-  | "access-grant.revoke";
+  | "network.request";
 
 export const DEFAULT_LEGACY_OWNER_ID = "11111111-1111-4111-8111-111111111111";
 
@@ -94,28 +90,6 @@ export interface ProtectedResourceSummary extends Omit<ProtectedResource, "stora
   ownedByCurrentUser: boolean;
 }
 
-export type DocumentAccessRequestStatus =
-  | "pending"
-  | "approved"
-  | "denied"
-  | "revoked"
-  | "expired";
-
-export interface DocumentAccessRequest {
-  id: string;
-  resourceId: string;
-  requesterUserId: string;
-  requesterDepartment: Department;
-  sourceDepartment: Department;
-  status: DocumentAccessRequestStatus;
-  reason: string;
-  reviewedByUserId: string | null;
-  reviewedAt: string | null;
-  expiresAt: string | null;
-  createdAt: string;
-  updatedAt: string;
-}
-
 export interface AuthorizationDecision {
   id: string;
   requestId: string;
@@ -125,31 +99,15 @@ export interface AuthorizationDecision {
   agentId: string | null;
   agentName: string | null;
   action: AuthorizationAction;
-  targetType:
-    | "agent"
-    | "run"
-    | "resource"
-    | "file"
-    | "command"
-    | "network"
-    | "access-request"
-    | "access-grant";
+  targetType: "agent" | "run" | "resource" | "file" | "command" | "network";
   targetId: string;
   targetLabel: string;
   decision: AuthorizationDecisionValue;
   reasonCode:
     | "OWNER_MATCH"
     | "HUMAN_AGENT_OWNER_MISMATCH"
-    | "HUMAN_AGENT_DEPARTMENT_MISMATCH"
     | "AGENT_REVOKED"
     | "AGENT_RESOURCE_OWNER_MISMATCH"
-    | "DEPARTMENT_MATCH"
-    | "CROSS_DEPARTMENT_GRANT_REQUIRED"
-    | "CROSS_DEPARTMENT_GRANT_ACTIVE"
-    | "ACCESS_REQUEST_PENDING"
-    | "ACCESS_REQUEST_APPROVED"
-    | "ACCESS_REQUEST_DENIED"
-    | "ACCESS_GRANT_REVOKED"
     | "WORKSPACE_PATH_ALLOWED"
     | "PATH_OUTSIDE_WORKSPACE"
     | "PROTECTED_SECRET_FILE"
@@ -162,14 +120,13 @@ export interface AuthorizationDecision {
 }
 
 export interface Database {
-  version: 3;
+  version: 4;
   agents: Agent[];
   workspaceProfiles: WorkspaceProfile[];
   messages: Message[];
   runs: AgentRun[];
   protectedResources: ProtectedResource[];
   authorizationDecisions: AuthorizationDecision[];
-  documentAccessRequests: DocumentAccessRequest[];
 }
 
 export interface CreateAgentInput {

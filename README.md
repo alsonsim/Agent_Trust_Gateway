@@ -9,9 +9,17 @@ Volcengine ECS.
 
 > [!NOTE]
 > This is a hackathon proof of concept with synthetic protected resources. The
-> authorization boundary is real and server-enforced, but the Runtime container
-> is not presented as hardened multi-tenant isolation. See
+> authorization boundary is real and server-enforced, and the disposable
+> Runtime adds defense-in-depth container hardening. Ordinary containers are
+> still not presented as hardened multi-tenant isolation. See
 > [SECURITY.md](SECURITY.md).
+
+> [!IMPORTANT]
+> Agent Pass / Trust Pass delegation is **not implemented** in this version.
+> There is no temporary, one-use, or cross-owner grant: an Agent remains
+> exclusively owned by its creator, and a different signed-in user is denied.
+> The Human → Agent → resource display is an attribution path, not a
+> transferable credential.
 
 ## Screenshots
 
@@ -26,13 +34,18 @@ Volcengine ECS.
 ## Features
 
 - React and TypeScript Web UI
-- Finance, HR, and Research login identities
+- Frontend, Backend, and QA engineering login identities
 - Server-side Human → Agent ownership enforcement on every Agent/Run route
-- Owner-scoped protected file gateway with visible `ALLOW` / `DENY` decisions
-- Agent workspace `file.read` middleware with canonical-path, secret, size, and symlink-escape checks
-- Runtime Action Firewall with pre-dispatch audit decisions and Codex shell execpolicy rules
-- Explicit Agent revocation that cancels active work and fail-closes future actions
-- Security demo console with live scenario results, selected-Agent trust totals, and filtered audit evidence
+- Owner-scoped protected resource and workspace-file gateways with visible
+  `ALLOW` / `DENY` decisions
+- Agent workspace `file.read` middleware with canonical-path, secret, size, and
+  symlink-escape checks
+- Runtime Action Firewall with pre-dispatch audit decisions and Codex shell
+  execpolicy rules
+- Explicit Agent revocation that cancels active work and fail-closes future
+  actions
+- Security demo console with live scenario results, selected-Agent trust
+  totals, and filtered audit evidence
 - HttpOnly sessions, append-only audit evidence, and a Supabase Auth/RLS adapter
 - Agent create, edit, start, stop, delete, and multi-turn chat
 - Fastify control plane with asynchronous Run state
@@ -67,16 +80,46 @@ $env:HOST="127.0.0.1"
 npm run dev
 ```
 
-Open <http://localhost:5173>, choose Finance, HR, or Research, create an Agent,
-then use **Access & audit** to demonstrate protected-resource and workspace-file
-authorization. See [the file authorization demo](docs/FILE_AUTHORIZATION_DEMO.md)
-for the three-minute flow and security boundary.
+Open <http://localhost:5173> and choose an engineering identity:
 
-For a judging walkthrough, select an Agent and open **Access & audit**. The
-summary shows its real allowed/denied totals and latest decision; the four
-scenario cards exercise safe file access, secret protection, traversal denial,
-and Runtime shell blocking against the live backend. No browser-side decision is
-generated or assumed.
+| Identity | Login email | Owned protected resource |
+| --- | --- | --- |
+| Frontend | `frontend@bytedance.com` | **Profile page requirements** (`profile-page-requirements.md`) |
+| Backend | `backend@bytedance.com` | **Profile API contract** (`profile-api-contract.md`) |
+| QA | `qa@bytedance.com` | **Profile release test plan** (`profile-release-test-plan.md`) |
+
+In demo mode, select the identity in the login screen. In Supabase mode, use
+the same email and the demo password configured by the operator; no password
+belongs in this repository.
+
+Create an Agent for the signed-in identity, open **Access & audit**, and read
+that identity's resource. Then select another identity's resource to show a
+backend-produced `AGENT_RESOURCE_OWNER_MISMATCH` denial. A realistic Playground
+task for each coding Agent is:
+
+- **Frontend:** `Create a typed profile-page state model for loading, ready,
+  empty, and error states; add tests and run them.`
+- **Backend:** `Create a typed profile API handler with input validation and
+  tests for success, missing profiles, and invalid IDs; run the tests.`
+- **QA:** `Create an executable profile-release smoke-test suite covering the
+  happy path, validation errors, and an authorization regression; run it.`
+
+To prove that the UI is not the security boundary, first create an Agent under
+two different identities. Open **Access & audit**, find **Cross-team Agent**,
+and select **Run scenario**. The UI calls the backend's opaque cross-owner
+probe; it does not receive a foreign Agent ID or name.
+
+The expected result is HTTP `403`, error code `AUTHORIZATION_DENIED`, and
+decision reason `HUMAN_AGENT_OWNER_MISMATCH`. The target is labelled
+`Protected Agent`, the denied decision is persisted for the signed-in
+principal, and no Runtime is invoked.
+
+The same **Access & audit** view shows the selected Agent's real allowed and
+denied totals plus its latest decision. Its live scenario cards exercise safe
+workspace-file access, secret protection, traversal denial, and Runtime shell
+blocking against the backend. No browser-side decision is generated or
+assumed. See [the file authorization demo](docs/FILE_AUTHORIZATION_DEMO.md) for
+the security boundary and walkthrough.
 
 ## Local browser SOP
 
@@ -210,21 +253,29 @@ AGENT_WORKSPACE_ROOT=workspaces
 CODEX_HOME=codex-home
 ```
 
-### Local Debugging Only: Ark Key Passthrough
+### Local Disposable-Container Debugging: Direct Ark Access
 
-Before the trusted model proxy exists, the local Docker Playground can be made
-to work by explicitly forwarding the server-loaded Ark settings into the Runtime
-container:
+The disposable local Runtime receives neither the long-lived Ark key nor network
+access by default. Until a trusted model proxy exists, direct Ark access can be
+enabled for this disposable local container only by setting **both** opt-ins:
 
 ```env
 LOCAL_INSECURE_RUNTIME_KEY_PASSTHROUGH=true
-
+LOCAL_INSECURE_RUNTIME_NETWORK=true
 ```
 
-This exposes the long-lived Ark key to the Agent container and invalidates the
-claim that Agent containers cannot access the long-lived provider key. Leave it
-unset or `false` for the secure default. The secure final solution is still a
-server-side model proxy with short-lived Runtime credentials.
+The first flag forwards `ARK_API_KEY` and `ARK_MODEL`; the second removes the
+container's `--network none` boundary and permits normal container networking.
+Setting only one is insufficient for a direct Ark call. These flags are needed
+only when deliberately connecting the disposable local container to Ark—not for
+the login/authorization demo, the local-process compatibility runner, or a
+future proxy-based setup.
+
+Together they expose a long-lived provider key and broad outbound networking to
+the Agent container. Leave both unset or `false` outside disposable local
+debugging. Do not use them as a shared or production deployment mode. The secure
+target remains a server-side model proxy or workload-identity adapter with
+short-lived Runtime credentials and restricted egress.
 
 ## Deployment
 
@@ -262,6 +313,8 @@ cp deploy/volcengine/terraform.tfvars.example \
 | `SUPABASE_PUBLISHABLE_KEY` | Empty | Current public API key; legacy anon key is accepted. |
 | `SUPABASE_SECRET_KEY` | Empty | Backend-only key; legacy service-role key is accepted. |
 | `RUNTIME_PROVIDER` | `local-process` | `container` for disposable local Runtime containers. |
+| `LOCAL_INSECURE_RUNTIME_KEY_PASSTHROUGH` | `false` | Local disposable-container opt-in that forwards the Ark key and model. |
+| `LOCAL_INSECURE_RUNTIME_NETWORK` | `false` | Local disposable-container opt-in that permits outbound networking. |
 | `CODEX_SANDBOX_MODE` | `workspace-write` | Codex inner sandbox mode. |
 | `CODEX_TIMEOUT_MS` | `600000` | Maximum duration of one turn. |
 
@@ -286,23 +339,32 @@ flowchart LR
 ```
 
 The first turn uses `codex exec`; later turns resume the stored Codex thread.
-Department workspaces are persistent shared profiles, so deleting an Agent
-removes its metadata but retains that department's workspace.
+Engineering roles provide persistent workspace templates, with writable files
+and Codex session state scoped to the exact authenticated owner. Deleting an
+Agent removes its metadata but retains that owner's role workspace.
 
-## Department isolation
+## Role workspace and Runtime isolation
 
-Agent creation derives Finance, HR, or Research from the authenticated backend
+Agent creation derives Frontend, Backend, or QA from the authenticated backend
 principal. New Agents share one persistent, deterministic workspace profile per
-department. The hardened disposable Runtime receives a filtered projection of
-only that department workspace: application source, other department files,
-symlinks, and credential paths such as `.env` are not mounted. Its root is
-read-only, capabilities are dropped, and direct networking is disabled.
+engineering role, then receive a private writable child keyed by a one-way hash
+of the exact owner ID. Agents owned by the same principal and role share that
+child; a second Supabase principal with the same role receives a different
+workspace and Runtime Codex home. Agent and protected-resource routes still
+require an exact human owner-ID match.
+
+The defense-in-depth disposable Runtime receives a filtered projection of only
+that owner's role workspace: application source, other owner/role workspaces, symlinks, and
+credential paths such as `.env` are not mounted. Its root is read-only,
+capabilities are dropped, `no-new-privileges` is set, resource limits apply, and
+direct networking is disabled by default.
 
 The existing local-process runner is a development compatibility path, not a
-shared-department isolation boundary. Connected hardened runs require the next
-milestone, a trusted model proxy/workload-identity adapter, because the Agent
-container intentionally no longer receives `ARK_API_KEY` unless the explicit
-local debugging passthrough is enabled.
+multi-principal isolation boundary. It still uses an owner-scoped Codex home so
+Windows/Supabase development does not mix session files. Connected container runs require the next
+milestone, a trusted model proxy/workload-identity adapter. Direct Ark access is
+available only through the two explicit insecure local-debugging opt-ins above,
+which deliberately weaken both credential and network isolation.
 
 The Runtime Action Firewall evaluates explicit file, shell, and network requests
 in a Playground turn before a Run is created and stores an allow or deny decision.

@@ -21,6 +21,8 @@ async function workspaceFixture() {
   await mkdir(path.join(workspace, "src"), { recursive: true });
   await writeFile(path.join(workspace, "src", "app.ts"), "export const ok = true;\n");
   await writeFile(path.join(workspace, ".env"), "API_KEY=must-not-leak\n");
+  await writeFile(path.join(workspace, ".env.local"), "TOKEN=must-not-leak\n");
+  await writeFile(path.join(workspace, ".gitignore"), ".env\n");
   await writeFile(path.join(root, "outside.txt"), "outside\n");
   return { root, workspace };
 }
@@ -36,14 +38,17 @@ describe("workspace file policy", () => {
     });
   });
 
-  it("denies .env files", async () => {
-    const { workspace } = await workspaceFixture();
+  it.each([".env", ".env.local", ".gitignore"])(
+    "denies protected configuration file %s",
+    async (requestedPath) => {
+      const { workspace } = await workspaceFixture();
 
-    await expect(evaluateWorkspaceFileRead(workspace, ".env")).resolves.toMatchObject({
-      allowed: false,
-      reasonCode: "PROTECTED_SECRET_FILE",
-    });
-  });
+      await expect(evaluateWorkspaceFileRead(workspace, requestedPath)).resolves.toMatchObject({
+        allowed: false,
+        reasonCode: "PROTECTED_SECRET_FILE",
+      });
+    },
+  );
 
   it("denies a nonexistent protected-looking path before filesystem resolution", async () => {
     const { workspace } = await workspaceFixture();

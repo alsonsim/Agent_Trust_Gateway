@@ -26,6 +26,12 @@ Force an engine with `CONTAINER_ENGINE=docker` or
 
 Persistent state defaults to:
 
+```text
+.local/data/          JSON control-plane state
+.local/workspaces/    Frontend, Backend, and QA workspaces
+.local/codex-home/    Generated Codex configuration
+```
+
 The script reads root `.env` as dotenv data without executing it. Exported
 caller values take precedence, while the host control plane always uses
 `<repository>/.local/` for metadata, workspaces, and Codex state.
@@ -37,6 +43,19 @@ and `no-new-privileges`.
 Codex requests `workspace-write`. If the Linux kernel lacks Landlock, startup
 warns and disables only the inner Codex sandbox. The outer container limits
 remain active, but this fallback is not tenant isolation.
+
+The Runtime has no network and receives no Ark key by default. If a disposable
+local demo must call ModelArk directly, explicitly accept both reduced
+boundaries:
+
+```bash
+LOCAL_INSECURE_RUNTIME_KEY_PASSTHROUGH=true \
+LOCAL_INSECURE_RUNTIME_NETWORK=true \
+bash scripts/start-local-poc.sh
+```
+
+These flags are rejected in production. Prefer a trusted model proxy with
+short-lived credentials for a deployed system.
 
 ## Rootless Podman on Linux
 

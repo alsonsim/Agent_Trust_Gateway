@@ -1,6 +1,6 @@
 export type AgentStatus = "ready" | "busy" | "stopped" | "error";
 export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
-export type Department = "finance" | "hr" | "research";
+export type Department = "frontend" | "backend" | "qa";
 export type AuthMode = "demo" | "supabase" | "legacy";
 export type AuthorizationDecisionValue = "allow" | "deny";
 export type AuthorizationAction =

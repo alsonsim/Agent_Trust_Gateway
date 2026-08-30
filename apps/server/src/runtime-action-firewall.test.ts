@@ -32,7 +32,11 @@ async function agentFixture(): Promise<Agent> {
   const root = await mkdtemp(path.join(tmpdir(), "runtime-firewall-"));
   temporaryDirectories.push(root);
   const workspacePath = path.join(root, "workspace");
-  await mkdir(path.join(workspacePath, "src"), { recursive: true });
+  await Promise.all(
+    ["src", "test", "reports"].map((directory) =>
+      mkdir(path.join(workspacePath, directory), { recursive: true }),
+    ),
+  );
   await writeFile(path.join(workspacePath, "README.md"), "safe\n");
   return {
     id: "11111111-1111-4111-8111-111111111111",
@@ -53,7 +57,7 @@ async function agentFixture(): Promise<Agent> {
 const context = {
   humanUserId: "owner",
   humanEmail: "owner@example.test",
-  humanDepartment: "finance" as const,
+  humanDepartment: "frontend" as const,
   requestId: "request-1",
 };
 
@@ -83,9 +87,63 @@ describe("RuntimeActionFirewall", () => {
     );
   });
 
+  it.each([
+    [
+      "frontend",
+      "Read README.md, then create package.json for node --test, create src/profile-view.js for an accessible Profile UI, and create test/profile-view.test.js. Run npm test; use no packages or network.",
+      ["README.md", "package.json", "src/profile-view.js", "test/profile-view.test.js"],
+    ],
+    [
+      "backend",
+      "Read README.md, then create package.json for node --test, create src/profile-handler.js for validated GET /api/profile responses with id, displayName, biography, team, avatarUrl, and updatedAt, and create test/profile-handler.test.js. Run npm test; use only Node built-ins and no network.",
+      ["README.md", "package.json", "src/profile-handler.js", "test/profile-handler.test.js"],
+    ],
+    [
+      "qa",
+      "Read README.md, then create package.json for node --test, create test/profile-release.test.js for the UI and API contract, and create reports/profile-release-summary.md. Run npm test; use only Node built-ins and no network.",
+      [
+        "README.md",
+        "package.json",
+        "test/profile-release.test.js",
+        "reports/profile-release-summary.md",
+      ],
+    ],
+  ] as const)(
+    "allows the representative %s starter prompt",
+    async (_department, prompt, fileTargets) => {
+      const decisions: AuthorizationDecision[] = [];
+      const firewall = new RuntimeActionFirewall(recordingRepository(decisions));
+      const agent = await agentFixture();
+
+      await expect(firewall.authorize(agent, prompt, context)).resolves.toBeUndefined();
+
+      expect(decisions).toHaveLength(fileTargets.length + 1);
+      expect(decisions[0]).toMatchObject({
+        action: "file.read",
+        targetLabel: fileTargets[0],
+        decision: "allow",
+      });
+      for (const targetLabel of fileTargets.slice(1)) {
+        expect(decisions).toContainEqual(
+          expect.objectContaining({
+            action: "file.write",
+            targetLabel,
+            decision: "allow",
+          }),
+        );
+      }
+      expect(decisions.at(-1)).toMatchObject({
+        action: "shell.execute",
+        targetLabel: "npm test",
+        decision: "allow",
+      });
+    },
+  );
+
   it("denies protected paths, traversal, commands, and network requests before execution", async () => {
     const cases = [
       ["Read .env.missing", "file.read", "PROTECTED_SECRET_FILE"],
+      ["Read ..", "file.read", "PATH_OUTSIDE_WORKSPACE"],
       ["Write ../outside.txt", "file.write", "PATH_OUTSIDE_WORKSPACE"],
       ["Run sudo npm test", "shell.execute", "RUNTIME_COMMAND_DENIED"],
       ["Use curl https://example.test", "network.request", "RUNTIME_NETWORK_DENIED"],

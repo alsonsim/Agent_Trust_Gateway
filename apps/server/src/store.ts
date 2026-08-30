@@ -3,117 +3,174 @@ import path from "node:path";
 import {
   DEFAULT_LEGACY_OWNER_ID,
   type Agent,
+  type AuthorizationDecision,
   type Database,
   type Department,
+  type ProtectedResource,
+  type WorkspaceProfile,
 } from "./types.js";
 
 const emptyDatabase = (): Database => ({
-  version: 3,
+  version: 4,
   agents: [],
   workspaceProfiles: [],
   messages: [],
   runs: [],
   protectedResources: [],
   authorizationDecisions: [],
-  documentAccessRequests: [],
 });
 
-interface LegacyDatabase {
-  version: 1;
-  agents: Array<Omit<Agent, "ownerId"> & { ownerId?: string }>;
-  messages: Database["messages"];
-  runs: Database["runs"];
+type LegacyDepartment = Department | "finance" | "hr" | "research";
+
+type LegacyAgent = Omit<
+  Agent,
+  "ownerId" | "department" | "workspaceProfileId" | "revokedAt"
+> & {
+  ownerId?: string;
+  department?: LegacyDepartment;
+  workspaceProfileId?: string;
+  revokedAt?: string | null;
+};
+
+type LegacyWorkspaceProfile = Omit<WorkspaceProfile, "id" | "department"> & {
+  id?: string;
+  department: LegacyDepartment;
+};
+
+type LegacyProtectedResource = Omit<ProtectedResource, "ownerDepartment"> & {
+  ownerDepartment: LegacyDepartment;
+};
+
+type LegacyAuthorizationDecision = Omit<AuthorizationDecision, "humanDepartment"> & {
+  humanDepartment: LegacyDepartment;
+};
+
+interface PersistedDatabaseShape {
+  version?: number;
+  agents?: LegacyAgent[];
+  workspaceProfiles?: LegacyWorkspaceProfile[];
+  messages?: Database["messages"];
+  runs?: Database["runs"];
+  protectedResources?: LegacyProtectedResource[];
+  authorizationDecisions?: LegacyAuthorizationDecision[];
+  // An incoming v3 briefly persisted this unused scaffold. Only an empty
+  // array can be discarded without pretending the unimplemented feature exists.
+  documentAccessRequests?: unknown[];
 }
 
 function parseDatabase(raw: string): { database: Database; migrated: boolean } {
-  const parsed = JSON.parse(raw) as Partial<Database> | LegacyDatabase;
-  if (!Array.isArray(parsed.agents)) {
-    throw new Error("Unsupported database format");
-  }
-  if (parsed.version === 1) {
-    const legacy = parsed as LegacyDatabase;
-    return {
-      migrated: true,
-      database: {
-        version: 3,
-        agents: legacy.agents.map((agent) => migrateAgent(agent)),
-        workspaceProfiles: [],
-        messages: Array.isArray(legacy.messages) ? legacy.messages : [],
-        runs: Array.isArray(legacy.runs) ? legacy.runs : [],
-        protectedResources: [],
-        authorizationDecisions: [],
-        documentAccessRequests: [],
-      },
-    };
-  }
-  if ((parsed as { version?: number }).version === 2) {
-    const legacy = parsed as unknown as Omit<Database, "version" | "workspaceProfiles" | "documentAccessRequests"> & {
-      version: 2;
-    };
-    return {
-      migrated: true,
-      database: {
-        version: 3,
-        agents: legacy.agents.map((agent) => migrateAgent(agent)),
-        workspaceProfiles: [],
-        messages: Array.isArray(legacy.messages) ? legacy.messages : [],
-        runs: Array.isArray(legacy.runs) ? legacy.runs : [],
-        protectedResources: Array.isArray(legacy.protectedResources)
-          ? legacy.protectedResources
-          : [],
-        authorizationDecisions: Array.isArray(legacy.authorizationDecisions)
-          ? legacy.authorizationDecisions
-          : [],
-        documentAccessRequests: [],
-      },
-    };
-  }
+  const parsed = JSON.parse(raw) as PersistedDatabaseShape;
   if (
-    parsed.version !== 3 ||
-    !Array.isArray(parsed.messages) ||
-    !Array.isArray(parsed.runs) ||
-    !Array.isArray(parsed.protectedResources) ||
-    !Array.isArray(parsed.authorizationDecisions) ||
-    !Array.isArray(parsed.workspaceProfiles) ||
-    !Array.isArray(parsed.documentAccessRequests)
+    parsed.version !== 1 &&
+    parsed.version !== 2 &&
+    parsed.version !== 3 &&
+    parsed.version !== 4
   ) {
     throw new Error("Unsupported database format");
   }
-  const database = parsed as Database;
-  const agents = database.agents.map((agent) => migrateAgent(agent));
-  return {
-    database: { ...database, agents },
-    migrated: database.agents.some(
-      (agent) =>
-        agent.revokedAt === undefined ||
-        agent.department === undefined ||
-        agent.workspaceProfileId === undefined,
+  if (!Array.isArray(parsed.agents)) {
+    throw new Error("Unsupported database format");
+  }
+  if (
+    parsed.version === 4 &&
+    (!Array.isArray(parsed.workspaceProfiles) ||
+      !Array.isArray(parsed.messages) ||
+      !Array.isArray(parsed.runs) ||
+      !Array.isArray(parsed.protectedResources) ||
+      !Array.isArray(parsed.authorizationDecisions))
+  ) {
+    throw new Error("Unsupported database format");
+  }
+  if (
+    parsed.documentAccessRequests !== undefined &&
+    (!Array.isArray(parsed.documentAccessRequests) || parsed.documentAccessRequests.length > 0)
+  ) {
+    throw new Error(
+      "Unsupported non-empty document access request state from an incomplete schema",
+    );
+  }
+
+  const database: Database = {
+    version: 4,
+    agents: parsed.agents.map(normalizeAgent),
+    workspaceProfiles: normalizeWorkspaceProfiles(parsed.workspaceProfiles ?? []),
+    messages: arrayOrEmpty(parsed.messages),
+    runs: arrayOrEmpty(parsed.runs),
+    protectedResources: arrayOrEmpty(parsed.protectedResources).map((resource) => ({
+      ...resource,
+      ownerDepartment: migrateDepartment(resource.ownerDepartment),
+    })),
+    authorizationDecisions: arrayOrEmpty(parsed.authorizationDecisions).map(
+      (decision) => ({
+        ...decision,
+        humanDepartment: migrateDepartment(decision.humanDepartment),
+      }),
     ),
+  };
+
+  const comparableSource = {
+    version: parsed.version,
+    agents: parsed.agents,
+    workspaceProfiles: parsed.workspaceProfiles,
+    messages: parsed.messages,
+    runs: parsed.runs,
+    protectedResources: parsed.protectedResources,
+    authorizationDecisions: parsed.authorizationDecisions,
+  };
+  return {
+    database,
+    migrated:
+      parsed.documentAccessRequests !== undefined ||
+      JSON.stringify(comparableSource) !== JSON.stringify(database),
   };
 }
 
-function legacyDepartment(ownerId: string): Department {
-  if (ownerId === "22222222-2222-4222-8222-222222222222") return "hr";
-  if (ownerId === "33333333-3333-4333-8333-333333333333") return "research";
-  return "finance";
+function arrayOrEmpty<T>(value: T[] | undefined): T[] {
+  return Array.isArray(value) ? value : [];
 }
 
-function migrateAgent(
-  agent: Omit<Agent, "department" | "workspaceProfileId" | "ownerId"> & {
-    ownerId?: string;
-    department?: Department;
-    workspaceProfileId?: string;
-  },
-): Agent {
+function migrateDepartment(
+  value: LegacyDepartment | undefined,
+  ownerId?: string,
+): Department {
+  if (value === "finance") return "frontend";
+  if (value === "hr") return "backend";
+  if (value === "research") return "qa";
+  if (value === "frontend" || value === "backend" || value === "qa") return value;
+  if (value === undefined && ownerId) return departmentForOwner(ownerId);
+  throw new Error("Unsupported department in database");
+}
+
+function departmentForOwner(ownerId: string): Department {
+  if (ownerId === "22222222-2222-4222-8222-222222222222") return "backend";
+  if (ownerId === "33333333-3333-4333-8333-333333333333") return "qa";
+  return "frontend";
+}
+
+function normalizeAgent(agent: LegacyAgent): Agent {
   const ownerId = agent.ownerId || DEFAULT_LEGACY_OWNER_ID;
-  const department = agent.department ?? legacyDepartment(ownerId);
+  const department = migrateDepartment(agent.department, ownerId);
   return {
     ...agent,
     ownerId,
     department,
-    workspaceProfileId: agent.workspaceProfileId ?? "department-" + department,
+    workspaceProfileId: "department-" + department,
     revokedAt: agent.revokedAt ?? null,
   };
+}
+
+function normalizeWorkspaceProfiles(
+  profiles: LegacyWorkspaceProfile[],
+): WorkspaceProfile[] {
+  const normalized = new Map<string, WorkspaceProfile>();
+  for (const profile of profiles) {
+    const department = migrateDepartment(profile.department);
+    const id = "department-" + department;
+    if (!normalized.has(id)) {
+      normalized.set(id, { ...profile, id, department });
+    }
+  }
+  return [...normalized.values()];
 }
 
 export class JsonStore {

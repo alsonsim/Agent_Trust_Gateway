@@ -969,9 +969,16 @@ export function TrustPassWorkspace({
                         </div>
                         <div className="request-meta">
                           <span>{departmentLabel(request.providerDepartment)} capability</span>
-                          <span><time dateTime={request.expiresAt}>{formatRemaining(request.expiresAt, serverNowMs)}</time></span>
-                          <span>digest {request.taskDigest.slice(0, 10)}</span>
+                          <span>
+                            <time dateTime={request.expiresAt}>
+                              {formatRemaining(request.expiresAt, serverNowMs)} remaining
+                            </time>
+                          </span>
                         </div>
+                        <details className="request-technical">
+                          <summary>Technical details</summary>
+                          <code>Task digest: {request.taskDigest}</code>
+                        </details>
                         {effectiveStatus === "pending" && (
                           <p className="pending-copy">
                             Delivered to the {departmentLabel(request.providerDepartment)} capability
@@ -1013,9 +1020,9 @@ export function TrustPassWorkspace({
                       </div>
                       <PrivateAgentNote />
                       <label className="locked-prompt">
-                        Exact owner-approved task
+                        Approved task
                         <textarea value={contract.approvedPrompt} readOnly rows={4} />
-                        <span>Locked to the backend prompt digest</span>
+                        <span>This exact task is locked and cannot be changed.</span>
                       </label>
                       <ScopeFacts
                         inputCount={contract.approvedInputCount}
@@ -1113,7 +1120,10 @@ export function TrustPassWorkspace({
                       <p className="request-review-deadline">
                         Review within <strong>{formatRemaining(request.expiresAt, serverNowMs)}</strong>
                       </p>
-                      <details className="request-technical"><summary>Task digest</summary><code>{request.taskDigest}</code></details>
+                      <details className="request-technical">
+                        <summary>Technical details</summary>
+                        <code>Task digest: {request.taskDigest}</code>
+                      </details>
 
                       {pending && (
                         <div className="approval-controls">
@@ -1251,6 +1261,10 @@ export function TrustPassWorkspace({
                         <div><span className="eyebrow">{contract.capabilityLabel}</span><h3>{contract.grantee.displayName}</h3></div>
                         <StatusBadge status={effectiveStatus} />
                       </div>
+                      <PrivateAgentNote
+                        title={`Agent stays private from ${contract.grantee.displayName}`}
+                        message="They can run only the approved task and cannot open its settings, workspace, history, resources, or other Runs."
+                      />
                       <div className="owner-agent-detail">
                         <span>Private Agent</span>
                         <strong>{contract.agent.name}</strong>

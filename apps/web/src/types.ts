@@ -17,7 +17,26 @@ export type AuthorizationAction =
   | "file.read"
   | "file.write"
   | "shell.execute"
-  | "network.request";
+  | "network.request"
+  | "delegation.request"
+  | "delegation.approve"
+  | "delegation.reject"
+  | "delegation.revoke";
+export type CapabilityId =
+  | "finance.cost-analysis"
+  | "hr.people-operations"
+  | "research.evidence-synthesis";
+export type PersonalInformationAssessment = "none_detected" | "possible";
+export type DelegationRequestStatus =
+  | "pending"
+  | "approved"
+  | "rejected"
+  | "expired";
+export type DelegationContractStatus =
+  | "active"
+  | "consumed"
+  | "revoked"
+  | "expired";
 
 export interface HumanPrincipal {
   id: string;
@@ -93,6 +112,96 @@ export interface ProtectedResourceSummary {
   ownedByCurrentUser: boolean;
 }
 
+export interface CapabilityDiscovery {
+  required: boolean;
+  capability: CapabilityId | null;
+  capabilityLabel: string | null;
+  providerDepartment: Department | null;
+  sanitizedTaskSummary: string;
+  taskDigest: string;
+  personalInformation: PersonalInformationAssessment;
+}
+
+export interface DelegationRecipientView {
+  id: string;
+  displayName: string;
+  department: Department;
+}
+
+export interface DelegationRequestView {
+  id: string;
+  box: "incoming" | "outgoing";
+  requiredCapability: CapabilityId;
+  capabilityLabel: string;
+  providerDepartment: Department;
+  sanitizedTaskSummary: string;
+  personalInformation: PersonalInformationAssessment;
+  taskDigest: string;
+  status: DelegationRequestStatus;
+  createdAt: string;
+  expiresAt: string;
+  contractId: string | null;
+  requester?: {
+    displayName: string;
+    department: Department;
+  };
+}
+
+interface DelegationContractViewBase {
+  id: string;
+  source: "owner" | "request";
+  requiredCapability: CapabilityId;
+  capabilityLabel: string;
+  providerDepartment: Department;
+  sanitizedTaskSummary: string;
+  personalInformation: PersonalInformationAssessment;
+  allowedActions: ["agent.invoke"];
+  resultVisibility: "final_output_only";
+  maximumUses: 1;
+  usesConsumed: number;
+  remainingUses: number;
+  approvedInputCount: number;
+  status: DelegationContractStatus;
+  policyReasonCode:
+    | "DELEGATION_ACTIVE"
+    | "DELEGATION_CONSUMED"
+    | "DELEGATION_REVOKED"
+    | "DELEGATION_EXPIRED";
+  createdAt: string;
+  expiresAt: string;
+  consumedAt: string | null;
+  revokedAt: string | null;
+}
+
+export interface GranteeDelegationContractView
+  extends DelegationContractViewBase {
+  box: "incoming";
+  providerLabel: string;
+  approvedPrompt: string;
+}
+
+export interface OwnerDelegationContractView
+  extends DelegationContractViewBase {
+  box: "outgoing";
+  grantee: DelegationRecipientView;
+  agent: { id: string; name: string };
+  approvedResources: Array<{ id: string; name: string; fileName: string }>;
+}
+
+export type DelegationContractView =
+  | GranteeDelegationContractView
+  | OwnerDelegationContractView;
+
+export interface DelegatedRunView {
+  id: string;
+  status: RunStatus;
+  output: string | null;
+  error: string | null;
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+}
+
 export interface AuthorizationDecision {
   id: string;
   requestId: string;
@@ -102,7 +211,15 @@ export interface AuthorizationDecision {
   agentId: string | null;
   agentName: string | null;
   action: AuthorizationAction;
-  targetType: "agent" | "run" | "resource" | "file" | "command" | "network";
+  targetType:
+    | "agent"
+    | "run"
+    | "resource"
+    | "file"
+    | "command"
+    | "network"
+    | "delegation"
+    | "capability";
   targetId: string;
   targetLabel: string;
   decision: AuthorizationDecisionValue;
@@ -117,7 +234,18 @@ export interface AuthorizationDecision {
     | "FILE_TOO_LARGE"
     | "RUNTIME_COMMAND_ALLOWED"
     | "RUNTIME_COMMAND_DENIED"
-    | "RUNTIME_NETWORK_DENIED";
+    | "RUNTIME_NETWORK_DENIED"
+    | "DELEGATION_REQUESTED"
+    | "DELEGATION_APPROVED"
+    | "DELEGATION_REJECTED"
+    | "DELEGATION_ACTIVE"
+    | "DELEGATION_CONSUMED"
+    | "DELEGATION_REVOKED"
+    | "DELEGATION_EXPIRED"
+    | "DELEGATION_PROMPT_MISMATCH"
+    | "DELEGATION_GRANTEE_MISMATCH"
+    | "DELEGATION_ACTION_NOT_ALLOWED"
+    | "DELEGATION_RESOURCE_CHANGED";
   reason: string;
   createdAt: string;
 }

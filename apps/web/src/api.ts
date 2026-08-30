@@ -3,8 +3,17 @@ import type {
   AgentRun,
   AuthConfiguration,
   AuthorizationDecision,
+  CapabilityDiscovery,
+  CapabilityId,
+  DelegatedRunView,
+  DelegationContractStatus,
+  DelegationContractView,
+  DelegationRecipientView,
+  DelegationRequestView,
+  GranteeDelegationContractView,
   HumanPrincipal,
   Message,
+  OwnerDelegationContractView,
   ProtectedResourceRead,
   ProtectedResourceSummary,
   SystemInfo,
@@ -75,6 +84,80 @@ export const api = {
     }),
   me: () => request<{ principal: HumanPrincipal }>("/api/me"),
   system: () => request<SystemInfo>("/api/system"),
+  discoverCapability: (prompt: string) =>
+    request<CapabilityDiscovery>("/api/capability-discovery", {
+      method: "POST",
+      body: JSON.stringify({ prompt }),
+    }),
+  delegationRecipients: () =>
+    request<{ recipients: DelegationRecipientView[] }>(
+      "/api/delegation-recipients",
+    ),
+  createDelegationRequest: (body: {
+    requiredCapability: CapabilityId;
+    prompt: string;
+  }) =>
+    request<{ request: DelegationRequestView; decision: AuthorizationDecision }>(
+      "/api/delegation-requests",
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  delegationRequests: (box: "incoming" | "outgoing") =>
+    request<{ requests: DelegationRequestView[]; serverNow: string }>(
+      "/api/delegation-requests?box=" + encodeURIComponent(box),
+    ),
+  approveDelegationRequest: (
+    id: string,
+    body: {
+      agentId: string;
+      approvedResourceIds: string[];
+      expiresInSeconds: number;
+    },
+  ) =>
+    request<{ contract: OwnerDelegationContractView; decision: AuthorizationDecision }>(
+      "/api/delegation-requests/" + id + "/approve",
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  rejectDelegationRequest: (id: string) =>
+    request<{ request: DelegationRequestView; decision: AuthorizationDecision }>(
+      "/api/delegation-requests/" + id + "/reject",
+      { method: "POST" },
+    ),
+  createDelegationContract: (body: {
+    requiredCapability: CapabilityId;
+    granteeHumanId: string;
+    agentId: string;
+    exactPrompt: string;
+    approvedResourceIds: string[];
+    expiresInSeconds: number;
+  }) =>
+    request<{ contract: OwnerDelegationContractView; decision: AuthorizationDecision }>(
+      "/api/delegation-contracts",
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  delegationContracts: (box: "incoming" | "outgoing") =>
+    request<{ contracts: DelegationContractView[]; serverNow: string }>(
+      "/api/delegation-contracts?box=" + encodeURIComponent(box),
+    ),
+  revokeDelegationContract: (id: string) =>
+    request<{ contract: OwnerDelegationContractView; decision: AuthorizationDecision }>(
+      "/api/delegation-contracts/" + id + "/revoke",
+      { method: "POST" },
+    ),
+  invokeDelegationContract: (id: string, content: string) =>
+    request<{
+      contract: GranteeDelegationContractView;
+      decision: AuthorizationDecision;
+      result: DelegatedRunView;
+    }>("/api/delegation-contracts/" + id + "/invoke", {
+      method: "POST",
+      body: JSON.stringify({ content }),
+    }),
+  delegatedResult: (id: string) =>
+    request<{
+      contractStatus: DelegationContractStatus;
+      result: DelegatedRunView | null;
+      serverNow: string;
+    }>("/api/delegation-contracts/" + id + "/result"),
   listAgents: () => request<{ agents: Agent[] }>("/api/agents"),
   createAgent: (body: {
     name: string;
@@ -123,6 +206,11 @@ export const api = {
   readResource: (agentId: string, resourceId: string) =>
     request<ProtectedResourceRead>(
       "/api/agents/" + agentId + "/resources/" + resourceId + "/read",
+      { method: "POST" },
+    ),
+  demonstrateCrossOwnerResourceDenial: (agentId: string) =>
+    request<never>(
+      "/api/agents/" + agentId + "/resources/cross-owner-demo",
       { method: "POST" },
     ),
   readWorkspaceFile: (agentId: string, path: string) =>

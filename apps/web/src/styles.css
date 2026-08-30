@@ -2521,6 +2521,9 @@ textarea:focus {
 }
 
 .trust-notice {
+  position: sticky;
+  top: 0;
+  z-index: 4;
   margin-bottom: 12px;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
@@ -2531,6 +2534,7 @@ textarea:focus {
   padding: 10px 12px;
   color: #286f56;
   background: #eaf6f0;
+  box-shadow: 0 8px 22px rgba(42, 82, 66, 0.12);
   font-size: 12px;
 }
 
@@ -2840,6 +2844,11 @@ textarea:focus {
   border-radius: 9px;
   padding: 13px;
   background: #fcfbf8;
+}
+
+.request-delivered {
+  border-color: #78b89e;
+  box-shadow: 0 0 0 3px rgba(70, 149, 118, 0.12);
 }
 
 .compact-trust-card p {

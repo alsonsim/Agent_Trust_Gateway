@@ -255,6 +255,7 @@ export function TrustPassWorkspace({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [recentRequestId, setRecentRequestId] = useState<string | null>(null);
   const [latestDecision, setLatestDecision] = useState<AuthorizationDecision | null>(null);
   const [serverOffsetMs, setServerOffsetMs] = useState(0);
   const [clockMs, setClockMs] = useState(Date.now());
@@ -381,6 +382,29 @@ export function TrustPassWorkspace({
       mountedRef.current = false;
     };
   }, [refreshAll]);
+
+  useEffect(() => {
+    let refreshInProgress = false;
+    const refreshWhenVisible = () => {
+      if (document.visibilityState !== "visible" || refreshInProgress) return;
+      refreshInProgress = true;
+      void refreshAll().finally(() => {
+        refreshInProgress = false;
+      });
+    };
+    window.addEventListener("focus", refreshWhenVisible);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    return () => {
+      window.removeEventListener("focus", refreshWhenVisible);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+    };
+  }, [refreshAll]);
+
+  useEffect(() => {
+    if (!recentRequestId) return;
+    const timer = window.setTimeout(() => setRecentRequestId(null), 8_000);
+    return () => window.clearTimeout(timer);
+  }, [recentRequestId]);
 
   useEffect(() => {
     const timer = window.setInterval(() => setClockMs(Date.now()), 1_000);
@@ -526,7 +550,15 @@ export function TrustPassWorkspace({
         prompt: discoveryPrompt,
       });
       setLatestDecision(response.decision);
-      setNotice("Permission request sent privately to the capability-owning team.");
+      setOutgoingRequests((current) => [
+        response.request,
+        ...current.filter((request) => request.id !== response.request.id),
+      ]);
+      setRecentRequestId(response.request.id);
+      setNotice(
+        `Request sent privately to the ${departmentLabel(response.request.providerDepartment)} ` +
+          "capability owner. It is now in their approval inbox.",
+      );
       setDiscovery(null);
       setDiscoveryPrompt(null);
       const examplePrompt = requestExampleByDepartment[principal.department];
@@ -924,7 +956,13 @@ export function TrustPassWorkspace({
                     const effectiveStatus: DelegationRequestView["status"] =
                       visuallyExpired ? "expired" : request.status;
                     return (
-                      <article className="trust-card compact-trust-card" key={request.id}>
+                      <article
+                        className={
+                          "trust-card compact-trust-card" +
+                          (request.id === recentRequestId ? " request-delivered" : "")
+                        }
+                        key={request.id}
+                      >
                         <div className="trust-card-heading">
                           <div><span className="eyebrow">{request.capabilityLabel}</span><h3>{request.sanitizedTaskSummary}</h3></div>
                           <StatusBadge status={effectiveStatus} />
@@ -934,7 +972,12 @@ export function TrustPassWorkspace({
                           <span><time dateTime={request.expiresAt}>{formatRemaining(request.expiresAt, serverNowMs)}</time></span>
                           <span>digest {request.taskDigest.slice(0, 10)}</span>
                         </div>
-                        {effectiveStatus === "pending" && <p className="pending-copy">No Agent access exists until the owner approves this exact task.</p>}
+                        {effectiveStatus === "pending" && (
+                          <p className="pending-copy">
+                            Delivered to the {departmentLabel(request.providerDepartment)} capability
+                            owner for review. No Agent access exists until they approve this exact task.
+                          </p>
+                        )}
                         {effectiveStatus === "approved" && <p className="allowed-copy">Approved. Use the one-use pass in Approved tasks below.</p>}
                         {effectiveStatus === "rejected" && <p className="denied-copy">The owner declined this request. No pass was issued.</p>}
                         {effectiveStatus === "expired" && <p className="denied-copy">The request expired before approval.</p>}

@@ -25,6 +25,8 @@ import { WorkspaceManager } from "./workspace.js";
 class FakeRunner implements AgentRunner {
   readonly requests: RunnerRequest[] = [];
 
+  constructor(private readonly codexVersion = "0.151.0") {}
+
   async run(request: RunnerRequest): Promise<RunnerResult> {
     this.requests.push(request);
     return {
@@ -38,6 +40,9 @@ class FakeRunner implements AgentRunner {
   }
   async isAvailable(): Promise<boolean> {
     return true;
+  }
+  async inspect() {
+    return { available: true, codexVersion: this.codexVersion } as const;
   }
 }
 
@@ -90,6 +95,8 @@ async function makeHarness(
     ARK_API_KEY: "test-key",
     ARK_MODEL: "ep-test",
     RUNTIME_PROVIDER: "container",
+    LOCAL_INSECURE_RUNTIME_KEY_PASSTHROUGH: "true",
+    LOCAL_INSECURE_RUNTIME_NETWORK: "true",
     ...overrides,
   });
   const store = new JsonStore(path.join(root, "data", "launchpad.json"));
@@ -128,8 +135,11 @@ async function login(app: Awaited<ReturnType<typeof createApp>>, email: string) 
 }
 
 describe("HTTP identity and authorization boundary", () => {
-  it("reports the resolved Codex executable and availability", async () => {
-    const { app, config } = await makeHarness();
+  it("reports disposable Runtime capabilities and honest direct-Ark blockers", async () => {
+    const { app, config } = await makeHarness({
+      LOCAL_INSECURE_RUNTIME_KEY_PASSTHROUGH: "false",
+      LOCAL_INSECURE_RUNTIME_NETWORK: "false",
+    });
     const cookie = await login(app, "frontend@bytedance.com");
     const response = await app.inject({
       method: "GET",
@@ -139,10 +149,134 @@ describe("HTTP identity and authorization boundary", () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({
-      codexExecutable: config.codexBin,
-      codexExecutableSource: config.codexBinSource,
+      codexExecutable: config.containerCodexBin,
+      codexExecutableSource: config.containerCodexBinSource,
       codexAvailable: true,
+      codexVersion: "0.151.0",
+      codexExpectedVersion: "0.151.0",
+      runtimeProvider: "container",
+      containerRuntimeImage: config.containerRuntimeImage,
+      executionReady: false,
+      delegatedRunsAvailable: false,
+      capabilities: {
+        executionBoundary: "disposable-container",
+        workspaceIsolation: "filtered-owner-projection",
+        networkPolicy: "container-network-blocked",
+        credentialPolicy: "not-forwarded",
+        readOnlyRoot: true,
+        capabilitiesDropped: true,
+        noNewPrivileges: true,
+        resourceLimits: true,
+        protectedFileProjection: true,
+      },
     });
+    expect(response.json().blockers).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "RUNTIME_CREDENTIALS_NOT_FORWARDED" }),
+        expect.objectContaining({ code: "RUNTIME_NETWORK_BLOCKED" }),
+      ]),
+    );
+    await app.close();
+  });
+
+  it.each([
+    {
+      provider: "local-process" as const,
+      runtime: "Host process · Codex CLI",
+      boundary: "host-process",
+    },
+    {
+      provider: "application-container" as const,
+      runtime: "Application container profile · Codex CLI",
+      boundary: "application-container",
+    },
+  ])("reports $provider execution without claiming delegated isolation", async ({
+    provider,
+    runtime,
+    boundary,
+  }) => {
+    const { app } = await makeHarness({ RUNTIME_PROVIDER: provider });
+    const cookie = await login(app, "frontend@bytedance.com");
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/system",
+      headers: { cookie },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      runtimeProvider: provider,
+      runtime,
+      executionReady: true,
+      delegatedRunsAvailable: false,
+      blockers: [],
+      capabilities: {
+        executionBoundary: boundary,
+        capabilitiesDropped: false,
+        noNewPrivileges: false,
+        resourceLimits: false,
+      },
+    });
+    await app.close();
+  });
+
+  it("reports the local POC ready only when both explicit Ark opt-ins are active", async () => {
+    const { app } = await makeHarness({
+      RUNTIME_PROVIDER: "container",
+      LOCAL_INSECURE_RUNTIME_KEY_PASSTHROUGH: "true",
+      LOCAL_INSECURE_RUNTIME_NETWORK: "true",
+    });
+    const cookie = await login(app, "frontend@bytedance.com");
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/system",
+      headers: { cookie },
+    });
+
+    expect(response.json()).toMatchObject({
+      executionReady: true,
+      delegatedRunsAvailable: true,
+      blockers: [],
+      capabilities: {
+        networkPolicy: "local-debug-network",
+        credentialPolicy: "local-debug-forwarded",
+      },
+    });
+    await app.close();
+  });
+
+  it("blocks execution when an explicit executable bypasses the project CLI pin", async () => {
+    const { app } = await makeHarness(
+      { RUNTIME_PROVIDER: "local-process" },
+      new FakeRunner("0.111.0"),
+    );
+    const cookie = await login(app, "frontend@bytedance.com");
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/system",
+      headers: { cookie },
+    });
+
+    expect(response.json()).toMatchObject({
+      codexVersion: "0.111.0",
+      codexExpectedVersion: "0.151.0",
+      executionReady: false,
+      blockers: [expect.objectContaining({ code: "CODEX_VERSION_MISMATCH" })],
+    });
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/agents",
+      headers: { cookie },
+      payload: { name: "Version Guard Agent" },
+    });
+    const invocation = await app.inject({
+      method: "POST",
+      url: `/api/agents/${created.json().agent.id}/messages`,
+      headers: { cookie },
+      payload: { content: "Create a safe text file." },
+    });
+    expect(invocation.statusCode).toBe(503);
+    expect(invocation.json()).toMatchObject({ code: "RUNTIME_NOT_READY" });
     await app.close();
   });
 

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AgentService } from "./agent-service.js";
 import {
+  BACKEND_PRINCIPAL,
   DemoIdentityProvider,
   FRONTEND_PRINCIPAL,
 } from "./identity-provider.js";
@@ -15,11 +16,14 @@ import type {
 const timestamp = new Date().toISOString();
 const frontendAgent: Agent = {
   id: "99999999-9999-4999-8999-999999999999",
+  department: "frontend",
+  workspaceProfileId: "department-frontend",
   ownerId: FRONTEND_PRINCIPAL.id,
   name: "Frontend Agent",
   description: "",
   instructions: "",
   status: "ready",
+  revokedAt: null,
   workspacePath: "/workspace",
   codexThreadId: null,
   lastError: null,
@@ -59,13 +63,77 @@ function repository(overrides: Partial<SecurityRepository> = {}): SecurityReposi
     initialize: async () => undefined,
     listResources: async () => [frontendResource],
     readResource: async () => ({ resource: frontendResource, content: "sensitive" }),
+    readResourceForDelegation: async () => ({
+      resource: frontendResource,
+      content: "sensitive",
+    }),
     appendDecision: async () => undefined,
+    appendDecisions: async () => undefined,
     listDecisions: async () => [],
     ...overrides,
   };
 }
 
 describe("TrustGateway fail-closed behavior", () => {
+  it("denies a different human even when they share the Agent department", async () => {
+    const recorded: AuthorizationDecision[] = [];
+    const gateway = makeGateway(
+      repository({
+        appendDecision: async (decision) => {
+          recorded.push(decision);
+        },
+      }),
+    );
+
+    await expect(
+      gateway.authorizeAgent(
+        {
+          ...FRONTEND_PRINCIPAL,
+          id: "77777777-7777-4777-8777-777777777777",
+          email: "frontend-reviewer@bytedance.com",
+          displayName: "Frontend Reviewer",
+        },
+        frontendAgent.id,
+        "agent.read",
+        "same-department-request",
+      ),
+    ).rejects.toMatchObject({
+      statusCode: 403,
+      code: "AUTHORIZATION_DENIED",
+    });
+    expect(recorded).toEqual([
+      expect.objectContaining({
+        agentId: null,
+        targetLabel: "Protected Agent",
+        decision: "deny",
+        reasonCode: "HUMAN_AGENT_OWNER_MISMATCH",
+      }),
+    ]);
+  });
+
+  it("lists only protected resources owned by the authenticated human", async () => {
+    const backendResource: ProtectedResource = {
+      ...frontendResource,
+      id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2",
+      ownerId: BACKEND_PRINCIPAL.id,
+      ownerDepartment: "backend",
+      name: "Profile API contract",
+      fileName: "profile-api-contract.md",
+      storageKey: "backend/profile-api-contract.md",
+    };
+    const gateway = makeGateway(
+      repository({ listResources: async () => [frontendResource, backendResource] }),
+    );
+
+    await expect(gateway.listResources({ ...BACKEND_PRINCIPAL })).resolves.toEqual([
+      expect.objectContaining({
+        id: backendResource.id,
+        ownerId: BACKEND_PRINCIPAL.id,
+        ownedByCurrentUser: true,
+      }),
+    ]);
+  });
+
   it("does not return allowed content when audit evidence cannot be persisted", async () => {
     const gateway = makeGateway(
       repository({

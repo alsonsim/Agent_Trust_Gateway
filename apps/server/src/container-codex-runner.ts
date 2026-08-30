@@ -3,7 +3,11 @@ import { copyFile, mkdir, readdir, rm } from "node:fs/promises";
 import { promisify } from "node:util";
 import path from "node:path";
 import type { AppConfig } from "./config.js";
-import { buildCodexArgs, parseCodexEventLine } from "./codex-runner.js";
+import {
+  buildCodexArgs,
+  parseCodexEventLine,
+  resolveRunnerCodexHome,
+} from "./codex-runner.js";
 import { RunCancelledError } from "./errors.js";
 import { prepareScopedCodexHome, runtimeStateKey } from "./runtime-state.js";
 import { isProtectedWorkspacePath } from "./workspace-file-policy.js";
@@ -33,6 +37,15 @@ interface ParsedEvents {
   errors: string[];
 }
 
+export class ContainerRemovalUnverifiedError extends Error {
+  readonly code = "CONTAINER_REMOVAL_UNVERIFIED";
+
+  constructor(message: string, cause?: unknown) {
+    super(message, { cause });
+    this.name = "ContainerRemovalUnverifiedError";
+  }
+}
+
 export function containerName(agentId: string, instanceId = "default"): string {
   const safeInstance = instanceId.replace(/[^a-zA-Z0-9_.-]/g, "-").slice(0, 32);
   const safeAgent = agentId.replace(/[^a-zA-Z0-9_.-]/g, "-").slice(0, 48);
@@ -45,6 +58,7 @@ export function buildContainerRunArgs(
 ): string[] {
   const name = containerName(request.agentId, config.runtimeInstanceId);
   const engineName = config.containerEngine.split(/[\\/]/).at(-1)?.toLowerCase();
+  const codexHome = resolveRunnerCodexHome(request, config);
   return [
     "run",
     "--rm",
@@ -86,7 +100,7 @@ export function buildContainerRunArgs(
     "--mount",
     "type=bind,src=" + request.workspacePath + ",dst=/workspace",
     "--mount",
-    "type=bind,src=" + config.codexHome + ",dst=/codex-home",
+    "type=bind,src=" + codexHome + ",dst=/codex-home",
     "--workdir",
     "/workspace",
     config.containerRuntimeImage,
@@ -117,6 +131,63 @@ export class ContainerCodexRunner implements AgentRunner {
     }
   }
 
+  async removeStaleContainers(): Promise<void> {
+    let output: string;
+    try {
+      const result = await execFileAsync(
+        this.config.containerEngine,
+        [
+          "ps",
+          "--all",
+          "--quiet",
+          "--filter",
+          "label=io.codejam.launchpad=agent-runtime",
+          "--filter",
+          "label=io.codejam.instance-id=" + this.config.runtimeInstanceId,
+        ],
+        {
+          timeout: 8_000,
+          env: buildContainerCliEnvironment(this.config, false),
+        },
+      );
+      output =
+        typeof result === "string"
+          ? result
+          : Buffer.isBuffer(result)
+            ? result.toString("utf8")
+            : Buffer.isBuffer(result.stdout)
+              ? result.stdout.toString("utf8")
+              : result.stdout;
+    } catch (error) {
+      throw new ContainerRemovalUnverifiedError(
+        "Could not enumerate stale Runtime containers",
+        error,
+      );
+    }
+
+    const containerIds = output
+      .split(/\r?\n/)
+      .map((value) => value.trim())
+      .filter(Boolean);
+    if (containerIds.some((value) => !/^[a-f0-9]{12,64}$/i.test(value))) {
+      throw new ContainerRemovalUnverifiedError(
+        "Container engine returned an unsafe stale container identifier",
+      );
+    }
+    const outcomes = await Promise.allSettled(
+      containerIds.map((containerId) => this.forceRemoveAndVerify(containerId)),
+    );
+    const failures = outcomes
+      .filter((outcome): outcome is PromiseRejectedResult => outcome.status === "rejected")
+      .map((outcome) => outcome.reason);
+    if (failures.length > 0) {
+      throw new ContainerRemovalUnverifiedError(
+        "One or more stale Runtime containers could not be proven removed",
+        new AggregateError(failures),
+      );
+    }
+  }
+
   async cancel(agentId: string): Promise<boolean> {
     const active = this.active.get(agentId);
     if (!active) return false;
@@ -129,19 +200,46 @@ export class ContainerCodexRunner implements AgentRunner {
 
   private removeContainer(active: ActiveContainer): Promise<void> {
     if (!active.termination) {
-      active.termination = execFileAsync(
-        this.config.containerEngine,
-        ["rm", "--force", active.containerName],
-        { timeout: 8_000, env: buildContainerCliEnvironment(this.config, false) },
-      )
-        .then(() => undefined)
-        .catch(() => {
-          active.child.kill("SIGTERM");
-          const forceKill = setTimeout(() => active.child.kill("SIGKILL"), 3_000);
-          forceKill.unref();
-        });
+      active.termination = this.forceRemoveAndVerify(active.containerName);
     }
     return active.termination;
+  }
+
+  private async forceRemoveAndVerify(containerNameValue: string): Promise<void> {
+    let removalError: unknown = null;
+    try {
+      await execFileAsync(
+        this.config.containerEngine,
+        ["rm", "--force", containerNameValue],
+        {
+          timeout: 8_000,
+          env: buildContainerCliEnvironment(this.config, false),
+        },
+      );
+    } catch (error) {
+      removalError = error;
+    }
+
+    try {
+      await execFileAsync(
+        this.config.containerEngine,
+        ["inspect", containerNameValue],
+        {
+          timeout: 5_000,
+          env: buildContainerCliEnvironment(this.config, false),
+        },
+      );
+    } catch (error) {
+      if (isMissingContainerError(error)) return;
+      throw new ContainerRemovalUnverifiedError(
+        "Could not verify Runtime container removal",
+        removalError ?? error,
+      );
+    }
+    throw new ContainerRemovalUnverifiedError(
+      "Runtime container still exists after forced removal",
+      removalError ?? undefined,
+    );
   }
 
   async run(request: RunnerRequest): Promise<RunnerResult> {
@@ -149,16 +247,27 @@ export class ContainerCodexRunner implements AgentRunner {
       throw new Error("Agent already has an active Runtime container");
     }
 
+    const delegatedRun = request.codexHome !== undefined;
     const stateKey = runtimeStateKey(request);
-    const runtimeWorkspace = path.join(
-      this.config.dataDirectory,
-      "runtime-projections",
-      stateKey,
-    );
-    await createWorkspaceProjection(request.workspacePath, runtimeWorkspace);
-    const runtimeCodexHome = await prepareScopedCodexHome(this.config, stateKey);
+    const runtimeWorkspace = delegatedRun
+      ? request.workspacePath
+      : path.join(
+          this.config.dataDirectory,
+          "runtime-projections",
+          stateKey,
+        );
+    if (!delegatedRun) {
+      await createWorkspaceProjection(request.workspacePath, runtimeWorkspace);
+    }
+    const runtimeCodexHome = delegatedRun
+      ? resolveRunnerCodexHome(request, this.config)
+      : await prepareScopedCodexHome(this.config, stateKey);
     const runtimeConfig = { ...this.config, codexHome: runtimeCodexHome };
-    const runtimeRequest = { ...request, workspacePath: runtimeWorkspace };
+    const runtimeRequest = {
+      ...request,
+      workspacePath: runtimeWorkspace,
+      codexHome: runtimeCodexHome,
+    };
     const child = spawn(
       this.config.containerEngine,
       buildContainerRunArgs(runtimeRequest, runtimeConfig),
@@ -200,7 +309,7 @@ export class ContainerCodexRunner implements AgentRunner {
       totalBytes += chunk.byteLength;
       if (totalBytes > this.config.codexMaxOutputBytes) {
         active.outputExceeded = true;
-        void this.removeContainer(active);
+        void this.removeContainer(active).catch(() => undefined);
         return;
       }
       if (target === "stdout") {
@@ -219,7 +328,7 @@ export class ContainerCodexRunner implements AgentRunner {
 
     const timeout = setTimeout(() => {
       active.timedOut = true;
-      void this.removeContainer(active);
+      void this.removeContainer(active).catch(() => undefined);
     }, this.config.codexTimeoutMs);
     timeout.unref();
 
@@ -251,9 +360,18 @@ export class ContainerCodexRunner implements AgentRunner {
       return { output, threadId: parsed.threadId, usage: parsed.usage };
     } finally {
       clearTimeout(timeout);
-      this.active.delete(request.agentId);
-      await syncWorkspaceProjection(runtimeWorkspace, request.workspacePath);
-      await rm(runtimeWorkspace, { recursive: true, force: true });
+      try {
+        // A client process can exit while its daemon-side container keeps running.
+        // Do not let callers remove bind-mounted data until the daemon
+        // has positively reported that this container no longer exists.
+        await this.removeContainer(active);
+        if (!delegatedRun) {
+          await syncWorkspaceProjection(runtimeWorkspace, request.workspacePath);
+          await rm(runtimeWorkspace, { recursive: true, force: true });
+        }
+      } finally {
+        this.active.delete(request.agentId);
+      }
     }
   }
 }
@@ -300,4 +418,15 @@ async function copySafeTree(source: string, destination: string): Promise<void> 
 
 async function syncWorkspaceProjection(source: string, destination: string): Promise<void> {
   await copySafeTree(source, destination);
+}
+
+function isMissingContainerError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const stderr = "stderr" in error ? error.stderr : null;
+  const detail = Buffer.isBuffer(stderr)
+    ? stderr.toString("utf8")
+    : typeof stderr === "string"
+      ? stderr
+      : "";
+  return /no such (?:object|container)/i.test(detail);
 }

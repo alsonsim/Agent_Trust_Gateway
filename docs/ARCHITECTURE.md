@@ -59,10 +59,11 @@ remaining separately owned:
 | Backend | **Profile API contract** (`profile-api-contract.md`) | Profile API Agent |
 | QA | **Profile release test plan** (`profile-release-test-plan.md`) | Profile Release Agent |
 
-Ownership is intentionally non-delegable on this branch. Trust Pass delegation
-is not implemented: there is no temporary or one-use authority transfer between
-these principals. The Human → Agent → resource chain shown by the UI records
-who is acting and what was targeted; it does not grant cross-owner access.
+Ownership remains non-transferable: ordinary Agent, workspace, history, and
+resource routes always require the exact owner. Trust Pass middleware can admit
+one separately scoped delegated Run after owner approval. The grantee receives
+only that approved task and permitted final result; the underlying Agent and
+resources remain private.
 
 `readWorkspaceFile()` is a separate server-enforced file boundary for an
 Agent's assigned workspace. It verifies the authenticated owner, canonicalizes

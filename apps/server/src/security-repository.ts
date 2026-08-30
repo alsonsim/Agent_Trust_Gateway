@@ -5,6 +5,7 @@ import { HttpError } from "./errors.js";
 import { JsonStore } from "./store.js";
 import type {
   AuthorizationDecision,
+  Database,
   Department,
   ProtectedResource,
 } from "./types.js";
@@ -18,8 +19,21 @@ export interface SecurityRepository {
   initialize(): Promise<void>;
   listResources(): Promise<ProtectedResource[]>;
   readResource(id: string, userAccessToken: string): Promise<ResourceReadResult | null>;
+  readResourceForDelegation(
+    id: string,
+    approvingHumanId: string,
+  ): Promise<ResourceReadResult | null>;
   appendDecision(decision: AuthorizationDecision): Promise<void>;
-  listDecisions(humanUserId: string, limit: number): Promise<AuthorizationDecision[]>;
+  appendDecisions(decisions: readonly AuthorizationDecision[]): Promise<void>;
+  appendDecisionsToDatabase?(
+    database: Database,
+    decisions: readonly AuthorizationDecision[],
+  ): void;
+  listDecisions(
+    humanUserId: string,
+    limit: number,
+    ownedAgentIds?: readonly string[],
+  ): Promise<AuthorizationDecision[]>;
 }
 
 interface ResourceFixture {
@@ -167,28 +181,61 @@ export class LocalSecurityRepository implements SecurityRepository {
     if (!resourcePath.startsWith(rootPrefix)) {
       throw new HttpError(500, "Protected resource path is invalid");
     }
-    return { resource, content: await readFile(resourcePath, "utf8") };
+    try {
+      return { resource, content: await readFile(resourcePath, "utf8") };
+    } catch {
+      // Storage failures are deliberately collapsed to an unavailable result so
+      // owner IDs, filenames, and host paths never escape through fs errors.
+      return null;
+    }
+  }
+
+  async readResourceForDelegation(
+    id: string,
+    approvingHumanId: string,
+  ): Promise<ResourceReadResult | null> {
+    const result = await this.readResource(id, "local-delegation");
+    return result?.resource.ownerId === approvingHumanId ? result : null;
   }
 
   async appendDecision(decision: AuthorizationDecision): Promise<void> {
+    await this.appendDecisions([decision]);
+  }
+
+  async appendDecisions(decisions: readonly AuthorizationDecision[]): Promise<void> {
+    if (decisions.length === 0) return;
     await this.store.mutate((database) => {
-      database.authorizationDecisions.push(decision);
-      if (database.authorizationDecisions.length > 1_000) {
-        database.authorizationDecisions.splice(
-          0,
-          database.authorizationDecisions.length - 1_000,
-        );
-      }
+      this.appendDecisionsToDatabase(database, decisions);
     });
+  }
+
+  appendDecisionsToDatabase(
+    database: Database,
+    decisions: readonly AuthorizationDecision[],
+  ): void {
+    if (decisions.length === 0) return;
+    database.authorizationDecisions.push(...decisions);
+    if (database.authorizationDecisions.length > 1_000) {
+      database.authorizationDecisions.splice(
+        0,
+        database.authorizationDecisions.length - 1_000,
+      );
+    }
   }
 
   async listDecisions(
     humanUserId: string,
     limit: number,
+    ownedAgentIds: readonly string[] = [],
   ): Promise<AuthorizationDecision[]> {
+    const ownedAgents = new Set(ownedAgentIds);
     return this.store
       .snapshot()
-      .authorizationDecisions.filter((decision) => decision.humanUserId === humanUserId)
+      .authorizationDecisions.filter(
+        (decision) =>
+          decision.humanUserId === humanUserId ||
+          (decision.agentId !== null && ownedAgents.has(decision.agentId)),
+      )
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
       .slice(0, limit);
   }
@@ -249,29 +296,43 @@ export class SupabaseSecurityRepository implements SecurityRepository {
     return { resource: mapSupabaseResource(row), content: row.content ?? "" };
   }
 
+  async readResourceForDelegation(
+    id: string,
+    approvingHumanId: string,
+  ): Promise<ResourceReadResult | null> {
+    const rows = await this.request<SupabaseResourceRow[]>(
+      "/rest/v1/protected_resources?id=eq." +
+        encodeURIComponent(id) +
+        "&owner_id=eq." +
+        encodeURIComponent(approvingHumanId) +
+        "&select=id,owner_id,owner_department,name,description,file_name,content,created_at&limit=1",
+      this.secretKey,
+    );
+    const row = rows[0];
+    if (!row) return null;
+    return { resource: mapSupabaseResource(row), content: row.content ?? "" };
+  }
+
   async appendDecision(decision: AuthorizationDecision): Promise<void> {
     await this.request<unknown>(
       "/rest/v1/authorization_decisions",
       this.secretKey,
       {
         method: "POST",
-        body: JSON.stringify({
-          id: decision.id,
-          request_id: decision.requestId,
-          human_user_id: decision.humanUserId,
-          human_email: decision.humanEmail,
-          human_department: decision.humanDepartment,
-          agent_id: decision.agentId,
-          agent_name: decision.agentName,
-          action: decision.action,
-          target_type: decision.targetType,
-          target_id: decision.targetId,
-          target_label: decision.targetLabel,
-          decision: decision.decision,
-          reason_code: decision.reasonCode,
-          reason: decision.reason,
-          created_at: decision.createdAt,
-        }),
+        body: JSON.stringify(mapSupabaseDecision(decision)),
+        prefer: "return=minimal",
+      },
+    );
+  }
+
+  async appendDecisions(decisions: readonly AuthorizationDecision[]): Promise<void> {
+    if (decisions.length === 0) return;
+    await this.request<unknown>(
+      "/rest/v1/authorization_decisions",
+      this.secretKey,
+      {
+        method: "POST",
+        body: JSON.stringify(decisions.map(mapSupabaseDecision)),
         prefer: "return=minimal",
       },
     );
@@ -280,10 +341,19 @@ export class SupabaseSecurityRepository implements SecurityRepository {
   async listDecisions(
     humanUserId: string,
     limit: number,
+    ownedAgentIds: readonly string[] = [],
   ): Promise<AuthorizationDecision[]> {
+    const principalFilter = `human_user_id.eq.${humanUserId}`;
+    const filter =
+      ownedAgentIds.length === 0
+        ? "human_user_id=eq." + encodeURIComponent(humanUserId)
+        : "or=" +
+          encodeURIComponent(
+            `(${principalFilter},agent_id.in.(${ownedAgentIds.join(",")}))`,
+          );
     return this.request<AuthorizationDecision[]>(
-      "/rest/v1/authorization_decisions?human_user_id=eq." +
-        encodeURIComponent(humanUserId) +
+      "/rest/v1/authorization_decisions?" +
+        filter +
         "&select=id,requestId:request_id,humanUserId:human_user_id,humanEmail:human_email," +
         "humanDepartment:human_department,agentId:agent_id,agentName:agent_name,action," +
         "targetType:target_type,targetId:target_id,targetLabel:target_label,decision," +
@@ -402,6 +472,26 @@ async function removeFileIfExists(filePath: string): Promise<void> {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
+}
+
+function mapSupabaseDecision(decision: AuthorizationDecision) {
+  return {
+    id: decision.id,
+    request_id: decision.requestId,
+    human_user_id: decision.humanUserId,
+    human_email: decision.humanEmail,
+    human_department: decision.humanDepartment,
+    agent_id: decision.agentId,
+    agent_name: decision.agentName,
+    action: decision.action,
+    target_type: decision.targetType,
+    target_id: decision.targetId,
+    target_label: decision.targetLabel,
+    decision: decision.decision,
+    reason_code: decision.reasonCode,
+    reason: decision.reason,
+    created_at: decision.createdAt,
+  };
 }
 
 function safeSupabaseErrorCode(responseBody: string): string | null {

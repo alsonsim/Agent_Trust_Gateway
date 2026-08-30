@@ -47,9 +47,10 @@ Required demo for this branch:
 
 A login screen without server-side authorization does not qualify.
 
-Trust Pass delegation is not implemented on this branch. Do not present the
-Human → Agent → resource attribution display as a temporary or one-use grant;
-cross-owner Agent use remains denied.
+Direct cross-owner Agent use remains denied. A Trust Pass is a separate,
+owner-approved middleware contract for one exact task, one grantee, one owned
+Agent, approved inputs, and one Run; it never transfers Agent ownership or
+opens the Agent to the requester.
 
 ### Kill Switch: safety and sandboxing
 

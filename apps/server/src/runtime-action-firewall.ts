@@ -49,19 +49,21 @@ export class RuntimeActionFirewall {
     prompt: string,
     context: RuntimeAuthorizationContext,
   ): Promise<void> {
+    const decisions: AuthorizationDecision[] = [];
     for (const action of extractRuntimeActions(prompt)) {
       const policy = await evaluateRuntimeAction(agent.workspacePath, action);
       const decision = makeDecision(agent, context, policy);
-      if (policy.allowed) {
-        await this.appendAllowedDecision(decision);
-        continue;
+      decisions.push(decision);
+      if (!policy.allowed) {
+        await this.appendDeniedDecisions(decisions);
+        throw new HttpError(403, "Runtime action denied by Agent Trust Gateway", {
+          code: "RUNTIME_ACTION_DENIED",
+          details: decision,
+        });
       }
-      await this.appendDeniedDecision(decision);
-      throw new HttpError(403, "Runtime action denied by Agent Trust Gateway", {
-        code: "RUNTIME_ACTION_DENIED",
-        details: decision,
-      });
     }
+    if (decisions.length === 0) return;
+    await this.appendAllowedDecisions(decisions);
   }
 
   async evaluateShell(
@@ -81,19 +83,21 @@ export class RuntimeActionFirewall {
     const policy = await evaluateRuntimeAction(agent.workspacePath, action);
     const decision = makeDecision(agent, context, policy);
     if (policy.allowed) {
-      await this.appendAllowedDecision(decision);
+      await this.appendAllowedDecisions([decision]);
       return decision;
     }
-    await this.appendDeniedDecision(decision);
+    await this.appendDeniedDecisions([decision]);
     throw new HttpError(403, "Runtime action denied by Agent Trust Gateway", {
       code: "RUNTIME_ACTION_DENIED",
       details: decision,
     });
   }
 
-  private async appendAllowedDecision(decision: AuthorizationDecision): Promise<void> {
+  private async appendAllowedDecisions(
+    decisions: readonly AuthorizationDecision[],
+  ): Promise<void> {
     try {
-      await this.securityRepository.appendDecision(decision);
+      await this.securityRepository.appendDecisions(decisions);
     } catch {
       throw new HttpError(
         503,
@@ -103,9 +107,11 @@ export class RuntimeActionFirewall {
     }
   }
 
-  private async appendDeniedDecision(decision: AuthorizationDecision): Promise<void> {
+  private async appendDeniedDecisions(
+    decisions: readonly AuthorizationDecision[],
+  ): Promise<void> {
     try {
-      await this.securityRepository.appendDecision(decision);
+      await this.securityRepository.appendDecisions(decisions);
     } catch {
       // Denial remains in force even if the evidence sink is unavailable.
     }

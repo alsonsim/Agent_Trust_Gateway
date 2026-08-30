@@ -14,12 +14,20 @@ credentials, personal data, or exploit details in an issue.
 - Passwordless demo identities are loopback-only fixtures, not production auth
 - Supabase sessions are not automatically refreshed in this hackathon POC
 - SameSite=Strict cookies reduce CSRF exposure, but there is no separate CSRF token
-- Local JSON metadata remains a single-process store
+- Local Trust Pass state and transition locks remain a single-process JSON store
+- The checked-in Supabase Trust Pass RPCs are a persistence foundation and are
+  not wired into the Node.js runtime
+- When `AUTH_MODE=supabase`, Trust Pass state remains local while audit evidence
+  uses Supabase, so the two systems do not form one crash-atomic transaction
 - No per-Agent container boundary in ECS mode
 - Ordinary local containers, not hardened multi-tenant sandboxes
-- Broad outbound network access
+- The Runtime must reach the configured model endpoint; there is no dedicated
+  model-egress proxy or destination allowlist
 - Prompt-triggered command and file execution
-- Ark key available to the server and active Runtime container
+- The Ark key is available to the server and Runtime parent process. Delegated
+  shell subprocesses receive a filtered environment and request disabled
+  workspace-write network access from the inner sandbox, but a short-lived
+  proxy credential is still the recommended production boundary
 - Ark key stored in Terraform POC state
 
 ## Safe use
@@ -36,3 +44,17 @@ credentials, personal data, or exploit details in an issue.
 Codex uses `workspace-write` when Landlock is available. On unsupported kernels,
 startup warns and relies on the outer Docker or rootless Podman boundary. This
 fallback is not tenant isolation.
+
+Delegated Runs additionally use a fresh allowlisted runtime home, an isolated
+workspace containing only approved inputs, no resumable owner thread, disabled
+workspace-write network access for spawned commands when the inner sandbox is
+available, final-output-only result delivery, transformed-secret output
+filtering, and verified container removal before cleanup. These controls reduce
+exposure; they do not turn the POC into a hardened hostile multi-tenant service.
+
+For the local repository, Trust Pass lifecycle changes and ALLOW evidence share
+one durable JSON write. On startup, the container Runtime enumerates and verifies
+removal of stale labeled containers before strictly sweeping leftover delegated
+workspaces and runtime homes. If container absence or a managed path cannot be
+verified, startup or cleanup fails closed and preserves the mounted data for
+operator recovery.

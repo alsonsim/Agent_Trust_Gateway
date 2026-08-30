@@ -1,10 +1,19 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentService } from "./agent-service.js";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
+import { DelegationService } from "./delegation-service.js";
 import { DemoIdentityProvider } from "./identity-provider.js";
 import { LocalSecurityRepository, RESOURCE_FIXTURES } from "./security-repository.js";
 import { RuntimeActionFirewall } from "./runtime-action-firewall.js";
@@ -32,6 +41,27 @@ class FakeRunner implements AgentRunner {
   }
 }
 
+class ControlledRunner extends FakeRunner {
+  private finishFirst!: (result: RunnerResult) => void;
+  private readonly firstResult = new Promise<RunnerResult>((resolve) => {
+    this.finishFirst = resolve;
+  });
+
+  override async run(request: RunnerRequest): Promise<RunnerResult> {
+    this.requests.push(request);
+    if (this.requests.length === 1) return this.firstResult;
+    return {
+      output: "Completed: " + request.prompt,
+      threadId: request.threadId ?? "test-thread",
+      usage: null,
+    };
+  }
+
+  finish(output = "Approved frontend result"): void {
+    this.finishFirst({ output, threadId: "must-not-persist", usage: null });
+  }
+}
+
 const temporaryDirectories: string[] = [];
 
 afterEach(async () => {
@@ -42,7 +72,10 @@ afterEach(async () => {
   );
 });
 
-async function makeHarness(overrides: NodeJS.ProcessEnv = {}) {
+async function makeHarness(
+  overrides: NodeJS.ProcessEnv = {},
+  runner: FakeRunner = new FakeRunner(),
+) {
   const root = await mkdtemp(path.join(tmpdir(), "trust-gateway-http-test-"));
   temporaryDirectories.push(root);
   const config = loadConfig({
@@ -56,11 +89,11 @@ async function makeHarness(overrides: NodeJS.ProcessEnv = {}) {
     CODEX_HOME: path.join(root, "codex"),
     ARK_API_KEY: "test-key",
     ARK_MODEL: "ep-test",
+    RUNTIME_PROVIDER: "container",
     ...overrides,
   });
   const store = new JsonStore(path.join(root, "data", "launchpad.json"));
   const repository = new LocalSecurityRepository(store, config.dataDirectory);
-  const runner = new FakeRunner();
   const service = new AgentService(
     config,
     store,
@@ -76,8 +109,10 @@ async function makeHarness(overrides: NodeJS.ProcessEnv = {}) {
     tokenTtlSeconds: 3_600,
   });
   const gateway = new TrustGateway(identity, repository, service);
-  const app = await createApp(config, service, gateway);
-  return { app, config, service, runner };
+  const delegations = new DelegationService(store, repository, service);
+  await delegations.observePrincipals(gateway.demoPrincipals);
+  const app = await createApp(config, service, gateway, delegations);
+  return { app, config, repository, service, runner, store };
 }
 
 async function login(app: Awaited<ReturnType<typeof createApp>>, email: string) {
@@ -222,7 +257,7 @@ describe("HTTP identity and authorization boundary", () => {
   });
 
   it("allows an owned resource and denies a cross-owner file with audit evidence", async () => {
-    const { app } = await makeHarness();
+    const { app, config } = await makeHarness();
     const cookie = await login(app, "frontend@bytedance.com");
     const created = await app.inject({
       method: "POST",
@@ -237,6 +272,19 @@ describe("HTTP identity and authorization boundary", () => {
     const backendResource = RESOURCE_FIXTURES.find(
       (resource) => resource.ownerDepartment === "backend",
     )!;
+
+    const frontendResources = await app.inject({
+      method: "GET",
+      url: "/api/resources",
+      headers: { cookie },
+    });
+    expect(frontendResources.json().resources).toEqual([
+      expect.objectContaining({
+        id: frontendResource.id,
+        ownedByCurrentUser: true,
+      }),
+    ]);
+    expect(frontendResources.body).not.toContain(backendResource.name);
 
     const allowed = await app.inject({
       method: "POST",
@@ -269,11 +317,49 @@ describe("HTTP identity and authorization boundary", () => {
         humanEmail: "frontend@bytedance.com",
         action: "resource.read",
         targetType: "resource",
-        targetLabel: "Profile API contract",
         decision: "deny",
         reasonCode: "AGENT_RESOURCE_OWNER_MISMATCH",
+        targetId: "redacted",
+        targetLabel: "Protected resource",
       },
     });
+    expect(denied.body).not.toContain(backendResource.name);
+
+    const privateCrossOwnerDemo = await app.inject({
+      method: "POST",
+      url: `/api/agents/${agentId}/resources/cross-owner-demo`,
+      headers: { cookie },
+    });
+    expect(privateCrossOwnerDemo.statusCode).toBe(403);
+    expect(privateCrossOwnerDemo.json()).toMatchObject({
+      decision: {
+        decision: "deny",
+        reasonCode: "AGENT_RESOURCE_OWNER_MISMATCH",
+        targetId: "redacted",
+        targetLabel: "Protected resource",
+      },
+    });
+    expect(privateCrossOwnerDemo.body).not.toContain(backendResource.name);
+
+    await rm(
+      path.join(
+        config.dataDirectory,
+        "protected-resources",
+        frontendResource.ownerId,
+        frontendResource.fileName,
+      ),
+    );
+    const unavailable = await app.inject({
+      method: "POST",
+      url: `/api/agents/${agentId}/resources/${frontendResource.id}/read`,
+      headers: { cookie },
+    });
+    expect(unavailable.statusCode).toBe(503);
+    expect(unavailable.json()).toEqual({
+      error: "The protected resource could not be read under the active data policy",
+      code: "RESOURCE_POLICY_UNAVAILABLE",
+    });
+    expect(unavailable.body).not.toContain(config.dataDirectory);
 
     const audit = await app.inject({
       method: "GET",
@@ -393,6 +479,16 @@ describe("HTTP identity and authorization boundary", () => {
       headers: { cookie: backendCookie },
     });
     expect(denied.statusCode).toBe(403);
+    await expect
+      .poll(async () => {
+        const completed = await app.inject({
+          method: "GET",
+          url: "/api/runs/" + sent.json().run.id,
+          headers: { cookie: frontendCookie },
+        });
+        return completed.json().run?.status;
+      })
+      .toBe("completed");
     await app.close();
   });
 
@@ -620,6 +716,996 @@ describe("HTTP identity and authorization boundary", () => {
       decision: { action: "agent.revoke", reasonCode: "HUMAN_AGENT_OWNER_MISMATCH" },
     });
     expect(service.getAgent(agentId).revokedAt).toBeNull();
+    await app.close();
+  });
+
+  it("discovers and forwards a consented capability request without Agent disclosure", async () => {
+    const { app } = await makeHarness();
+    const backendCookie = await login(app, "backend@bytedance.com");
+    const discovery = await app.inject({
+      method: "POST",
+      url: "/api/capability-discovery",
+      headers: { cookie: backendCookie },
+      payload: {
+        prompt: "Implement an accessible profile page with loading and error states.",
+      },
+    });
+    expect(discovery.statusCode).toBe(200);
+    expect(discovery.json()).toMatchObject({
+      required: true,
+      capability: "frontend.interface-implementation",
+      providerDepartment: "frontend",
+    });
+    expect(discovery.body).not.toContain("Agent");
+
+    const spoofed = await app.inject({
+      method: "POST",
+      url: "/api/delegation-requests",
+      headers: { cookie: backendCookie },
+      payload: {
+        requiredCapability: "frontend.interface-implementation",
+        prompt: "Implement the profile page for alice@example.com with 12 interface states.",
+        sanitizedTaskSummary: "Spoofed interface summary",
+      },
+    });
+    expect(spoofed.statusCode).toBe(400);
+
+    const mismatchedCapability = await app.inject({
+      method: "POST",
+      url: "/api/delegation-requests",
+      headers: { cookie: backendCookie },
+      payload: {
+        requiredCapability: "frontend.interface-implementation",
+        prompt: "Create a QA release regression test plan.",
+      },
+    });
+    expect(mismatchedCapability.statusCode).toBe(400);
+
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/delegation-requests",
+      headers: { cookie: backendCookie },
+      payload: {
+        requiredCapability: "frontend.interface-implementation",
+        prompt: "Implement the profile page for alice@example.com with 12 interface states.",
+      },
+    });
+    expect(created.statusCode).toBe(201);
+    expect(created.json()).toMatchObject({
+      request: {
+        box: "outgoing",
+        requiredCapability: "frontend.interface-implementation",
+        sanitizedTaskSummary:
+          "Implement the profile page for [personal information redacted] with 12 interface states.",
+        personalInformation: "possible",
+        status: "pending",
+      },
+      decision: {
+        action: "delegation.request",
+        reasonCode: "DELEGATION_REQUESTED",
+      },
+    });
+    expect(created.body).not.toContain("alice@example.com");
+    expect(created.json().request).not.toHaveProperty("agentId");
+    const requestId = created.json().request.id as string;
+
+    const qaCookie = await login(app, "qa@bytedance.com");
+    const unrelatedInbox = await app.inject({
+      method: "GET",
+      url: "/api/delegation-requests?box=incoming",
+      headers: { cookie: qaCookie },
+    });
+    expect(unrelatedInbox.json().requests).toEqual([]);
+
+    const frontendCookie = await login(app, "frontend@bytedance.com");
+    const frontendInbox = await app.inject({
+      method: "GET",
+      url: "/api/delegation-requests?box=incoming",
+      headers: { cookie: frontendCookie },
+    });
+    expect(frontendInbox.json().requests).toEqual([
+      expect.objectContaining({
+        id: requestId,
+        requester: { displayName: "Backend", department: "backend" },
+        sanitizedTaskSummary:
+          "Implement the profile page for [personal information redacted] with 12 interface states.",
+      }),
+    ]);
+    expect(frontendInbox.body).not.toContain("alice@example.com");
+    expect(frontendInbox.json().requests[0]).not.toHaveProperty("agentId");
+
+    const rejected = await app.inject({
+      method: "POST",
+      url: `/api/delegation-requests/${requestId}/reject`,
+      headers: { cookie: frontendCookie },
+    });
+    expect(rejected.statusCode).toBe(200);
+    expect(rejected.json()).toMatchObject({
+      request: { status: "rejected" },
+      decision: { reasonCode: "DELEGATION_REJECTED" },
+    });
+    await app.close();
+  });
+
+  it("issues the same scoped Trust Pass through request and owner initiated paths", async () => {
+    const { app, service } = await makeHarness();
+    const frontendCookie = await login(app, "frontend@bytedance.com");
+    const createdAgent = await app.inject({
+      method: "POST",
+      url: "/api/agents",
+      headers: { cookie: frontendCookie },
+      payload: { name: "Private Frontend Agent" },
+    });
+    const frontendAgent = createdAgent.json().agent as { id: string; workspacePath: string };
+    const frontendResource = RESOURCE_FIXTURES.find(
+      (resource) => resource.ownerDepartment === "frontend",
+    )!;
+
+    const backendCookie = await login(app, "backend@bytedance.com");
+    const request = await app.inject({
+      method: "POST",
+      url: "/api/delegation-requests",
+      headers: { cookie: backendCookie },
+      payload: {
+        requiredCapability: "frontend.interface-implementation",
+        prompt: "Implement an accessible profile page with loading and error states.",
+      },
+    });
+    const requestId = request.json().request.id as string;
+
+    const approved = await app.inject({
+      method: "POST",
+      url: `/api/delegation-requests/${requestId}/approve`,
+      headers: { cookie: frontendCookie },
+      payload: {
+        agentId: frontendAgent.id,
+        approvedResourceIds: [frontendResource.id],
+        expiresInSeconds: 600,
+      },
+    });
+    expect(approved.statusCode).toBe(200);
+    expect(approved.json()).toMatchObject({
+      contract: {
+        source: "request",
+        box: "outgoing",
+        grantee: { displayName: "Backend", department: "backend" },
+        agent: { id: frontendAgent.id, name: "Private Frontend Agent" },
+        allowedActions: ["agent.invoke"],
+        resultVisibility: "final_output_only",
+        maximumUses: 1,
+        remainingUses: 1,
+        status: "active",
+        policyReasonCode: "DELEGATION_ACTIVE",
+      },
+      decision: {
+        action: "delegation.approve",
+        reasonCode: "DELEGATION_APPROVED",
+      },
+    });
+    const approvedContractId = approved.json().contract.id as string;
+
+    const backendPasses = await app.inject({
+      method: "GET",
+      url: "/api/delegation-contracts?box=incoming",
+      headers: { cookie: backendCookie },
+    });
+    expect(backendPasses.statusCode).toBe(200);
+    expect(backendPasses.json().contracts).toEqual([
+      expect.objectContaining({
+        id: approvedContractId,
+        box: "incoming",
+        providerLabel: "Privately managed frontend capability",
+        approvedPrompt: "Implement an accessible profile page with loading and error states.",
+        approvedInputCount: 1,
+      }),
+    ]);
+    expect(backendPasses.body).not.toContain(frontendAgent.id);
+    expect(backendPasses.body).not.toContain("Private Frontend Agent");
+    expect(backendPasses.body).not.toContain(frontendAgent.workspacePath);
+    expect(backendPasses.body).not.toContain(frontendResource.name);
+    expect(backendPasses.body).not.toContain(frontendResource.fileName);
+
+    const unauthorizedRevoke = await app.inject({
+      method: "POST",
+      url: `/api/delegation-contracts/${approvedContractId}/revoke`,
+      headers: { cookie: backendCookie },
+    });
+    expect(unauthorizedRevoke.statusCode).toBe(404);
+
+    const revoked = await app.inject({
+      method: "POST",
+      url: `/api/delegation-contracts/${approvedContractId}/revoke`,
+      headers: { cookie: frontendCookie },
+    });
+    expect(revoked.statusCode).toBe(200);
+    expect(revoked.json()).toMatchObject({
+      contract: { status: "revoked", policyReasonCode: "DELEGATION_REVOKED" },
+      decision: { reasonCode: "DELEGATION_REVOKED" },
+    });
+    expect(service.getAgent(frontendAgent.id)).toMatchObject({
+      status: "ready",
+      revokedAt: null,
+    });
+
+    const direct = await app.inject({
+      method: "POST",
+      url: "/api/delegation-contracts",
+      headers: { cookie: frontendCookie },
+      payload: {
+        requiredCapability: "frontend.interface-implementation",
+        granteeHumanId: "33333333-3333-4333-8333-333333333333",
+        agentId: frontendAgent.id,
+        exactPrompt: "Implement the approved profile interface requirements.",
+        approvedResourceIds: [],
+        expiresInSeconds: 60,
+      },
+    });
+    expect(direct.statusCode).toBe(201);
+    expect(direct.json()).toMatchObject({
+      contract: {
+        source: "owner",
+        box: "outgoing",
+        grantee: { displayName: "QA", department: "qa" },
+        allowedActions: ["agent.invoke"],
+        resultVisibility: "final_output_only",
+        maximumUses: 1,
+      },
+    });
+    await app.close();
+  });
+
+  it("binds requester-initiated execution to the exact redacted task the owner sees", async () => {
+    const { app, store } = await makeHarness();
+    const frontendCookie = await login(app, "frontend@bytedance.com");
+    const createdAgent = await app.inject({
+      method: "POST",
+      url: "/api/agents",
+      headers: { cookie: frontendCookie },
+      payload: { name: "Frontend Agent" },
+    });
+    const backendCookie = await login(app, "backend@bytedance.com");
+    const hiddenSuffix = "HIDDEN_UNREVIEWED_INSTRUCTIONS";
+    const requestedPrompt =
+      "Implement the profile page for alice@example.com with 12 interface states. " +
+      "Context ".repeat(50) +
+      hiddenSuffix;
+    const requested = await app.inject({
+      method: "POST",
+      url: "/api/delegation-requests",
+      headers: { cookie: backendCookie },
+      payload: {
+        requiredCapability: "frontend.interface-implementation",
+        prompt: requestedPrompt,
+      },
+    });
+    expect(requested.statusCode).toBe(201);
+    const ownerVisibleTask = requested.json().request.sanitizedTaskSummary as string;
+    expect(ownerVisibleTask).toContain("[personal information redacted]");
+    expect(ownerVisibleTask).not.toContain(hiddenSuffix);
+
+    const approved = await app.inject({
+      method: "POST",
+      url: `/api/delegation-requests/${requested.json().request.id}/approve`,
+      headers: { cookie: frontendCookie },
+      payload: {
+        agentId: createdAgent.json().agent.id,
+        approvedResourceIds: [],
+        expiresInSeconds: 600,
+      },
+    });
+    expect(approved.statusCode).toBe(200);
+    const incoming = await app.inject({
+      method: "GET",
+      url: "/api/delegation-contracts?box=incoming",
+      headers: { cookie: backendCookie },
+    });
+    expect(incoming.json().contracts[0].approvedPrompt).toBe(ownerVisibleTask);
+    expect(incoming.body).not.toContain(hiddenSuffix);
+    expect(JSON.stringify(store.snapshot().delegationRequests)).not.toContain(
+      hiddenSuffix,
+    );
+    await app.close();
+  });
+
+  it("does not publish a Trust Pass when atomic approval evidence fails", async () => {
+    const runner = new FakeRunner();
+    const { app, repository, store } = await makeHarness({}, runner);
+    const frontendCookie = await login(app, "frontend@bytedance.com");
+    const createdAgent = await app.inject({
+      method: "POST",
+      url: "/api/agents",
+      headers: { cookie: frontendCookie },
+      payload: { name: "Frontend Agent" },
+    });
+    const exactPrompt = "Estimate one approved aggregate budget.";
+    const appendDecisionsToDatabase =
+      repository.appendDecisionsToDatabase.bind(repository);
+    repository.appendDecisionsToDatabase = (database, decisions) => {
+      if (decisions.some((decision) => decision.action === "delegation.approve")) {
+        throw new Error("audit unavailable");
+      }
+      appendDecisionsToDatabase(database, decisions);
+    };
+
+    const issue = await app.inject({
+      method: "POST",
+      url: "/api/delegation-contracts",
+      headers: { cookie: frontendCookie },
+      payload: {
+        requiredCapability: "frontend.interface-implementation",
+        granteeHumanId: "22222222-2222-4222-8222-222222222222",
+        agentId: createdAgent.json().agent.id,
+        exactPrompt,
+        approvedResourceIds: [],
+        expiresInSeconds: 600,
+      },
+    });
+    expect(issue.statusCode).toBe(503);
+    const visible = await app.inject({
+      method: "GET",
+      url: "/api/delegation-contracts?box=outgoing",
+      headers: { cookie: frontendCookie },
+    });
+    expect(visible.json().contracts).toEqual([]);
+    expect(store.snapshot().delegationContracts).toEqual([]);
+    expect(
+      store
+        .snapshot()
+        .authorizationDecisions.some(
+          (decision) => decision.action === "delegation.approve",
+        ),
+    ).toBe(false);
+    expect(runner.requests).toHaveLength(0);
+    await app.close();
+  });
+
+  it("fails closed when atomic delegation evidence is unavailable", async () => {
+    const { app, repository, runner } = await makeHarness();
+    const appendDecisionsToDatabase =
+      repository.appendDecisionsToDatabase.bind(repository);
+    let failedAction: string | null = "delegation.request";
+    repository.appendDecisionsToDatabase = (database, decisions) => {
+      if (failedAction && decisions.some((decision) => decision.action === failedAction)) {
+        throw new Error("audit unavailable");
+      }
+      appendDecisionsToDatabase(database, decisions);
+    };
+
+    const backendCookie = await login(app, "backend@bytedance.com");
+    const failedRequest = await app.inject({
+      method: "POST",
+      url: "/api/delegation-requests",
+      headers: { cookie: backendCookie },
+      payload: {
+        requiredCapability: "frontend.interface-implementation",
+        prompt: "Implement one accessible profile page.",
+      },
+    });
+    expect(failedRequest.statusCode).toBe(503);
+    const requests = await app.inject({
+      method: "GET",
+      url: "/api/delegation-requests?box=outgoing",
+      headers: { cookie: backendCookie },
+    });
+    expect(requests.json().requests).toEqual([]);
+
+    const frontendCookie = await login(app, "frontend@bytedance.com");
+    const createdAgent = await app.inject({
+      method: "POST",
+      url: "/api/agents",
+      headers: { cookie: frontendCookie },
+      payload: { name: "Frontend Agent" },
+    });
+    const directPayload = {
+      requiredCapability: "frontend.interface-implementation",
+      granteeHumanId: "22222222-2222-4222-8222-222222222222",
+      agentId: createdAgent.json().agent.id,
+      exactPrompt: "Estimate one approved aggregate budget.",
+      approvedResourceIds: [],
+      expiresInSeconds: 600,
+    };
+    failedAction = "delegation.approve";
+    const failedIssue = await app.inject({
+      method: "POST",
+      url: "/api/delegation-contracts",
+      headers: { cookie: frontendCookie },
+      payload: directPayload,
+    });
+    expect(failedIssue.statusCode).toBe(503);
+    const noPasses = await app.inject({
+      method: "GET",
+      url: "/api/delegation-contracts?box=outgoing",
+      headers: { cookie: frontendCookie },
+    });
+    expect(noPasses.json().contracts).toEqual([]);
+
+    failedAction = null;
+    const issued = await app.inject({
+      method: "POST",
+      url: "/api/delegation-contracts",
+      headers: { cookie: frontendCookie },
+      payload: directPayload,
+    });
+    const contractId = issued.json().contract.id as string;
+    failedAction = "agent.invoke";
+    const invokeCookie = await login(app, "backend@bytedance.com");
+    const failedInvocation = await app.inject({
+      method: "POST",
+      url: `/api/delegation-contracts/${contractId}/invoke`,
+      headers: { cookie: invokeCookie },
+      payload: { content: directPayload.exactPrompt },
+    });
+    expect(failedInvocation.statusCode).toBe(503);
+    const activeAfterFailedInvocation = await app.inject({
+      method: "GET",
+      url: "/api/delegation-contracts?box=outgoing",
+      headers: { cookie: frontendCookie },
+    });
+    expect(activeAfterFailedInvocation.json().contracts[0]).toMatchObject({
+      id: contractId,
+      status: "active",
+      remainingUses: 1,
+    });
+    expect(runner.requests).toHaveLength(0);
+
+    failedAction = "delegation.revoke";
+    const failedRevoke = await app.inject({
+      method: "POST",
+      url: `/api/delegation-contracts/${contractId}/revoke`,
+      headers: { cookie: frontendCookie },
+    });
+    expect(failedRevoke.statusCode).toBe(503);
+    const stillActive = await app.inject({
+      method: "GET",
+      url: "/api/delegation-contracts?box=outgoing",
+      headers: { cookie: frontendCookie },
+    });
+    expect(stillActive.json().contracts[0]).toMatchObject({
+      id: contractId,
+      status: "active",
+      remainingUses: 1,
+    });
+    await app.close();
+  });
+
+  it("atomically consumes one pass and exposes only an isolated final result", async () => {
+    const runner = new ControlledRunner();
+    const { app, config, repository, service } = await makeHarness({}, runner);
+    await mkdir(path.join(config.codexHome, "sessions"), { recursive: true });
+    await writeFile(path.join(config.codexHome, "config.toml"), "model = 'safe'\n");
+    await writeFile(
+      path.join(config.codexHome, "sessions", "private-session.json"),
+      "PRIVATE_SESSION_SENTINEL",
+    );
+    await writeFile(path.join(config.codexHome, "auth.json"), "PRIVATE_AUTH_SENTINEL");
+    const frontendCookie = await login(app, "frontend@bytedance.com");
+    const createdAgent = await app.inject({
+      method: "POST",
+      url: "/api/agents",
+      headers: { cookie: frontendCookie },
+      payload: {
+        name: "Hidden Frontend Agent",
+        instructions: "PRIVATE_AGENT_INSTRUCTION_SENTINEL",
+      },
+    });
+    const frontendAgent = createdAgent.json().agent as {
+      id: string;
+      workspacePath: string;
+    };
+    const frontendResource = RESOURCE_FIXTURES.find(
+      (resource) => resource.ownerDepartment === "frontend",
+    )!;
+    const exactPrompt = "Estimate the approved aggregate hiring budget.";
+    const issued = await app.inject({
+      method: "POST",
+      url: "/api/delegation-contracts",
+      headers: { cookie: frontendCookie },
+      payload: {
+        requiredCapability: "frontend.interface-implementation",
+        granteeHumanId: "22222222-2222-4222-8222-222222222222",
+        agentId: frontendAgent.id,
+        exactPrompt,
+        approvedResourceIds: [frontendResource.id],
+        expiresInSeconds: 600,
+      },
+    });
+    const contractId = issued.json().contract.id as string;
+    const readResourceForDelegation =
+      repository.readResourceForDelegation.bind(repository);
+    let delegatedResourceReads = 0;
+    repository.readResourceForDelegation = async (resourceId, ownerId) => {
+      delegatedResourceReads += 1;
+      return readResourceForDelegation(resourceId, ownerId);
+    };
+    const backendCookie = await login(app, "backend@bytedance.com");
+
+    const qaCookie = await login(app, "qa@bytedance.com");
+    const wrongGrantee = await app.inject({
+      method: "POST",
+      url: `/api/delegation-contracts/${contractId}/invoke`,
+      headers: { cookie: qaCookie },
+      payload: { content: exactPrompt },
+    });
+    expect(wrongGrantee.statusCode).toBe(404);
+    expect(wrongGrantee.body).not.toContain(frontendAgent.id);
+    expect(wrongGrantee.body).not.toContain("Hidden Frontend Agent");
+    const wrongGranteeAudit = await app.inject({
+      method: "GET",
+      url: "/api/authorization-decisions?limit=10",
+      headers: { cookie: qaCookie },
+    });
+    expect(wrongGranteeAudit.json().decisions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          decision: "deny",
+          reasonCode: "DELEGATION_GRANTEE_MISMATCH",
+          agentId: null,
+          agentName: null,
+        }),
+      ]),
+    );
+
+    const attempts = await Promise.all(
+      Array.from({ length: 20 }, () =>
+        app.inject({
+          method: "POST",
+          url: `/api/delegation-contracts/${contractId}/invoke`,
+          headers: { cookie: backendCookie },
+          payload: { content: exactPrompt },
+        }),
+      ),
+    );
+    const accepted = attempts.filter((response) => response.statusCode === 202);
+    const denied = attempts.filter((response) => response.statusCode === 403);
+    expect(accepted).toHaveLength(1);
+    expect(denied).toHaveLength(19);
+    expect(delegatedResourceReads).toBe(1);
+    await expect.poll(() => runner.requests).toHaveLength(1);
+    for (const response of denied) {
+      expect(response.json()).toMatchObject({
+        code: "AUTHORIZATION_DENIED",
+        decision: {
+          reasonCode: "DELEGATION_CONSUMED",
+          agentId: null,
+          agentName: null,
+        },
+      });
+      expect(response.body).not.toContain("Hidden Frontend Agent");
+      expect(response.body).not.toContain(frontendAgent.workspacePath);
+    }
+
+    const acceptedBody = accepted[0]!.json();
+    expect(acceptedBody).toMatchObject({
+      contract: {
+        id: contractId,
+        box: "incoming",
+        status: "consumed",
+        remainingUses: 0,
+      },
+      decision: {
+        decision: "allow",
+        reasonCode: "DELEGATION_ACTIVE",
+        agentId: null,
+        agentName: null,
+      },
+      result: { status: "queued", output: null },
+    });
+    expect(JSON.stringify(acceptedBody.contract)).not.toContain(frontendAgent.id);
+    expect(JSON.stringify(acceptedBody.contract)).not.toContain("Hidden Frontend Agent");
+
+    const delegatedRequest = runner.requests[0]!;
+    expect(delegatedRequest.threadId).toBeNull();
+    expect(delegatedRequest.workspacePath).not.toBe(frontendAgent.workspacePath);
+    expect(delegatedRequest.workspacePath).toContain(`${path.sep}.delegated${path.sep}`);
+    expect(delegatedRequest.codexHome).toBeDefined();
+    expect(delegatedRequest.codexHome).not.toBe(config.codexHome);
+    expect(delegatedRequest.codexHome).toContain(
+      `${path.sep}delegated-codex-homes${path.sep}`,
+    );
+    expect(await readdir(delegatedRequest.workspacePath)).toEqual([
+      "AGENTS.md",
+      "approved-input-1.md",
+    ]);
+    const delegatedInstructions = await readFile(
+      path.join(delegatedRequest.workspacePath, "AGENTS.md"),
+      "utf8",
+    );
+    expect(delegatedInstructions).not.toContain("Hidden Frontend Agent");
+    expect(delegatedInstructions).not.toContain("PRIVATE_AGENT_INSTRUCTION_SENTINEL");
+    expect(await readdir(delegatedRequest.codexHome!)).toEqual(["config.toml"]);
+    await expect(
+      access(path.join(delegatedRequest.codexHome!, "sessions")),
+    ).rejects.toThrow();
+    await expect(
+      access(path.join(delegatedRequest.codexHome!, "auth.json")),
+    ).rejects.toThrow();
+    expect(
+      await readFile(
+        path.join(delegatedRequest.workspacePath, "approved-input-1.md"),
+        "utf8",
+      ),
+    ).toContain("Profile page requirements");
+    expect(service.getAgent(frontendAgent.id).codexThreadId).toBeNull();
+
+    const changedRetry = await app.inject({
+      method: "POST",
+      url: `/api/delegation-contracts/${contractId}/invoke`,
+      headers: { cookie: backendCookie },
+      payload: { content: exactPrompt + " changed" },
+    });
+    expect(changedRetry.statusCode).toBe(403);
+    expect(changedRetry.json()).toMatchObject({
+      decision: { reasonCode: "DELEGATION_CONSUMED" },
+    });
+
+    const genericAgentRead = await app.inject({
+      method: "GET",
+      url: `/api/agents/${frontendAgent.id}`,
+      headers: { cookie: backendCookie },
+    });
+    expect(genericAgentRead.statusCode).toBe(403);
+    const genericRunRead = await app.inject({
+      method: "GET",
+      url: `/api/runs/${acceptedBody.result.id}`,
+      headers: { cookie: backendCookie },
+    });
+    expect(genericRunRead.statusCode).toBe(403);
+
+    runner.finish("Final approved budget impact: SGD 1.2M. test-key");
+    await expect
+      .poll(async () => {
+        const result = await app.inject({
+          method: "GET",
+          url: `/api/delegation-contracts/${contractId}/result`,
+          headers: { cookie: backendCookie },
+        });
+        return result.json().result?.status;
+      })
+      .toBe("completed");
+    const resultResponse = await app.inject({
+      method: "GET",
+      url: `/api/delegation-contracts/${contractId}/result`,
+      headers: { cookie: backendCookie },
+    });
+    expect(resultResponse.json()).toMatchObject({
+      contractStatus: "consumed",
+      result: {
+        id: acceptedBody.result.id,
+        status: "completed",
+        output: "Final approved budget impact: SGD 1.2M. [secret redacted]",
+        error: null,
+      },
+    });
+    for (const forbidden of [
+      frontendAgent.id,
+      frontendAgent.workspacePath,
+      "Hidden Frontend Agent",
+      "PRIVATE_AGENT_INSTRUCTION_SENTINEL",
+      "must-not-persist",
+      "usage",
+      "prompt",
+      "test-key",
+    ]) {
+      expect(resultResponse.body).not.toContain(forbidden);
+    }
+    await expect(access(delegatedRequest.workspacePath)).rejects.toThrow();
+    await expect(access(delegatedRequest.codexHome!)).rejects.toThrow();
+    expect(service.getAgent(frontendAgent.id).codexThreadId).toBeNull();
+
+    const audit = await app.inject({
+      method: "GET",
+      url: "/api/authorization-decisions?limit=100",
+      headers: { cookie: backendCookie },
+    });
+    const delegatedDecisions = audit
+      .json()
+      .decisions.filter(
+        (decision: { targetType: string }) => decision.targetType === "delegation",
+      );
+    expect(delegatedDecisions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          decision: "allow",
+          reasonCode: "DELEGATION_ACTIVE",
+          agentId: null,
+          agentName: null,
+        }),
+        expect.objectContaining({
+          decision: "deny",
+          reasonCode: "DELEGATION_CONSUMED",
+          agentId: null,
+          agentName: null,
+        }),
+      ]),
+    );
+    expect(audit.json().decisions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          action: "resource.read",
+          targetType: "resource",
+          targetId: "redacted",
+          targetLabel: "Approved delegated input",
+          agentId: null,
+          agentName: null,
+        }),
+      ]),
+    );
+
+    const ownerAudit = await app.inject({
+      method: "GET",
+      url: "/api/authorization-decisions?limit=100",
+      headers: { cookie: frontendCookie },
+    });
+    expect(ownerAudit.json().decisions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          humanUserId: "22222222-2222-4222-8222-222222222222",
+          agentId: frontendAgent.id,
+          action: "resource.read",
+          targetId: frontendResource.id,
+          decision: "allow",
+          reasonCode: "DELEGATION_ACTIVE",
+        }),
+      ]),
+    );
+
+    const ownerRun = await app.inject({
+      method: "POST",
+      url: `/api/agents/${frontendAgent.id}/messages`,
+      headers: { cookie: frontendCookie },
+      payload: { content: "Run npm test" },
+    });
+    expect(ownerRun.statusCode).toBe(202);
+    await expect.poll(() => runner.requests).toHaveLength(2);
+    await app.close();
+  }, 20_000);
+
+  it("rejects an altered task without consuming the active pass", async () => {
+    const { app, runner } = await makeHarness();
+    const frontendCookie = await login(app, "frontend@bytedance.com");
+    const createdAgent = await app.inject({
+      method: "POST",
+      url: "/api/agents",
+      headers: { cookie: frontendCookie },
+      payload: { name: "Frontend Agent" },
+    });
+    const agentId = createdAgent.json().agent.id as string;
+    const exactPrompt = "Estimate one approved budget.";
+    const issued = await app.inject({
+      method: "POST",
+      url: "/api/delegation-contracts",
+      headers: { cookie: frontendCookie },
+      payload: {
+        requiredCapability: "frontend.interface-implementation",
+        granteeHumanId: "22222222-2222-4222-8222-222222222222",
+        agentId,
+        exactPrompt,
+        approvedResourceIds: [],
+        expiresInSeconds: 600,
+      },
+    });
+    const contractId = issued.json().contract.id as string;
+    const backendCookie = await login(app, "backend@bytedance.com");
+    const changed = await app.inject({
+      method: "POST",
+      url: `/api/delegation-contracts/${contractId}/invoke`,
+      headers: { cookie: backendCookie },
+      payload: { content: exactPrompt + " " },
+    });
+    expect(changed.statusCode).toBe(403);
+    expect(changed.json()).toMatchObject({
+      decision: { reasonCode: "DELEGATION_PROMPT_MISMATCH" },
+    });
+    expect(runner.requests).toHaveLength(0);
+
+    const stillActive = await app.inject({
+      method: "GET",
+      url: "/api/delegation-contracts?box=incoming",
+      headers: { cookie: backendCookie },
+    });
+    expect(stillActive.json().contracts[0]).toMatchObject({
+      id: contractId,
+      status: "active",
+      remainingUses: 1,
+    });
+
+    const exact = await app.inject({
+      method: "POST",
+      url: `/api/delegation-contracts/${contractId}/invoke`,
+      headers: { cookie: backendCookie },
+      payload: { content: exactPrompt },
+    });
+    expect(exact.statusCode).toBe(202);
+    await expect.poll(() => runner.requests).toHaveLength(1);
+    await app.close();
+  });
+
+  it("refuses delegated execution without the isolated container boundary", async () => {
+    const { app, runner } = await makeHarness({ RUNTIME_PROVIDER: "local-process" });
+    const frontendCookie = await login(app, "frontend@bytedance.com");
+    const createdAgent = await app.inject({
+      method: "POST",
+      url: "/api/agents",
+      headers: { cookie: frontendCookie },
+      payload: { name: "Frontend Agent" },
+    });
+    const exactPrompt = "Estimate the approved aggregate budget.";
+    const issued = await app.inject({
+      method: "POST",
+      url: "/api/delegation-contracts",
+      headers: { cookie: frontendCookie },
+      payload: {
+        requiredCapability: "frontend.interface-implementation",
+        granteeHumanId: "22222222-2222-4222-8222-222222222222",
+        agentId: createdAgent.json().agent.id,
+        exactPrompt,
+        approvedResourceIds: [],
+        expiresInSeconds: 600,
+      },
+    });
+    const contractId = issued.json().contract.id as string;
+    const backendCookie = await login(app, "backend@bytedance.com");
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/delegation-contracts/${contractId}/invoke`,
+      headers: { cookie: backendCookie },
+      payload: { content: exactPrompt },
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toMatchObject({
+      code: "DELEGATED_RUNTIME_ISOLATION_REQUIRED",
+    });
+    expect(runner.requests).toHaveLength(0);
+    const passes = await app.inject({
+      method: "GET",
+      url: "/api/delegation-contracts?box=incoming",
+      headers: { cookie: backendCookie },
+    });
+    expect(passes.json().contracts[0]).toMatchObject({
+      id: contractId,
+      status: "active",
+      remainingUses: 1,
+    });
+    await app.close();
+  });
+
+  it("does not admit a delegated Run when the owner stops during input preflight", async () => {
+    const { app, repository, runner } = await makeHarness();
+    const frontendCookie = await login(app, "frontend@bytedance.com");
+    const createdAgent = await app.inject({
+      method: "POST",
+      url: "/api/agents",
+      headers: { cookie: frontendCookie },
+      payload: { name: "Frontend Agent" },
+    });
+    const agentId = createdAgent.json().agent.id as string;
+    const exactPrompt = "Calculate the approved aggregate budget.";
+    const frontendResource = RESOURCE_FIXTURES.find(
+      (resource) => resource.ownerDepartment === "frontend",
+    )!;
+    const issued = await app.inject({
+      method: "POST",
+      url: "/api/delegation-contracts",
+      headers: { cookie: frontendCookie },
+      payload: {
+        requiredCapability: "frontend.interface-implementation",
+        granteeHumanId: "22222222-2222-4222-8222-222222222222",
+        agentId,
+        exactPrompt,
+        approvedResourceIds: [frontendResource.id],
+        expiresInSeconds: 600,
+      },
+    });
+    const contractId = issued.json().contract.id as string;
+    const backendCookie = await login(app, "backend@bytedance.com");
+
+    let inputReadEntered!: () => void;
+    let releaseInputRead!: () => void;
+    const inputReadPending = new Promise<void>((resolve) => {
+      inputReadEntered = resolve;
+    });
+    const inputReadRelease = new Promise<void>((resolve) => {
+      releaseInputRead = resolve;
+    });
+    const readResourceForDelegation =
+      repository.readResourceForDelegation.bind(repository);
+    repository.readResourceForDelegation = async (resourceId, ownerId) => {
+      inputReadEntered();
+      await inputReadRelease;
+      return readResourceForDelegation(resourceId, ownerId);
+    };
+
+    const invocationPromise = app.inject({
+      method: "POST",
+      url: `/api/delegation-contracts/${contractId}/invoke`,
+      headers: { cookie: backendCookie },
+      payload: { content: exactPrompt },
+    });
+    await inputReadPending;
+    const stopped = await app.inject({
+      method: "POST",
+      url: `/api/agents/${agentId}/stop`,
+      headers: { cookie: frontendCookie },
+    });
+    expect(stopped.statusCode).toBe(200);
+    expect(stopped.json().agent.status).toBe("stopped");
+    releaseInputRead();
+
+    const invocation = await invocationPromise;
+    expect(invocation.statusCode).toBe(409);
+    const result = await app.inject({
+      method: "GET",
+      url: `/api/delegation-contracts/${contractId}/result`,
+      headers: { cookie: backendCookie },
+    });
+    expect(result.json()).toMatchObject({
+      contractStatus: "active",
+      result: null,
+    });
+    expect(runner.requests).toHaveLength(0);
+    await app.close();
+  });
+
+  it("serializes pass revocation against invocation so only one transition wins", async () => {
+    const { app, runner } = await makeHarness();
+    const frontendCookie = await login(app, "frontend@bytedance.com");
+    const createdAgent = await app.inject({
+      method: "POST",
+      url: "/api/agents",
+      headers: { cookie: frontendCookie },
+      payload: { name: "Frontend Agent" },
+    });
+    const exactPrompt = "Calculate one approved budget scenario.";
+    const issued = await app.inject({
+      method: "POST",
+      url: "/api/delegation-contracts",
+      headers: { cookie: frontendCookie },
+      payload: {
+        requiredCapability: "frontend.interface-implementation",
+        granteeHumanId: "22222222-2222-4222-8222-222222222222",
+        agentId: createdAgent.json().agent.id,
+        exactPrompt,
+        approvedResourceIds: [],
+        expiresInSeconds: 600,
+      },
+    });
+    const contractId = issued.json().contract.id as string;
+    const backendCookie = await login(app, "backend@bytedance.com");
+
+    const [invocation, revocation] = await Promise.all([
+      app.inject({
+        method: "POST",
+        url: `/api/delegation-contracts/${contractId}/invoke`,
+        headers: { cookie: backendCookie },
+        payload: { content: exactPrompt },
+      }),
+      app.inject({
+        method: "POST",
+        url: `/api/delegation-contracts/${contractId}/revoke`,
+        headers: { cookie: frontendCookie },
+      }),
+    ]);
+
+    if (invocation.statusCode === 202) {
+      expect(revocation.statusCode).toBe(409);
+      await expect.poll(() => runner.requests).toHaveLength(1);
+    } else {
+      expect(invocation.statusCode).toBe(403);
+      expect(invocation.json()).toMatchObject({
+        decision: { reasonCode: "DELEGATION_REVOKED" },
+      });
+      expect(revocation.statusCode).toBe(200);
+      expect(runner.requests).toHaveLength(0);
+    }
+
+    const ownerView = await app.inject({
+      method: "GET",
+      url: "/api/delegation-contracts?box=outgoing",
+      headers: { cookie: frontendCookie },
+    });
+    expect(ownerView.json().contracts[0].status).toMatch(/^(consumed|revoked)$/);
     await app.close();
   });
 

@@ -241,6 +241,9 @@ describe("JsonStore", () => {
       workspaceProfiles: [
         { id: "department-frontend", department: "frontend" },
       ],
+      knownHumans: [],
+      delegationRequests: [],
+      delegationContracts: [],
     });
     expect(migrated.protectedResources[0]?.ownerDepartment).toBe("backend");
     expect(migrated.authorizationDecisions[0]?.humanDepartment).toBe("qa");
@@ -308,5 +311,58 @@ describe("JsonStore", () => {
     expect(store.snapshot().messages.map((message) => message.content)).toEqual([
       "queue recovered",
     ]);
+  });
+
+  it("removes legacy raw requester prompts during initialization", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "launchpad-store-v3-test-"));
+    temporaryDirectories.push(root);
+    const databasePath = path.join(root, "db.json");
+    await writeFile(
+      databasePath,
+      JSON.stringify({
+        version: 3,
+        agents: [],
+        messages: [],
+        runs: [],
+        protectedResources: [],
+        authorizationDecisions: [],
+        knownHumans: [],
+        delegationContracts: [],
+        delegationRequests: [
+          {
+            id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            requesterHumanId: "11111111-1111-4111-8111-111111111111",
+            requesterEmail: "requester@example.test",
+            requesterDisplayName: "Requester",
+            requesterDepartment: "hr",
+            requiredCapability: "finance.cost-analysis",
+            sanitizedTaskSummary: "Owner-visible task",
+            personalInformation: "none",
+            requestedPrompt: "secret raw suffix",
+            taskDigest: "a".repeat(64),
+            status: "pending",
+            createdAt: "2026-08-30T00:00:00.000Z",
+            expiresAt: "2026-08-30T00:30:00.000Z",
+            reviewedAt: null,
+            contractId: null,
+          },
+        ],
+      }),
+      "utf8",
+    );
+
+    const store = new JsonStore(databasePath);
+    await store.initialize();
+
+    expect(store.snapshot().delegationRequests[0]).not.toHaveProperty(
+      "requestedPrompt",
+    );
+    expect(store.snapshot().delegationRequests[0]).toMatchObject({
+      requesterDepartment: "backend",
+      requiredCapability: "frontend.interface-implementation",
+      personalInformation: "none_detected",
+    });
+    expect(store.snapshot().version).toBe(4);
+    expect(await readFile(databasePath, "utf8")).not.toContain("secret raw suffix");
   });
 });

@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import type { AgentService } from "./agent-service.js";
 import type { AppConfig } from "./config.js";
+import type { DelegationService } from "./delegation-service.js";
 import { HttpError } from "./errors.js";
 import {
   FRONTEND_PRINCIPAL,
@@ -59,11 +60,49 @@ const loginBody = z.object({
   email: z.string().trim().email().max(320),
   password: z.string().max(4_096).optional(),
 });
+const capabilityDiscoveryBody = z
+  .object({
+    prompt: z.string().min(1).max(50_000).refine((value) => value.trim().length > 0),
+  })
+  .strict();
+const createDelegationRequestBody = z
+  .object({
+    requiredCapability: z.string().min(1).max(120),
+    prompt: z.string().min(1).max(50_000).refine((value) => value.trim().length > 0),
+  })
+  .strict();
+const delegationRequestQuery = z
+  .object({ box: z.enum(["incoming", "outgoing"]) })
+  .strict();
+const delegationIdParams = z.object({ id: z.string().uuid() }).strict();
+const delegationScopeFields = {
+  agentId: z.string().uuid(),
+  approvedResourceIds: z.array(z.string().uuid()).max(20).default([]),
+  expiresInSeconds: z.coerce.number().int().min(60).max(600).default(600),
+};
+const approveDelegationRequestBody = z.object(delegationScopeFields).strict();
+const createDelegationContractBody = z
+  .object({
+    requiredCapability: z.string().min(1).max(120),
+    granteeHumanId: z.string().uuid(),
+    exactPrompt: z.string().min(1).max(50_000).refine((value) => value.trim().length > 0),
+    ...delegationScopeFields,
+  })
+  .strict();
+const delegationContractQuery = z
+  .object({ box: z.enum(["incoming", "outgoing"]) })
+  .strict();
+const invokeDelegationContractBody = z
+  .object({
+    content: z.string().min(1).max(50_000).refine((value) => value.trim().length > 0),
+  })
+  .strict();
 
 export async function createApp(
   config: AppConfig,
   service: AgentService,
   gateway: TrustGateway,
+  delegations: DelegationService,
 ): Promise<FastifyInstance> {
   const app = Fastify({
     logger: {
@@ -107,6 +146,7 @@ export async function createApp(
     try {
       request.principal = await gateway.authenticate(accessToken);
       request.userAccessToken = accessToken;
+      await delegations.observePrincipal(request.principal);
     } catch {
       return reply.code(401).send({ error: "Authentication required" });
     }
@@ -132,6 +172,7 @@ export async function createApp(
       email: credentials.email,
       ...(credentials.password === undefined ? {} : { password: credentials.password }),
     });
+    await delegations.observePrincipal(session.principal);
     const expiresInSeconds = Math.max(
       60,
       Math.floor((new Date(session.expiresAt).getTime() - Date.now()) / 1_000),
@@ -158,6 +199,112 @@ export async function createApp(
 
   app.get("/api/me", async (request) => ({ principal: requirePrincipal(request) }));
   app.get("/api/system", async () => service.systemInfo());
+
+  app.post("/api/capability-discovery", async (request) => {
+    ensureDelegationAvailable(config);
+    const body = capabilityDiscoveryBody.parse(request.body);
+    return delegations.discover(requirePrincipal(request), body.prompt);
+  });
+
+  app.get("/api/delegation-recipients", async (request) => {
+    ensureDelegationAvailable(config);
+    return { recipients: delegations.listRecipients(requirePrincipal(request)) };
+  });
+
+  app.post("/api/delegation-requests", async (request, reply) => {
+    ensureDelegationAvailable(config);
+    const body = createDelegationRequestBody.parse(request.body);
+    const result = await delegations.createRequest(
+      requirePrincipal(request),
+      {
+        requiredCapability: body.requiredCapability,
+        prompt: body.prompt,
+      },
+      String(request.id),
+    );
+    return reply.code(201).send(result);
+  });
+
+  app.get("/api/delegation-requests", async (request) => {
+    ensureDelegationAvailable(config);
+    const { box } = delegationRequestQuery.parse(request.query);
+    return delegations.listRequests(requirePrincipal(request), box);
+  });
+
+  app.post("/api/delegation-requests/:id/reject", async (request) => {
+    ensureDelegationAvailable(config);
+    const { id } = delegationIdParams.parse(request.params);
+    return delegations.rejectRequest(
+      requirePrincipal(request),
+      id,
+      String(request.id),
+    );
+  });
+
+  app.post("/api/delegation-requests/:id/approve", async (request) => {
+    ensureDelegationAvailable(config);
+    const { id } = delegationIdParams.parse(request.params);
+    const body = approveDelegationRequestBody.parse(request.body);
+    return delegations.approveRequest(
+      requirePrincipal(request),
+      id,
+      body,
+      String(request.id),
+    );
+  });
+
+  app.post("/api/delegation-contracts", async (request, reply) => {
+    ensureDelegationAvailable(config);
+    const body = createDelegationContractBody.parse(request.body);
+    const result = await delegations.createContract(
+      requirePrincipal(request),
+      {
+        requiredCapability: body.requiredCapability,
+        granteeHumanId: body.granteeHumanId,
+        agentId: body.agentId,
+        exactPrompt: body.exactPrompt,
+        approvedResourceIds: body.approvedResourceIds,
+        expiresInSeconds: body.expiresInSeconds,
+      },
+      String(request.id),
+    );
+    return reply.code(201).send(result);
+  });
+
+  app.get("/api/delegation-contracts", async (request) => {
+    ensureDelegationAvailable(config);
+    const { box } = delegationContractQuery.parse(request.query);
+    return delegations.listContracts(requirePrincipal(request), box);
+  });
+
+  app.post("/api/delegation-contracts/:id/revoke", async (request) => {
+    ensureDelegationAvailable(config);
+    const { id } = delegationIdParams.parse(request.params);
+    return delegations.revokeContract(
+      requirePrincipal(request),
+      id,
+      String(request.id),
+    );
+  });
+
+  app.post("/api/delegation-contracts/:id/invoke", async (request, reply) => {
+    ensureDelegationAvailable(config);
+    const { id } = delegationIdParams.parse(request.params);
+    const body = invokeDelegationContractBody.parse(request.body);
+    const result = await delegations.invokeContract(
+      requirePrincipal(request),
+      id,
+      body.content,
+      String(request.id),
+    );
+    return reply.code(202).send(result);
+  });
+
+  app.get("/api/delegation-contracts/:id/result", async (request) => {
+    ensureDelegationAvailable(config);
+    const { id } = delegationIdParams.parse(request.params);
+    return delegations.delegatedResult(requirePrincipal(request), id);
+  });
 
   app.get("/api/agents", async (request) => {
     const principal = requirePrincipal(request);
@@ -290,6 +437,17 @@ export async function createApp(
     };
   });
 
+  app.post("/api/agents/:id/resources/cross-owner-demo", async (request) => {
+    const { id } = agentIdParams.parse(request.params);
+    const principal = requirePrincipal(request);
+    return gateway.demonstrateCrossOwnerResourceDenial(
+      principal,
+      request.userAccessToken,
+      id,
+      String(request.id),
+    );
+  });
+
   app.post("/api/agents/:id/files/read", async (request, reply) => {
     const { id } = agentIdParams.parse(request.params);
     const body = workspaceFileReadBody.parse(request.body);
@@ -331,20 +489,6 @@ export async function createApp(
     );
   }
 
-  if (config.nodeEnv === "production") {
-    const webRoot = fileURLToPath(new URL("../../web/dist", import.meta.url));
-    await app.register(fastifyStatic, {
-      root: webRoot,
-      prefix: "/",
-    });
-    app.setNotFoundHandler((request, reply) => {
-      if (request.url.startsWith("/api/")) {
-        return reply.code(404).send({ error: "API route not found" });
-      }
-      return reply.sendFile("index.html");
-    });
-  }
-
   app.setErrorHandler((error, request, reply) => {
     const appError = error instanceof Error ? error : new Error(String(error));
     const validationError = error instanceof z.ZodError;
@@ -364,8 +508,12 @@ export async function createApp(
     if (isDecisionDenial(error)) {
       return sendDeniedDecision(reply, error.details, error.code, appError.message);
     }
+    const publicMessage =
+      statusCode >= 500 && !(error instanceof HttpError)
+        ? "Internal server error"
+        : appError.message;
     return reply.code(statusCode).send({
-      error: appError.message,
+      error: publicMessage,
       ...(error instanceof HttpError && error.code ? { code: error.code } : {}),
       ...(error instanceof HttpError &&
       (error.code === "AUTHORIZATION_DENIED" || error.code === "RUNTIME_ACTION_DENIED")
@@ -374,6 +522,20 @@ export async function createApp(
       ...(validationError ? { details: error.issues } : {}),
     });
   });
+
+  if (config.nodeEnv === "production") {
+    const webRoot = fileURLToPath(new URL("../../web/dist", import.meta.url));
+    await app.register(fastifyStatic, {
+      root: webRoot,
+      prefix: "/",
+    });
+    app.setNotFoundHandler((request, reply) => {
+      if (request.url.startsWith("/api/")) {
+        return reply.code(404).send({ error: "API route not found" });
+      }
+      return reply.sendFile("index.html");
+    });
+  }
 
   return app;
 }
@@ -409,6 +571,15 @@ function sendDeniedDecision(
 function requirePrincipal(request: FastifyRequest): HumanPrincipal {
   if (!request.principal) throw new HttpError(401, "Authentication required");
   return request.principal;
+}
+
+function ensureDelegationAvailable(config: AppConfig): void {
+  if (config.authMode === "legacy") {
+    throw new HttpError(
+      400,
+      "Trust Pass delegation requires authenticated human identities",
+    );
+  }
 }
 
 function isPublicAuthRoute(request: FastifyRequest): boolean {

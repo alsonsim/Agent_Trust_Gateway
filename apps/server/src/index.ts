@@ -2,6 +2,7 @@ import path from "node:path";
 import { AgentService } from "./agent-service.js";
 import { createApp } from "./app.js";
 import { ensureWritableDataDirectory, loadConfig, writeCodexConfig } from "./config.js";
+import { DelegationService } from "./delegation-service.js";
 import {
   DemoIdentityProvider,
   isLoopbackHost,
@@ -61,13 +62,29 @@ const identityProvider =
         tokenTtlSeconds: config.authSessionTtlSeconds,
       });
 const gateway = new TrustGateway(identityProvider, securityRepository, service);
+const delegations = new DelegationService(store, securityRepository, service);
+await delegations.observePrincipals(
+  config.authMode === "demo" ? gateway.demoPrincipals : [],
+);
 
-const app = await createApp(config, service, gateway);
+const app = await createApp(config, service, gateway, delegations);
 
+let shutdownStarted = false;
 const shutdown = async (signal: string) => {
+  if (shutdownStarted) return;
+  shutdownStarted = true;
   app.log.info({ signal }, "Shutting down");
   await app.close();
-  process.exit(0);
+  try {
+    await service.shutdown();
+    process.exit(0);
+  } catch (error) {
+    process.exitCode = 1;
+    app.log.error(
+      { err: error },
+      "Shutdown stopped because a Runtime container could not be proven removed",
+    );
+  }
 };
 
 process.on("SIGTERM", () => void shutdown("SIGTERM"));

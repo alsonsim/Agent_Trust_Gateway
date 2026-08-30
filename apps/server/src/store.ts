@@ -18,6 +18,9 @@ const emptyDatabase = (): Database => ({
   runs: [],
   protectedResources: [],
   authorizationDecisions: [],
+  knownHumans: [],
+  delegationRequests: [],
+  delegationContracts: [],
 });
 
 type LegacyDepartment = Department | "finance" | "hr" | "research";
@@ -45,6 +48,27 @@ type LegacyAuthorizationDecision = Omit<AuthorizationDecision, "humanDepartment"
   humanDepartment: LegacyDepartment;
 };
 
+type LegacyKnownHuman = Omit<Database["knownHumans"][number], "department"> & {
+  department: LegacyDepartment;
+};
+
+type LegacyDelegationRequest = Omit<
+  Database["delegationRequests"][number],
+  "requesterDepartment" | "personalInformation"
+> & {
+  requesterDepartment: LegacyDepartment;
+  personalInformation: Database["delegationRequests"][number]["personalInformation"] | "none";
+  requestedPrompt?: string;
+};
+
+type LegacyDelegationContract = Omit<
+  Database["delegationContracts"][number],
+  "granteeDepartment" | "personalInformation"
+> & {
+  granteeDepartment: LegacyDepartment;
+  personalInformation: Database["delegationContracts"][number]["personalInformation"] | "none";
+};
+
 interface PersistedDatabaseShape {
   version?: number;
   agents?: LegacyAgent[];
@@ -53,6 +77,9 @@ interface PersistedDatabaseShape {
   runs?: Database["runs"];
   protectedResources?: LegacyProtectedResource[];
   authorizationDecisions?: LegacyAuthorizationDecision[];
+  knownHumans?: LegacyKnownHuman[];
+  delegationRequests?: LegacyDelegationRequest[];
+  delegationContracts?: LegacyDelegationContract[];
   // An incoming v3 briefly persisted this unused scaffold. Only an empty
   // array can be discarded without pretending the unimplemented feature exists.
   documentAccessRequests?: unknown[];
@@ -77,7 +104,17 @@ function parseDatabase(raw: string): { database: Database; migrated: boolean } {
       !Array.isArray(parsed.messages) ||
       !Array.isArray(parsed.runs) ||
       !Array.isArray(parsed.protectedResources) ||
-      !Array.isArray(parsed.authorizationDecisions))
+      !Array.isArray(parsed.authorizationDecisions) ||
+      !isOptionalArray(parsed.knownHumans) ||
+      !isOptionalArray(parsed.delegationRequests) ||
+      !isOptionalArray(parsed.delegationContracts))
+  ) {
+    throw new Error("Unsupported database format");
+  }
+  if (
+    !isOptionalArray(parsed.knownHumans) ||
+    !isOptionalArray(parsed.delegationRequests) ||
+    !isOptionalArray(parsed.delegationContracts)
   ) {
     throw new Error("Unsupported database format");
   }
@@ -106,6 +143,19 @@ function parseDatabase(raw: string): { database: Database; migrated: boolean } {
         humanDepartment: migrateDepartment(decision.humanDepartment),
       }),
     ),
+    knownHumans: arrayOrEmpty(parsed.knownHumans).map((human) => ({
+      ...human,
+      department: migrateDepartment(human.department),
+    })),
+    delegationRequests: arrayOrEmpty(parsed.delegationRequests).map(
+      normalizeDelegationRequest,
+    ),
+    delegationContracts: arrayOrEmpty(parsed.delegationContracts).map((contract) => ({
+      ...contract,
+      requiredCapability: migrateCapability(contract.requiredCapability),
+      granteeDepartment: migrateDepartment(contract.granteeDepartment),
+      personalInformation: normalizePersonalInformation(contract.personalInformation),
+    })),
   };
 
   const comparableSource = {
@@ -116,6 +166,9 @@ function parseDatabase(raw: string): { database: Database; migrated: boolean } {
     runs: parsed.runs,
     protectedResources: parsed.protectedResources,
     authorizationDecisions: parsed.authorizationDecisions,
+    knownHumans: parsed.knownHumans,
+    delegationRequests: parsed.delegationRequests,
+    delegationContracts: parsed.delegationContracts,
   };
   return {
     database,
@@ -127,6 +180,10 @@ function parseDatabase(raw: string): { database: Database; migrated: boolean } {
 
 function arrayOrEmpty<T>(value: T[] | undefined): T[] {
   return Array.isArray(value) ? value : [];
+}
+
+function isOptionalArray(value: unknown): boolean {
+  return value === undefined || Array.isArray(value);
 }
 
 function migrateDepartment(
@@ -171,6 +228,31 @@ function normalizeWorkspaceProfiles(
     }
   }
   return [...normalized.values()];
+}
+
+function normalizeDelegationRequest(
+  request: LegacyDelegationRequest,
+): Database["delegationRequests"][number] {
+  const { requestedPrompt: _requestedPrompt, ...sanitizedRequest } = request;
+  return {
+    ...sanitizedRequest,
+    requiredCapability: migrateCapability(request.requiredCapability),
+    requesterDepartment: migrateDepartment(request.requesterDepartment),
+    personalInformation: normalizePersonalInformation(request.personalInformation),
+  };
+}
+
+function normalizePersonalInformation(
+  value: LegacyDelegationRequest["personalInformation"],
+): Database["delegationRequests"][number]["personalInformation"] {
+  return value === "none" ? "none_detected" : value;
+}
+
+function migrateCapability(value: string): string {
+  if (value === "finance.cost-analysis") return "frontend.interface-implementation";
+  if (value === "hr.people-operations") return "backend.service-implementation";
+  if (value === "research.evidence-synthesis") return "qa.release-validation";
+  return value;
 }
 
 export class JsonStore {

@@ -4,6 +4,7 @@ import {
   buildCodexChildEnvironment,
   buildWindowsCmdCommand,
   parseCodexEventLine,
+  resolveRunnerCodexHome,
 } from "./codex-runner.js";
 import { loadConfig } from "./config.js";
 import { scopedCodexHome } from "./runtime-state.js";
@@ -14,6 +15,7 @@ describe("Codex runner protocol", () => {
     const args = buildCodexArgs(
       {
         agentId: "agent",
+        workspaceProfileId: "department-frontend",
         workspacePath: "/tmp/workspace",
         prompt: "build a calculator",
         threadId: null,
@@ -36,6 +38,7 @@ describe("Codex runner protocol", () => {
     const args = buildCodexArgs(
       {
         agentId: "agent",
+        workspaceProfileId: "department-frontend",
         workspacePath: "/tmp/workspace",
         prompt: "add tests",
         threadId: "thread-123",
@@ -77,6 +80,39 @@ describe("Codex runner protocol", () => {
     expect(parsed.threadId).toBe("thread-123");
     expect(parsed.messages).toEqual(["Done."]);
     expect(parsed.usage).toEqual({ inputTokens: 10, outputTokens: 4 });
+  });
+
+  it("uses a delegated Codex home without exposing the configured home through HOME", () => {
+    const config = loadConfig({
+      NODE_ENV: "test",
+      CODEX_HOME: "/tmp/configured-codex-home",
+    });
+    const delegatedHome = "/tmp/delegated-codex-home";
+
+    expect(
+      resolveRunnerCodexHome({ codexHome: delegatedHome }, config),
+    ).toBe(delegatedHome);
+    const environment = buildCodexChildEnvironment(config, delegatedHome);
+    expect(environment.CODEX_HOME).toBe(delegatedHome);
+    expect(environment.HOME).toBe(delegatedHome);
+  });
+
+  it("uses the configured Codex home for ordinary Runs", () => {
+    const config = loadConfig({
+      NODE_ENV: "test",
+      CODEX_HOME: "/tmp/configured-codex-home",
+    });
+
+    expect(resolveRunnerCodexHome({}, config)).toBe(config.codexHome);
+    expect(buildCodexChildEnvironment(config).CODEX_HOME).toBe(config.codexHome);
+  });
+
+  it("rejects a relative per-Run Codex home", () => {
+    const config = loadConfig({ NODE_ENV: "test", CODEX_HOME: "/tmp/codex-home" });
+
+    expect(() =>
+      resolveRunnerCodexHome({ codexHome: "relative/home" }, config),
+    ).toThrow("absolute path");
   });
 
   it("quotes Windows .cmd arguments before invoking the command shell", () => {

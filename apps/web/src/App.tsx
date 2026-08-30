@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, setLegacyToken } from "./api";
+import {
+  TrustPassWorkspace,
+  type CapabilityRequestSeed,
+} from "./delegation/TrustPassWorkspace";
 import type {
   Agent,
   AgentRun,
@@ -65,9 +69,11 @@ type ScenarioId =
   | "safe-file"
   | "secret-file"
   | "traversal-file"
+  | "cross-owner-resource"
   | "dangerous-shell"
   | "cross-owner-agent";
 type ScenarioState = "idle" | "loading" | "allowed" | "denied" | "error";
+type ShellView = "agent" | "trust-passes";
 
 interface ScenarioResult {
   state: ScenarioState;
@@ -86,7 +92,7 @@ interface LatestScenarioResult {
 const securityScenarios: Array<{
   id: ScenarioId;
   title: string;
-  action: "file" | "shell" | "agent";
+  action: "file" | "resource" | "shell" | "agent";
   path?: string;
   target?: string;
   command?: string;
@@ -118,6 +124,14 @@ const securityScenarios: Array<{
     expected: "DENY - PATH_OUTSIDE_WORKSPACE",
   },
   {
+    id: "cross-owner-resource",
+    title: "Cross-owner resource",
+    action: "resource",
+    explanation:
+      "The server selects a foreign fixture privately, denies the read, and can offer an owner-approved capability request without identifying it.",
+    expected: "DENY - AGENT_RESOURCE_OWNER_MISMATCH",
+  },
+  {
     id: "dangerous-shell",
     title: "Dangerous shell command",
     action: "shell",
@@ -142,6 +156,15 @@ const initialScenarioResults = (): Record<ScenarioId, ScenarioResult> =>
       { state: "idle", decision: null, runCreated: null, runStatus: null, error: null },
     ]),
   ) as Record<ScenarioId, ScenarioResult>;
+
+const crossTeamRecoveryPromptByDepartment: Record<Department, string> = {
+  frontend:
+    "Implement the validated GET /api/profile backend service from the approved contract and include tests.",
+  backend:
+    "Implement an accessible profile page interface from the approved requirements, including loading and error states.",
+  qa:
+    "Implement an accessible profile page interface from the approved requirements, including loading and error states.",
+};
 
 function formatTime(value: string): string {
   return new Intl.DateTimeFormat(undefined, {
@@ -215,6 +238,44 @@ function isPolicyDenial(
     !!error.decision && typeof error.decision === "object";
 }
 
+function isCrossTeamPolicyDenial(
+  value: unknown,
+): value is {
+  status: 403;
+  code: "AUTHORIZATION_DENIED";
+  decision: AuthorizationDecision;
+} {
+  return isPolicyDenial(value) &&
+    value.code === "AUTHORIZATION_DENIED" &&
+    (value.decision.reasonCode === "HUMAN_AGENT_OWNER_MISMATCH" ||
+      value.decision.reasonCode === "AGENT_RESOURCE_OWNER_MISMATCH");
+}
+
+function privacySafeDecision(decision: AuthorizationDecision): AuthorizationDecision {
+  if (decision.reasonCode === "AGENT_RESOURCE_OWNER_MISMATCH") {
+    return {
+      ...decision,
+      targetId: "redacted",
+      targetLabel: "Protected resource",
+    };
+  }
+  if (decision.reasonCode === "HUMAN_AGENT_OWNER_MISMATCH") {
+    return {
+      ...decision,
+      agentId: null,
+      agentName: null,
+      targetId: "redacted",
+      targetLabel:
+        decision.targetType === "resource"
+          ? "Protected resource"
+          : decision.targetType === "file"
+            ? "Protected workspace file"
+            : "Protected Agent",
+    };
+  }
+  return decision;
+}
+
 function RevokedPill() {
   return <span className="revoked-pill">Revoked</span>;
 }
@@ -252,7 +313,15 @@ export default function App() {
   const [authInput, setAuthInput] = useState("");
   const [loginEmail, setLoginEmail] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
+  const [shellView, setShellView] = useState<ShellView>("agent");
   const [activeView, setActiveView] = useState<"playground" | "access">("playground");
+  const [capabilityChecking, setCapabilityChecking] = useState(false);
+  const [capabilityRequestSeed, setCapabilityRequestSeed] =
+    useState<CapabilityRequestSeed | null>(null);
+  const [trustPassCounts, setTrustPassCounts] = useState({
+    pendingApprovals: 0,
+    approvedTasks: 0,
+  });
   const [resources, setResources] = useState<ProtectedResourceSummary[]>([]);
   const [decisions, setDecisions] = useState<AuthorizationDecision[]>([]);
   const [latestScenarioResult, setLatestScenarioResult] = useState<LatestScenarioResult | null>(null);
@@ -272,6 +341,7 @@ export default function App() {
   const mountedRef = useRef(true);
   const pollingRunIds = useRef(new Set<string>());
   const sessionGenerationRef = useRef(0);
+  const capabilityOfferRequestRef = useRef(0);
   selectedIdRef.current = selectedId;
 
   const selected = useMemo(
@@ -353,7 +423,12 @@ export default function App() {
     setActiveRun(null);
     setShowCreate(false);
     setShowSettings(false);
+    capabilityOfferRequestRef.current += 1;
+    setShellView("agent");
     setActiveView("playground");
+    setCapabilityChecking(false);
+    setCapabilityRequestSeed(null);
+    setTrustPassCounts({ pendingApprovals: 0, approvedTasks: 0 });
     setResources([]);
     setDecisions([]);
     setLatestScenarioResult(null);
@@ -375,6 +450,26 @@ export default function App() {
     },
     [resetAuthenticatedState],
   );
+
+  const handleTrustPassCounts = useCallback(
+    (counts: { pendingApprovals: number; approvedTasks: number }) => {
+      setTrustPassCounts((current) =>
+        current.pendingApprovals === counts.pendingApprovals &&
+        current.approvedTasks === counts.approvedTasks
+          ? current
+          : counts,
+      );
+    },
+    [],
+  );
+
+  const handleRequestSeedCleared = useCallback(() => {
+    setCapabilityRequestSeed(null);
+  }, []);
+
+  const handleTrustPassUnauthorized = useCallback(() => {
+    invalidateSession("Your session expired. Sign in again to continue.");
+  }, [invalidateSession]);
 
   const refreshAgents = useCallback(async () => {
     const generation = sessionGenerationRef.current;
@@ -404,7 +499,7 @@ export default function App() {
     const generation = sessionGenerationRef.current;
     const result = await api.authorizationDecisions(50);
     if (mountedRef.current && generation === sessionGenerationRef.current) {
-      setDecisions(result.decisions);
+      setDecisions(result.decisions.map(privacySafeDecision));
     }
   }, []);
 
@@ -424,8 +519,10 @@ export default function App() {
       setAgents(agentResult.agents);
       setSelectedId(agentResult.agents[0]?.id ?? null);
       setSystem(nextSystem);
-      setResources(resourceResult.resources);
-      setDecisions(decisionResult.decisions);
+      setResources(
+        resourceResult.resources.filter((resource) => resource.ownedByCurrentUser),
+      );
+      setDecisions(decisionResult.decisions.map(privacySafeDecision));
     },
     [resetAuthenticatedState],
   );
@@ -437,7 +534,11 @@ export default function App() {
         return;
       }
       if (isPolicyDenial(reason)) {
-        setLatestScenarioResult({ decision: reason.decision, runCreated: false, content: null });
+        setLatestScenarioResult({
+          decision: privacySafeDecision(reason.decision),
+          runCreated: false,
+          content: null,
+        });
         setResourceRead(null);
         setWorkspaceFileRead(null);
         setSecurityError(null);
@@ -451,6 +552,35 @@ export default function App() {
     },
     [invalidateSession, refreshDecisions],
   );
+
+  const discoverPrivateCapabilityOffer = async (
+    task: string,
+    generation: number,
+    agentId: string,
+  ): Promise<void> => {
+    const requestSequence = ++capabilityOfferRequestRef.current;
+    try {
+      const discovery = await api.discoverCapability(task);
+      if (
+        generation !== sessionGenerationRef.current ||
+        selectedIdRef.current !== agentId ||
+        requestSequence !== capabilityOfferRequestRef.current
+      ) {
+        return;
+      }
+      if (discovery.required && discovery.capability) {
+        setCapabilityRequestSeed({ prompt: task, discovery });
+      }
+    } catch (reason) {
+      if (
+        requestSequence === capabilityOfferRequestRef.current &&
+        reason instanceof ApiError &&
+        reason.status === 401
+      ) {
+        handleRequestError(reason);
+      }
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -539,6 +669,44 @@ export default function App() {
     messageEnd.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, activeRun]);
 
+  useEffect(() => {
+    if (!principal || authConfig?.mode === "legacy") return;
+    let cancelled = false;
+    const refreshCounts = async () => {
+      try {
+        const [requestResult, contractResult] = await Promise.all([
+          api.delegationRequests("incoming"),
+          api.delegationContracts("incoming"),
+        ]);
+        if (cancelled) return;
+        const requestServerNow = new Date(requestResult.serverNow).getTime();
+        const contractServerNow = new Date(contractResult.serverNow).getTime();
+        handleTrustPassCounts({
+          pendingApprovals: requestResult.requests.filter(
+            (request) =>
+              request.status === "pending" &&
+              new Date(request.expiresAt).getTime() > requestServerNow,
+          ).length,
+          approvedTasks: contractResult.contracts.filter(
+            (contract) =>
+              contract.status === "active" &&
+              new Date(contract.expiresAt).getTime() > contractServerNow,
+          ).length,
+        });
+      } catch (reason) {
+        if (!cancelled && reason instanceof ApiError && reason.status === 401) {
+          handleTrustPassUnauthorized();
+        }
+      }
+    };
+    void refreshCounts();
+    const timer = window.setInterval(() => void refreshCounts(), 10_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [authConfig?.mode, handleTrustPassCounts, handleTrustPassUnauthorized, principal]);
+
   const createAgent = async (event: React.FormEvent) => {
     event.preventDefault();
     setBusy(true);
@@ -547,6 +715,7 @@ export default function App() {
       const { agent } = await api.createAgent(form);
       await refreshAgents();
       setSelectedId(agent.id);
+      setShellView("agent");
       setShowCreate(false);
       setForm(emptyForm);
       void refreshDecisions().catch(() => undefined);
@@ -612,13 +781,14 @@ export default function App() {
     } catch (reason) {
       if (generation === sessionGenerationRef.current) {
         if (isPolicyDenial(reason)) {
-          setLatestScenarioResult({ decision: reason.decision, runCreated: false, content: null });
+          const decision = privacySafeDecision(reason.decision);
+          setLatestScenarioResult({ decision, runCreated: false, content: null });
           if (scenarioId) {
             setScenarioResults((current) => ({
               ...current,
               [scenarioId]: {
                 state: "denied",
-                decision: reason.decision,
+                decision,
                 runCreated: false,
                 runStatus: null,
                 error: null,
@@ -650,7 +820,7 @@ export default function App() {
   };
 
   const attemptCrossOwnerAgentProbe = async (scenarioId: ScenarioId) => {
-    if (!selected) return;
+    if (!selected || !principal) return;
     const generation = sessionGenerationRef.current;
     const agentId = selected.id;
     setSecurityBusyId(scenarioId);
@@ -676,18 +846,29 @@ export default function App() {
       ) {
         return;
       }
-      setLatestScenarioResult({ decision: result.decision, runCreated: false, content: null });
+      const decision = privacySafeDecision(result.decision);
+      setLatestScenarioResult({ decision, runCreated: false, content: null });
       setScenarioResults((current) => ({
         ...current,
         [scenarioId]: {
-          state: result.decision.decision === "deny" ? "denied" : "allowed",
-          decision: result.decision,
+          state: decision.decision === "deny" ? "denied" : "allowed",
+          decision,
           runCreated: false,
           runStatus: null,
           error: null,
         },
       }));
       void refreshDecisions().catch((reason) => handleRequestError(reason, "security"));
+      if (
+        decision.decision === "deny" &&
+        decision.reasonCode === "HUMAN_AGENT_OWNER_MISMATCH"
+      ) {
+        await discoverPrivateCapabilityOffer(
+          crossTeamRecoveryPromptByDepartment[principal.department],
+          generation,
+          agentId,
+        );
+      }
     } catch (reason) {
       if (
         generation !== sessionGenerationRef.current ||
@@ -696,18 +877,26 @@ export default function App() {
         return;
       }
       if (isPolicyDenial(reason)) {
-        setLatestScenarioResult({ decision: reason.decision, runCreated: false, content: null });
+        const decision = privacySafeDecision(reason.decision);
+        setLatestScenarioResult({ decision, runCreated: false, content: null });
         setScenarioResults((current) => ({
           ...current,
           [scenarioId]: {
             state: "denied",
-            decision: reason.decision,
+            decision,
             runCreated: false,
             runStatus: null,
             error: null,
           },
         }));
         void refreshDecisions().catch(() => undefined);
+        if (decision.reasonCode === "HUMAN_AGENT_OWNER_MISMATCH") {
+          await discoverPrivateCapabilityOffer(
+            crossTeamRecoveryPromptByDepartment[principal.department],
+            generation,
+            agentId,
+          );
+        }
       } else {
         const message = reason instanceof Error ? reason.message : String(reason);
         setSecurityError(message);
@@ -733,9 +922,84 @@ export default function App() {
   };
 
   const runSecurityScenario = async (scenario: (typeof securityScenarios)[number]) => {
-    if (!selected) return;
+    if (!selected || !principal) return;
+    capabilityOfferRequestRef.current += 1;
+    setCapabilityRequestSeed(null);
     if (scenario.action === "file" && scenario.path) {
       await attemptWorkspaceFileRead(scenario.path, scenario.id);
+      return;
+    }
+    if (scenario.action === "resource") {
+      const generation = sessionGenerationRef.current;
+      const agentId = selected.id;
+      setScenarioResults((current) => ({
+        ...current,
+        [scenario.id]: {
+          state: "loading",
+          decision: null,
+          runCreated: null,
+          runStatus: null,
+          error: null,
+        },
+      }));
+      setSecurityError(null);
+      setLatestScenarioResult(null);
+      setResourceRead(null);
+      try {
+        await api.demonstrateCrossOwnerResourceDenial(agentId);
+        if (
+          generation === sessionGenerationRef.current &&
+          selectedIdRef.current === agentId
+        ) {
+          throw new Error("Cross-owner resource policy unexpectedly allowed access");
+        }
+      } catch (reason) {
+        if (
+          generation !== sessionGenerationRef.current ||
+          selectedIdRef.current !== agentId
+        ) {
+          return;
+        }
+        if (isPolicyDenial(reason)) {
+          const decision = privacySafeDecision(reason.decision);
+          setLatestScenarioResult({
+            decision,
+            runCreated: false,
+            content: null,
+          });
+          setScenarioResults((current) => ({
+            ...current,
+            [scenario.id]: {
+              state: "denied",
+              decision,
+              runCreated: false,
+              runStatus: null,
+              error: null,
+            },
+          }));
+          void refreshDecisions().catch(() => undefined);
+          if (reason.decision.reasonCode === "AGENT_RESOURCE_OWNER_MISMATCH") {
+            await discoverPrivateCapabilityOffer(
+              crossTeamRecoveryPromptByDepartment[principal.department],
+              generation,
+              agentId,
+            );
+          }
+        } else {
+          const message = reason instanceof Error ? reason.message : String(reason);
+          setSecurityError(message);
+          setScenarioResults((current) => ({
+            ...current,
+            [scenario.id]: {
+              state: "error",
+              decision: null,
+              runCreated: null,
+              runStatus: null,
+              error: message,
+            },
+          }));
+        }
+      }
       return;
     }
     if (scenario.action === "agent") {
@@ -776,12 +1040,13 @@ export default function App() {
     } catch (reason) {
       if (generation !== sessionGenerationRef.current) return;
       if (isPolicyDenial(reason)) {
-        setLatestScenarioResult({ decision: reason.decision, runCreated: false, content: null });
+        const decision = privacySafeDecision(reason.decision);
+        setLatestScenarioResult({ decision, runCreated: false, content: null });
         setScenarioResults((current) => ({
           ...current,
           [scenario.id]: {
             state: "denied",
-            decision: reason.decision,
+            decision,
             runCreated: false,
             runStatus: null,
             error: null,
@@ -908,8 +1173,44 @@ export default function App() {
     if (!selected || !prompt.trim()) return;
     const content = prompt.trim();
     const generation = sessionGenerationRef.current;
-    setPrompt("");
+    capabilityOfferRequestRef.current += 1;
+    setCapabilityRequestSeed(null);
     setError(null);
+    if (authConfig?.mode !== "legacy") {
+      setCapabilityChecking(true);
+      try {
+        const discovery = await api.discoverCapability(content);
+        if (
+          generation !== sessionGenerationRef.current ||
+          selectedIdRef.current !== selected.id
+        ) {
+          return;
+        }
+        if (discovery.required && discovery.capability) {
+          setCapabilityRequestSeed({ prompt: content, discovery });
+          setPrompt("");
+          setShellView("trust-passes");
+          return;
+        }
+      } catch (reason) {
+        if (reason instanceof ApiError && reason.status === 401) {
+          handleRequestError(reason);
+          return;
+        }
+        if (
+          generation !== sessionGenerationRef.current ||
+          selectedIdRef.current !== selected.id
+        ) {
+          return;
+        }
+        setError(
+          "Capability recommendation is temporarily unavailable. Continuing with your owned Agent; backend access controls still apply.",
+        );
+      } finally {
+        if (generation === sessionGenerationRef.current) setCapabilityChecking(false);
+      }
+    }
+    setPrompt("");
     try {
       const result = await api.sendMessage(selected.id, content);
       if (generation !== sessionGenerationRef.current) return;
@@ -926,6 +1227,9 @@ export default function App() {
       await pollRun(result.run.id, selected.id, generation);
     } catch (reason) {
       handleRequestError(reason);
+      if (isCrossTeamPolicyDenial(reason)) {
+        await discoverPrivateCapabilityOffer(content, generation, selected.id);
+      }
       setActiveRun(null);
       if (!(reason instanceof ApiError && reason.status === 401)) {
         void refreshAgents().catch(() => undefined);
@@ -1197,6 +1501,26 @@ export default function App() {
           <span>＋</span> Create Agent
         </button>
 
+        {authConfig.mode !== "legacy" && (
+          <button
+            type="button"
+            className={"trust-sidebar-button " + (shellView === "trust-passes" ? "selected" : "")}
+            onClick={() => setShellView("trust-passes")}
+            aria-label={`Trust passes. ${trustPassCounts.pendingApprovals} pending approvals and ${trustPassCounts.approvedTasks} approved tasks.`}
+          >
+            <span className="trust-sidebar-icon" aria-hidden="true">◇</span>
+            <span className="trust-sidebar-copy">
+              <strong>Trust passes</strong>
+              <small>Request · approve · run once</small>
+            </span>
+            {trustPassCounts.pendingApprovals + trustPassCounts.approvedTasks > 0 && (
+              <span className="trust-sidebar-count">
+                {trustPassCounts.pendingApprovals + trustPassCounts.approvedTasks}
+              </span>
+            )}
+          </button>
+        )}
+
         <div className="sidebar-label">
           <span>Your Agents</span>
           <span>{agents.length}</span>
@@ -1204,9 +1528,15 @@ export default function App() {
         <nav className="agent-list" aria-label="Your Agents">
           {agents.map((agent) => (
             <button
-              className={"agent-card " + (agent.id === selectedId ? "selected" : "")}
+              className={
+                "agent-card " +
+                (shellView === "agent" && agent.id === selectedId ? "selected" : "")
+              }
               key={agent.id}
-              onClick={() => setSelectedId(agent.id)}
+              onClick={() => {
+                setSelectedId(agent.id);
+                setShellView("agent");
+              }}
               aria-label={`${agent.name}, ${agent.status}`}
             >
               <div className="agent-avatar">{agent.name.slice(0, 1).toUpperCase()}</div>
@@ -1294,11 +1624,27 @@ export default function App() {
         {error && (
           <div className="error-banner" role="alert">
             <span>{error}</span>
-            <button onClick={() => setError(null)}>×</button>
+            <button
+              type="button"
+              onClick={() => setError(null)}
+              aria-label="Dismiss message"
+            >
+              ×
+            </button>
           </div>
         )}
 
-        {selected ? (
+        {shellView === "trust-passes" && authConfig.mode !== "legacy" ? (
+          <TrustPassWorkspace
+            principal={principal}
+            agents={agents}
+            resources={resources}
+            requestSeed={capabilityRequestSeed}
+            onRequestSeedCleared={handleRequestSeedCleared}
+            onCountsChange={handleTrustPassCounts}
+            onUnauthorized={handleTrustPassUnauthorized}
+          />
+        ) : selected ? (
           <>
             <header className="agent-header">
               <div>
@@ -1558,6 +1904,7 @@ export default function App() {
                       : "Describe what you want the Agent to do…"
                   }
                   disabled={
+                    capabilityChecking ||
                     selected.revokedAt !== null ||
                     selected.status === "stopped" ||
                     selected.status === "busy" ||
@@ -1573,6 +1920,7 @@ export default function App() {
                     className="send-button"
                     disabled={
                       !prompt.trim() ||
+                      capabilityChecking ||
                       selected.revokedAt !== null ||
                       selected.status === "stopped" ||
                       selected.status === "busy" ||
@@ -1580,7 +1928,7 @@ export default function App() {
                     }
                     aria-label="Send message"
                   >
-                    ↑
+                    {capabilityChecking ? <Spinner /> : "↑"}
                   </button>
                 </div>
               </form>
@@ -1659,7 +2007,7 @@ export default function App() {
                   <div className="resource-section">
                     <div className="section-heading scenario-heading">
                       <div>
-                        <span className="eyebrow">Five-step security demo</span>
+                        <span className="eyebrow">Six-step security demo</span>
                         <h3>Run a real policy scenario</h3>
                       </div>
                       <span>Server decisions only</span>
@@ -1674,12 +2022,19 @@ export default function App() {
                               <span className={"scenario-action scenario-" + scenario.action}>
                                 {scenario.action === "file"
                                   ? "file.read"
+                                  : scenario.action === "resource"
+                                    ? "resource.read"
                                   : scenario.action === "shell"
                                     ? "shell.execute"
                                     : "agent.read"}
                               </span>
                               <span className="scenario-target">
-                                {scenario.path ?? scenario.command ?? scenario.target ?? "Policy target"}
+                                {scenario.path ??
+                                  scenario.command ??
+                                  scenario.target ??
+                                  (scenario.action === "resource"
+                                    ? "Private cross-owner fixture"
+                                    : "Policy target")}
                               </span>
                             </div>
                             <h4>{scenario.title}</h4>
@@ -1861,6 +2216,29 @@ export default function App() {
                             middleware.
                           </div>
                         )}
+                        {latestScenarioResult.decision.decision === "deny" &&
+                          capabilityRequestSeed && (
+                            <div className="capability-recovery" role="status">
+                              <span className="privacy-chip">Private discovery</span>
+                              <strong>A matching capability can be requested safely</strong>
+                              <p>
+                                {capabilityRequestSeed.discovery.capabilityLabel ??
+                                  "A privately managed capability"} may handle the sanitized task
+                                below. No foreign Agent, resource, workspace, or history was
+                                disclosed.
+                              </p>
+                              <blockquote>
+                                {capabilityRequestSeed.discovery.sanitizedTaskSummary}
+                              </blockquote>
+                              <button
+                                type="button"
+                                className="button button-primary"
+                                onClick={() => setShellView("trust-passes")}
+                              >
+                                Review private approval request
+                              </button>
+                            </div>
+                          )}
                       </>
                     ) : (
                       <div className="decision-placeholder">

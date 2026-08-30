@@ -18,7 +18,23 @@ export type AuthorizationAction =
   | "file.read"
   | "file.write"
   | "shell.execute"
-  | "network.request";
+  | "network.request"
+  | "delegation.request"
+  | "delegation.approve"
+  | "delegation.reject"
+  | "delegation.revoke";
+export type DelegationRequestStatus =
+  | "pending"
+  | "approved"
+  | "rejected"
+  | "expired";
+export type DelegationContractStatus =
+  | "active"
+  | "consumed"
+  | "revoked"
+  | "expired";
+export type DelegationResultVisibility = "final_output_only";
+export type PersonalInformationAssessment = "none_detected" | "possible";
 
 export const DEFAULT_LEGACY_OWNER_ID = "11111111-1111-4111-8111-111111111111";
 
@@ -90,6 +106,59 @@ export interface ProtectedResourceSummary extends Omit<ProtectedResource, "stora
   ownedByCurrentUser: boolean;
 }
 
+export interface KnownHuman {
+  id: string;
+  email: string;
+  displayName: string;
+  department: Department;
+  lastSeenAt: string;
+}
+
+export interface DelegationRequest {
+  id: string;
+  requesterHumanId: string;
+  requesterEmail: string;
+  requesterDisplayName: string;
+  requesterDepartment: Department;
+  requiredCapability: string;
+  sanitizedTaskSummary: string;
+  personalInformation: PersonalInformationAssessment;
+  taskDigest: string;
+  status: DelegationRequestStatus;
+  createdAt: string;
+  expiresAt: string;
+  reviewedAt: string | null;
+  contractId: string | null;
+}
+
+export interface DelegationContract {
+  id: string;
+  requestId: string | null;
+  requiredCapability: string;
+  sanitizedTaskSummary: string;
+  personalInformation: PersonalInformationAssessment;
+  approvingHumanId: string;
+  granteeHumanId: string;
+  granteeEmail: string;
+  granteeDisplayName: string;
+  granteeDepartment: Department;
+  agentId: string;
+  approvedPrompt: string;
+  exactPromptDigest: string;
+  approvedResourceIds: string[];
+  approvedResourceDigests: Record<string, string>;
+  allowedActions: ["agent.invoke"];
+  resultVisibility: DelegationResultVisibility;
+  maximumUses: 1;
+  usesConsumed: number;
+  expiresAt: string;
+  status: DelegationContractStatus;
+  runId: string | null;
+  createdAt: string;
+  consumedAt: string | null;
+  revokedAt: string | null;
+}
+
 export interface AuthorizationDecision {
   id: string;
   requestId: string;
@@ -99,7 +168,15 @@ export interface AuthorizationDecision {
   agentId: string | null;
   agentName: string | null;
   action: AuthorizationAction;
-  targetType: "agent" | "run" | "resource" | "file" | "command" | "network";
+  targetType:
+    | "agent"
+    | "run"
+    | "resource"
+    | "file"
+    | "command"
+    | "network"
+    | "delegation"
+    | "capability";
   targetId: string;
   targetLabel: string;
   decision: AuthorizationDecisionValue;
@@ -114,7 +191,18 @@ export interface AuthorizationDecision {
     | "FILE_TOO_LARGE"
     | "RUNTIME_COMMAND_ALLOWED"
     | "RUNTIME_COMMAND_DENIED"
-    | "RUNTIME_NETWORK_DENIED";
+    | "RUNTIME_NETWORK_DENIED"
+    | "DELEGATION_REQUESTED"
+    | "DELEGATION_APPROVED"
+    | "DELEGATION_REJECTED"
+    | "DELEGATION_ACTIVE"
+    | "DELEGATION_CONSUMED"
+    | "DELEGATION_REVOKED"
+    | "DELEGATION_EXPIRED"
+    | "DELEGATION_PROMPT_MISMATCH"
+    | "DELEGATION_GRANTEE_MISMATCH"
+    | "DELEGATION_ACTION_NOT_ALLOWED"
+    | "DELEGATION_RESOURCE_CHANGED";
   reason: string;
   createdAt: string;
 }
@@ -127,6 +215,9 @@ export interface Database {
   runs: AgentRun[];
   protectedResources: ProtectedResource[];
   authorizationDecisions: AuthorizationDecision[];
+  knownHumans: KnownHuman[];
+  delegationRequests: DelegationRequest[];
+  delegationContracts: DelegationContract[];
 }
 
 export interface CreateAgentInput {
@@ -153,6 +244,7 @@ export interface RunnerRequest {
   workspacePath: string;
   prompt: string;
   threadId: string | null;
+  codexHome?: string | undefined;
 }
 
 export interface RuntimeAuthorizationContext {
@@ -166,4 +258,5 @@ export interface AgentRunner {
   run(request: RunnerRequest): Promise<RunnerResult>;
   cancel(agentId: string): Promise<boolean>;
   isAvailable(): Promise<boolean>;
+  removeStaleContainers?(): Promise<void>;
 }

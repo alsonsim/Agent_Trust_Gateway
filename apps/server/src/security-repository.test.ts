@@ -245,6 +245,33 @@ describe("SupabaseSecurityRepository", () => {
       },
     });
   });
+
+  it("posts multiple authorization decisions as one Supabase batch", async () => {
+    let body = "";
+    const fetchImplementation: typeof fetch = async (_input, init) => {
+      body = String(init?.body ?? "");
+      return new Response(null, { status: 201 });
+    };
+    const repository = new SupabaseSecurityRepository(
+      "https://example.supabase.co",
+      "publishable-key",
+      "secret-key",
+      fetchImplementation,
+    );
+
+    await repository.appendDecisions([
+      decision,
+      { ...decision, id: "55555555-5555-4555-8555-555555555555" },
+    ]);
+
+    expect(JSON.parse(body)).toEqual([
+      expect.objectContaining({ id: decision.id, action: "resource.read" }),
+      expect.objectContaining({
+        id: "55555555-5555-4555-8555-555555555555",
+        action: "resource.read",
+      }),
+    ]);
+  });
 });
 
 describe("LocalSecurityRepository", () => {

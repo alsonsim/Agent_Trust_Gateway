@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import path from "node:path";
 import type { AppConfig } from "./config.js";
 import { RunCancelledError } from "./errors.js";
 import { prepareScopedCodexHome, runtimeStateKey } from "./runtime-state.js";
@@ -36,6 +37,17 @@ export function buildCodexArgs(
     args.push(request.prompt);
   }
   return args;
+}
+
+export function resolveRunnerCodexHome(
+  request: Pick<RunnerRequest, "codexHome">,
+  config: AppConfig,
+): string {
+  const selectedHome = request.codexHome ?? config.codexHome;
+  if (!path.isAbsolute(selectedHome)) {
+    throw new Error("Runner Codex home must be an absolute path");
+  }
+  return path.resolve(selectedHome);
 }
 
 export function parseCodexEventLine(line: string, parsed: ParsedEvents): void {
@@ -137,17 +149,20 @@ export class CodexRunner implements AgentRunner {
       throw new Error("Agent already has an active Codex process");
     }
 
-    const codexHome = await prepareScopedCodexHome(
-      this.config,
-      runtimeStateKey(request),
-    );
+    const codexHome = request.codexHome === undefined
+      ? await prepareScopedCodexHome(this.config, runtimeStateKey(request))
+      : resolveRunnerCodexHome(request, this.config);
     const args = buildCodexArgs(request, this.config.codexSandboxMode);
     let child: ChildProcess;
     try {
-      child = this.startCodex(args, {
-        cwd: request.workspacePath,
-        stdio: ["ignore", "pipe", "pipe"],
-      }, codexHome);
+      child = this.startCodex(
+        args,
+        {
+          cwd: request.workspacePath,
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+        codexHome,
+      );
     } catch (error) {
       throw this.executableStartError(error);
     }
@@ -320,7 +335,7 @@ export class CodexRunner implements AgentRunner {
 
 export function buildCodexChildEnvironment(
   config: AppConfig,
-  codexHome: string,
+  codexHome = config.codexHome,
   sourceEnvironment: NodeJS.ProcessEnv = process.env,
 ): NodeJS.ProcessEnv {
   const inheritedNames = [
@@ -339,11 +354,12 @@ export function buildCodexChildEnvironment(
   ] as const;
   const environment: NodeJS.ProcessEnv = {
     CODEX_HOME: codexHome,
+    HOME: codexHome,
     ARK_API_KEY: config.arkApiKey,
     NO_COLOR: "1",
   };
   for (const name of inheritedNames) {
-    if (sourceEnvironment[name] !== undefined) {
+    if (environment[name] === undefined && sourceEnvironment[name] !== undefined) {
       environment[name] = sourceEnvironment[name];
     }
   }

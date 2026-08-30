@@ -16,11 +16,11 @@ import type {
   ProtectedResourceSummary,
 } from "../types";
 
-type TrustPassTab = "requested-by-you" | "requested-from-you";
+type TrustPassTab = "need-access" | "grant-access";
 
 const trustPassTabOrder: readonly TrustPassTab[] = [
-  "requested-by-you",
-  "requested-from-you",
+  "need-access",
+  "grant-access",
 ];
 
 export interface CapabilityRequestSeed {
@@ -207,7 +207,7 @@ export function TrustPassWorkspace({
   onCountsChange,
   onUnauthorized,
 }: TrustPassWorkspaceProps) {
-  const [tab, setTab] = useState<TrustPassTab>("requested-by-you");
+  const [tab, setTab] = useState<TrustPassTab>("need-access");
   const [outgoingRequests, setOutgoingRequests] = useState<DelegationRequestView[]>([]);
   const [incomingRequests, setIncomingRequests] = useState<DelegationRequestView[]>([]);
   const [approvedTasks, setApprovedTasks] = useState<GranteeDelegationContractView[]>([]);
@@ -365,7 +365,7 @@ export function TrustPassWorkspace({
     const seededPrompt = requestSeed.prompt.trim();
     discoveryRequestRef.current += 1;
     requestPromptRef.current = seededPrompt;
-    setTab("requested-by-you");
+    setTab("need-access");
     setRequestPrompt(seededPrompt);
     setDiscovery(requestSeed.discovery);
     setDiscoveryPrompt(seededPrompt);
@@ -684,23 +684,23 @@ export function TrustPassWorkspace({
   ).length;
   const trustPassTabs = [
     {
-      value: "requested-by-you",
-      label: "Requested by you",
-      description: "Requests + approved tasks",
+      value: "need-access",
+      label: "Access I need",
+      description: "My requests and approved tasks",
       firstMetric: countLabel(pendingOutgoingRequestCount, "pending", "pending"),
       secondMetric: countLabel(activeTaskCount, "approved", "approved"),
       ariaLabel:
-        `Requested by you. ${countLabel(pendingOutgoingRequestCount, "pending request")}. ` +
+        `Access I need. ${countLabel(pendingOutgoingRequestCount, "pending request")}. ` +
         `${countLabel(activeTaskCount, "approved task")} ready.`,
     },
     {
-      value: "requested-from-you",
-      label: "Requested from you",
-      description: "Approvals + issued passes",
+      value: "grant-access",
+      label: "Access I grant",
+      description: "Requests to review and passes I’ve issued",
       firstMetric: countLabel(pendingApprovalCount, "to review", "to review"),
       secondMetric: countLabel(activeIssuedPassCount, "issued", "issued"),
       ariaLabel:
-        `Requested from you. ${countLabel(pendingApprovalCount, "request to review", "requests to review")}. ` +
+        `Access I grant. ${countLabel(pendingApprovalCount, "request to review", "requests to review")}. ` +
         `${countLabel(activeIssuedPassCount, "active issued pass", "active issued passes")}.`,
     },
   ] satisfies Array<{
@@ -792,7 +792,7 @@ export function TrustPassWorkspace({
 
         {loading ? (
           <div className="trust-loading"><Loading /> Loading Trust Passes…</div>
-        ) : tab === "requested-by-you" ? (
+        ) : tab === "need-access" ? (
           <div className="trust-grouped-view">
             <div className="trust-view-grid request-view-grid">
             <article className="trust-card trust-form-card">

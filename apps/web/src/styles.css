@@ -2413,45 +2413,6 @@ textarea:focus {
   line-height: 1.5;
 }
 
-.trust-flow {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 1px;
-  border-bottom: 1px solid #e3e1d9;
-  background: #e3e1d9;
-}
-
-.trust-flow > div {
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-  padding: 9px 7px;
-  background: #f7f5ef;
-}
-
-.trust-flow span {
-  width: 19px;
-  height: 19px;
-  flex: 0 0 auto;
-  display: grid;
-  place-items: center;
-  border-radius: 50%;
-  color: #5d4abd;
-  background: #e9e5fc;
-  font-size: 11px;
-  font-weight: 800;
-}
-
-.trust-flow strong {
-  overflow: hidden;
-  color: #63645d;
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .trust-pass-tabs {
   display: flex;
   gap: 3px;
@@ -3872,11 +3833,6 @@ textarea:focus {
 
   .trust-pass-header h1 {
     font-size: 21px;
-  }
-
-  .trust-flow {
-    grid-template-columns: repeat(5, minmax(108px, 1fr));
-    overflow-x: auto;
   }
 
   .trust-pass-tabs {

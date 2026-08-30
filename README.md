@@ -30,6 +30,10 @@ Volcengine ECS.
 - Server-side Human → Agent ownership enforcement on every Agent/Run route
 - Owner-scoped protected file gateway with visible `ALLOW` / `DENY` decisions
 - HttpOnly sessions, append-only audit evidence, and a Supabase Auth/RLS adapter
+- Private capability discovery that never reveals another team's Agent
+- Requester- and owner-initiated Trust Passes backed by one delegation contract
+- Exact-task, exact-Agent, resource-scoped, expiring, revocable one-use Runs
+- An approval inbox, locked approved-task view, countdowns, and policy explanations
 - Agent create, edit, start, stop, delete, and multi-turn chat
 - Fastify control plane with asynchronous Run state
 - Persistent Agent workspaces and Codex sessions
@@ -57,6 +61,38 @@ npm run dev
 
 Open <http://localhost:5173>, choose Finance, HR, or Research, create an Agent,
 then use **Access & audit** to demonstrate allowed and denied file reads.
+
+## Selected track: Bouncer — Identity and Authorization
+
+**The Trust Gateway lets Agents privately discover missing capabilities and
+request a narrowly scoped, owner-approved Agent Pass—without exposing or
+sharing the underlying Agent.**
+
+The capability broker recommends that a task needs a privately managed
+capability. It can create a permission request only after the requester
+confirms; it cannot approve the request or issue a pass. The capability owner
+selects one of their own ready Agents, reviews the exact redacted task and
+resource scope, and either approves or rejects it.
+
+Requester-initiated approval and owner-initiated delegation both create the
+same backend `DelegationContract`:
+
+```text
+Discovery -> permission request -> owner approval -> Agent Pass
+          -> one scoped Run -> consumed, revoked, or expired
+```
+
+Authorization middleware binds every pass to one authenticated grantee, one
+owner-controlled Agent, the exact owner-visible task bytes, approved resource
+digests, `agent.invoke`, final-output-only visibility, one use, and an expiry.
+In the local demo, the backend commits at most one admitted Run and its ALLOW
+evidence in the same JSON-store write, recording the human, Agent, action,
+resource, decision, and reason. The grantee cannot open the Agent, inspect its
+settings or history, read its resources directly, alter the task, forward the
+pass, or replay it.
+
+See the [three-minute Trust Pass demo](docs/TRUST_PASS_DEMO.md) for the complete
+Finance and HR walkthrough.
 
 ## Local browser SOP
 
@@ -265,12 +301,19 @@ terraform fmt -check -recursive deploy/volcengine
 docker compose config
 ```
 
+The checked-in runtime uses a single-process JSON store for the local demo. A
+service-role-only Supabase schema and atomic RPC contract are included as a
+persistence foundation, but they are not wired into the Node.js runtime yet;
+see [Supabase Trust Pass persistence](docs/SUPABASE_TRUST_PASS.md).
+
 ## Documentation
 
 - [Architecture](docs/ARCHITECTURE.md)
 - [Local POC](docs/LOCAL_POC.md)
 - [Deployment](docs/DEPLOYMENT.md)
 - [Hackathon extension guide](docs/HACKATHON_EXTENSION_GUIDE.md)
+- [Trust Pass demo](docs/TRUST_PASS_DEMO.md)
+- [Supabase Trust Pass persistence](docs/SUPABASE_TRUST_PASS.md)
 - [Security policy](SECURITY.md)
 - [Contributing](CONTRIBUTING.md)
 

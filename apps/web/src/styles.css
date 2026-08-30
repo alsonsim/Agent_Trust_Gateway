@@ -2521,6 +2521,9 @@ textarea:focus {
 }
 
 .trust-notice {
+  position: sticky;
+  top: 0;
+  z-index: 4;
   margin-bottom: 12px;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
@@ -2531,6 +2534,7 @@ textarea:focus {
   padding: 10px 12px;
   color: #286f56;
   background: #eaf6f0;
+  box-shadow: 0 8px 22px rgba(42, 82, 66, 0.12);
   font-size: 12px;
 }
 
@@ -2704,8 +2708,7 @@ textarea:focus {
 }
 
 .trust-form-card > label + label,
-.trust-form-card > label + .resource-selector,
-.trust-form-card > .resource-selector + .locked-scope-note {
+.trust-form-card > label + .resource-selector {
   display: block;
   margin-top: 12px;
 }
@@ -2796,7 +2799,6 @@ textarea:focus {
 }
 
 .privacy-proof,
-.locked-scope-note,
 .result-proof {
   margin-top: 11px;
   border: 1px solid #ddd8f1;
@@ -2842,6 +2844,11 @@ textarea:focus {
   border-radius: 9px;
   padding: 13px;
   background: #fcfbf8;
+}
+
+.request-delivered {
+  border-color: #78b89e;
+  box-shadow: 0 0 0 3px rgba(70, 149, 118, 0.12);
 }
 
 .compact-trust-card p {
@@ -3216,22 +3223,13 @@ textarea:focus {
   line-height: 1.5;
 }
 
-.approval-facts {
-  margin-top: 8px;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.approval-facts span {
-  border-radius: 6px;
-  padding: 5px 7px;
+.request-review-deadline {
+  margin: 8px 0 0;
   color: #7e7f77;
-  background: #f1f0eb;
   font-size: 11px;
 }
 
-.approval-facts strong {
+.request-review-deadline strong {
   color: #55564f;
 }
 
@@ -3246,6 +3244,34 @@ textarea:focus {
   margin-top: 12px;
   border-top: 1px solid #e6e4dc;
   padding-top: 12px;
+}
+
+.approval-preview {
+  margin-top: 12px;
+  overflow: hidden;
+  border: 1px solid #dcd7ef;
+  border-radius: 9px;
+  background: #fbfaff;
+}
+
+.approval-preview summary {
+  padding: 10px 12px;
+  color: #554892;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.approval-preview[open] summary {
+  border-bottom: 1px solid #e3dff2;
+}
+
+.approval-preview-content {
+  padding: 12px;
+}
+
+.approval-preview-content .private-agent-note {
+  margin-top: 0;
 }
 
 .resource-selector {
@@ -3316,34 +3342,23 @@ textarea:focus {
   margin-top: 12px;
 }
 
-.issued-details {
+.owner-agent-detail {
   margin: 10px 0 0;
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 1px;
-  overflow: hidden;
   border: 1px solid #e1dfd7;
   border-radius: 7px;
-  background: #e1dfd7;
-}
-
-.issued-details > div {
-  padding: 7px 8px;
+  padding: 8px 9px;
   background: white;
 }
 
-.issued-details dt,
-.issued-details dd {
-  margin: 0;
-}
-
-.issued-details dt {
+.owner-agent-detail span {
+  display: block;
   color: #8b8b84;
   font-size: 11px;
   text-transform: uppercase;
 }
 
-.issued-details dd {
+.owner-agent-detail strong {
+  display: block;
   margin-top: 2px;
   overflow: hidden;
   color: #4a4b45;
@@ -3935,8 +3950,7 @@ textarea:focus {
     gap: 2px;
   }
 
-  .trust-scope-grid,
-  .issued-details {
+  .trust-scope-grid {
     grid-template-columns: 1fr;
   }
 

@@ -16,11 +16,11 @@ import type {
   ProtectedResourceSummary,
 } from "../types";
 
-type TrustPassTab = "requested-by-you" | "requested-from-you";
+type TrustPassTab = "need-access" | "grant-access";
 
 const trustPassTabOrder: readonly TrustPassTab[] = [
-  "requested-by-you",
-  "requested-from-you",
+  "need-access",
+  "grant-access",
 ];
 
 export interface CapabilityRequestSeed {
@@ -151,27 +151,54 @@ function EmptyState({ children }: { children: React.ReactNode }) {
 
 function ScopeFacts({
   inputCount,
-  expiresAt,
-  serverNowMs,
+  validity,
 }: {
   inputCount: number;
-  expiresAt: string;
-  serverNowMs: number;
+  validity:
+    | { kind: "countdown"; expiresAt: string; serverNowMs: number }
+    | { kind: "duration"; label: string; hint: string };
 }) {
   return (
     <dl className="trust-scope-grid">
       <div><dt>Action</dt><dd><code>agent.invoke</code></dd></div>
       <div><dt>Uses</dt><dd>One Run</dd></div>
-      <div><dt>Inputs</dt><dd>{inputCount} owner-approved</dd></div>
+      <div><dt>Inputs</dt><dd>{inputCount === 0 ? "None" : `${inputCount} approved`}</dd></div>
       <div><dt>Result</dt><dd>Final output only</dd></div>
+      <div><dt>Prompt</dt><dd>Exact task only</dd></div>
+      <div><dt>Sharing</dt><dd>Cannot be forwarded</dd></div>
       <div className="trust-scope-wide">
         <dt>Valid for</dt>
         <dd>
-          <time dateTime={expiresAt}>{formatRemaining(expiresAt, serverNowMs)}</time>
-          <small> Backend expiry is authoritative</small>
+          {validity.kind === "countdown" ? (
+            <time dateTime={validity.expiresAt}>
+              {formatRemaining(validity.expiresAt, validity.serverNowMs)}
+            </time>
+          ) : (
+            validity.label
+          )}
+          <small>
+            {validity.kind === "countdown"
+              ? " · Backend expiry is authoritative"
+              : ` · ${validity.hint}`}
+          </small>
         </dd>
       </div>
     </dl>
+  );
+}
+
+function PrivateAgentNote({
+  title = "Underlying Agent remains private",
+  message = "You cannot open its settings, workspace, history, resources, or other Runs.",
+}: {
+  title?: string;
+  message?: string;
+}) {
+  return (
+    <div className="private-agent-note">
+      <span aria-hidden="true">◆</span>
+      <div><strong>{title}</strong><span>{message}</span></div>
+    </div>
   );
 }
 
@@ -184,7 +211,7 @@ function PolicyExplanation({
 }) {
   const explanation =
     status === "active"
-      ? "Eligible now. Before dispatch, the middleware verifies the grantee, exact prompt digest, approved inputs, action, expiry, and remaining use."
+      ? "This pass is active and ready for its one approved Run."
       : status === "consumed"
         ? "This one-use pass already admitted its approved Run. Every retry is denied before Runtime dispatch."
         : status === "revoked"
@@ -207,7 +234,7 @@ export function TrustPassWorkspace({
   onCountsChange,
   onUnauthorized,
 }: TrustPassWorkspaceProps) {
-  const [tab, setTab] = useState<TrustPassTab>("requested-by-you");
+  const [tab, setTab] = useState<TrustPassTab>("need-access");
   const [outgoingRequests, setOutgoingRequests] = useState<DelegationRequestView[]>([]);
   const [incomingRequests, setIncomingRequests] = useState<DelegationRequestView[]>([]);
   const [approvedTasks, setApprovedTasks] = useState<GranteeDelegationContractView[]>([]);
@@ -228,6 +255,7 @@ export function TrustPassWorkspace({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [recentRequestId, setRecentRequestId] = useState<string | null>(null);
   const [latestDecision, setLatestDecision] = useState<AuthorizationDecision | null>(null);
   const [serverOffsetMs, setServerOffsetMs] = useState(0);
   const [clockMs, setClockMs] = useState(Date.now());
@@ -356,6 +384,29 @@ export function TrustPassWorkspace({
   }, [refreshAll]);
 
   useEffect(() => {
+    let refreshInProgress = false;
+    const refreshWhenVisible = () => {
+      if (document.visibilityState !== "visible" || refreshInProgress) return;
+      refreshInProgress = true;
+      void refreshAll().finally(() => {
+        refreshInProgress = false;
+      });
+    };
+    window.addEventListener("focus", refreshWhenVisible);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    return () => {
+      window.removeEventListener("focus", refreshWhenVisible);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+    };
+  }, [refreshAll]);
+
+  useEffect(() => {
+    if (!recentRequestId) return;
+    const timer = window.setTimeout(() => setRecentRequestId(null), 8_000);
+    return () => window.clearTimeout(timer);
+  }, [recentRequestId]);
+
+  useEffect(() => {
     const timer = window.setInterval(() => setClockMs(Date.now()), 1_000);
     return () => window.clearInterval(timer);
   }, []);
@@ -365,7 +416,7 @@ export function TrustPassWorkspace({
     const seededPrompt = requestSeed.prompt.trim();
     discoveryRequestRef.current += 1;
     requestPromptRef.current = seededPrompt;
-    setTab("requested-by-you");
+    setTab("need-access");
     setRequestPrompt(seededPrompt);
     setDiscovery(requestSeed.discovery);
     setDiscoveryPrompt(seededPrompt);
@@ -499,7 +550,15 @@ export function TrustPassWorkspace({
         prompt: discoveryPrompt,
       });
       setLatestDecision(response.decision);
-      setNotice("Permission request sent privately to the capability-owning team.");
+      setOutgoingRequests((current) => [
+        response.request,
+        ...current.filter((request) => request.id !== response.request.id),
+      ]);
+      setRecentRequestId(response.request.id);
+      setNotice(
+        `Request sent privately to the ${departmentLabel(response.request.providerDepartment)} ` +
+          "capability owner. It is now in their approval inbox.",
+      );
       setDiscovery(null);
       setDiscoveryPrompt(null);
       const examplePrompt = requestExampleByDepartment[principal.department];
@@ -684,23 +743,23 @@ export function TrustPassWorkspace({
   ).length;
   const trustPassTabs = [
     {
-      value: "requested-by-you",
-      label: "Requested by you",
-      description: "Requests + approved tasks",
+      value: "need-access",
+      label: "Access I need",
+      description: "My requests and approved tasks",
       firstMetric: countLabel(pendingOutgoingRequestCount, "pending", "pending"),
       secondMetric: countLabel(activeTaskCount, "approved", "approved"),
       ariaLabel:
-        `Requested by you. ${countLabel(pendingOutgoingRequestCount, "pending request")}. ` +
+        `Access I need. ${countLabel(pendingOutgoingRequestCount, "pending request")}. ` +
         `${countLabel(activeTaskCount, "approved task")} ready.`,
     },
     {
-      value: "requested-from-you",
-      label: "Requested from you",
-      description: "Approvals + issued passes",
+      value: "grant-access",
+      label: "Access I grant",
+      description: "Requests to review and passes I’ve issued",
       firstMetric: countLabel(pendingApprovalCount, "to review", "to review"),
       secondMetric: countLabel(activeIssuedPassCount, "issued", "issued"),
       ariaLabel:
-        `Requested from you. ${countLabel(pendingApprovalCount, "request to review", "requests to review")}. ` +
+        `Access I grant. ${countLabel(pendingApprovalCount, "request to review", "requests to review")}. ` +
         `${countLabel(activeIssuedPassCount, "active issued pass", "active issued passes")}.`,
     },
   ] satisfies Array<{
@@ -792,7 +851,7 @@ export function TrustPassWorkspace({
 
         {loading ? (
           <div className="trust-loading"><Loading /> Loading Trust Passes…</div>
-        ) : tab === "requested-by-you" ? (
+        ) : tab === "need-access" ? (
           <div className="trust-grouped-view">
             <div className="trust-view-grid request-view-grid">
             <article className="trust-card trust-form-card">
@@ -897,17 +956,37 @@ export function TrustPassWorkspace({
                     const effectiveStatus: DelegationRequestView["status"] =
                       visuallyExpired ? "expired" : request.status;
                     return (
-                      <article className="trust-card compact-trust-card" key={request.id}>
+                      <article
+                        className={
+                          "trust-card compact-trust-card" +
+                          (request.id === recentRequestId ? " request-delivered" : "")
+                        }
+                        key={request.id}
+                      >
                         <div className="trust-card-heading">
                           <div><span className="eyebrow">{request.capabilityLabel}</span><h3>{request.sanitizedTaskSummary}</h3></div>
                           <StatusBadge status={effectiveStatus} />
                         </div>
                         <div className="request-meta">
                           <span>{departmentLabel(request.providerDepartment)} capability</span>
-                          <span><time dateTime={request.expiresAt}>{formatRemaining(request.expiresAt, serverNowMs)}</time></span>
-                          <span>digest {request.taskDigest.slice(0, 10)}</span>
+                          <span>
+                            <time dateTime={request.expiresAt}>
+                              {isExpired(request.expiresAt, serverNowMs)
+                                ? "Expired"
+                                : `${formatRemaining(request.expiresAt, serverNowMs)} remaining`}
+                            </time>
+                          </span>
                         </div>
-                        {effectiveStatus === "pending" && <p className="pending-copy">No Agent access exists until the owner approves this exact task.</p>}
+                        <details className="request-technical">
+                          <summary>Technical details</summary>
+                          <code>Task digest: {request.taskDigest}</code>
+                        </details>
+                        {effectiveStatus === "pending" && (
+                          <p className="pending-copy">
+                            Delivered to the {departmentLabel(request.providerDepartment)} capability
+                            owner for review. No Agent access exists until they approve this exact task.
+                          </p>
+                        )}
                         {effectiveStatus === "approved" && <p className="allowed-copy">Approved. Use the one-use pass in Approved tasks below.</p>}
                         {effectiveStatus === "rejected" && <p className="denied-copy">The owner declined this request. No pass was issued.</p>}
                         {effectiveStatus === "expired" && <p className="denied-copy">The request expired before approval.</p>}
@@ -941,16 +1020,20 @@ export function TrustPassWorkspace({
                         </div>
                         <StatusBadge status={visuallyExpired && contract.status === "active" ? "expired" : contract.status} />
                       </div>
-                      <div className="private-agent-note">
-                        <span aria-hidden="true">◆</span>
-                        <div><strong>Underlying Agent remains private</strong><span>You cannot open its settings, workspace, history, resources, or other Runs.</span></div>
-                      </div>
+                      <PrivateAgentNote />
                       <label className="locked-prompt">
-                        Exact owner-approved task
+                        Approved task
                         <textarea value={contract.approvedPrompt} readOnly rows={4} />
-                        <span>Locked to the backend prompt digest</span>
+                        <span>This exact task is locked and cannot be changed.</span>
                       </label>
-                      <ScopeFacts inputCount={contract.approvedInputCount} expiresAt={contract.expiresAt} serverNowMs={serverNowMs} />
+                      <ScopeFacts
+                        inputCount={contract.approvedInputCount}
+                        validity={{
+                          kind: "countdown",
+                          expiresAt: contract.expiresAt,
+                          serverNowMs,
+                        }}
+                      />
                       <PolicyExplanation status={visuallyExpired && contract.status === "active" ? "expired" : contract.status} reasonCode={visuallyExpired && contract.status === "active" ? "DELEGATION_EXPIRED" : contract.policyReasonCode} />
                       <button
                         type="button"
@@ -1036,12 +1119,13 @@ export function TrustPassWorkspace({
                         <small>The issued pass will execute exactly the text shown above—no hidden suffix.</small>
                         <span>Personal information: {request.personalInformation === "possible" ? "possible — review carefully" : "none detected"}</span>
                       </div>
-                      <div className="approval-facts">
-                        <span>Requested uses <strong>one</strong></span>
-                        <span>Result <strong>final output only</strong></span>
-                        <span>Request expires <strong>{formatRemaining(request.expiresAt, serverNowMs)}</strong></span>
-                      </div>
-                      <details className="request-technical"><summary>Task digest</summary><code>{request.taskDigest}</code></details>
+                      <p className="request-review-deadline">
+                        Review within <strong>{formatRemaining(request.expiresAt, serverNowMs)}</strong>
+                      </p>
+                      <details className="request-technical">
+                        <summary>Technical details</summary>
+                        <code>Task digest: {request.taskDigest}</code>
+                      </details>
 
                       {pending && (
                         <div className="approval-controls">
@@ -1061,9 +1145,31 @@ export function TrustPassWorkspace({
                               </label>
                             ))}
                           </fieldset>
-                          <div className="locked-scope-note">
-                            Locked scope: <code>agent.invoke</code> · one Run · ten minutes · final output only
-                          </div>
+                          <details className="approval-preview" open>
+                            <summary>
+                              Preview what {request.requester?.displayName ?? "the requester"} will see
+                            </summary>
+                            <div className="approval-preview-content">
+                              <PrivateAgentNote />
+                              <label className="locked-prompt">
+                                Approved task
+                                <textarea
+                                  value={request.sanitizedTaskSummary}
+                                  readOnly
+                                  rows={4}
+                                />
+                                <span>This exact task is locked and cannot be changed.</span>
+                              </label>
+                              <ScopeFacts
+                                inputCount={draft.resourceIds.length}
+                                validity={{
+                                  kind: "duration",
+                                  label: "10 minutes after approval",
+                                  hint: "The countdown starts when you approve",
+                                }}
+                              />
+                            </div>
+                          </details>
                           {eligibleAgents.length === 0 && <div className="denied-copy">Create or start a ready {departmentLabel(principal.department)} Agent before approving.</div>}
                           <div className="approval-actions">
                             <button type="button" className="button button-danger" onClick={() => void rejectRequest(request)} disabled={busyKey !== null}>{busyKey === "reject-" + request.id ? <Loading /> : "Reject"}</button>
@@ -1112,7 +1218,14 @@ export function TrustPassWorkspace({
                   </label>
                 ))}
               </fieldset>
-              <div className="locked-scope-note">One Run · ten minutes · final output only · no forwarding</div>
+              <ScopeFacts
+                inputCount={directResourceIds.length}
+                validity={{
+                  kind: "duration",
+                  label: "10 minutes after issue",
+                  hint: "The countdown starts when you issue the pass",
+                }}
+              />
               {recipients.length === 0 && <div className="pending-copy">Another authenticated user must sign in once before they can receive a direct pass.</div>}
               {eligibleAgents.length === 0 && <div className="denied-copy">Create or start a ready Agent before issuing a pass.</div>}
               <button
@@ -1150,14 +1263,24 @@ export function TrustPassWorkspace({
                         <div><span className="eyebrow">{contract.capabilityLabel}</span><h3>{contract.grantee.displayName}</h3></div>
                         <StatusBadge status={effectiveStatus} />
                       </div>
-                      <dl className="issued-details">
-                        <div><dt>Private Agent</dt><dd>{contract.agent.name}</dd></div>
-                        <div><dt>Approved inputs</dt><dd>{contract.approvedResources.length || "None"}</dd></div>
-                        <div><dt>Remaining uses</dt><dd>{contract.remainingUses}</dd></div>
-                        <div><dt>Expires</dt><dd>{formatRemaining(contract.expiresAt, serverNowMs)}</dd></div>
-                      </dl>
+                      <PrivateAgentNote
+                        title={`Agent stays private from ${contract.grantee.displayName}`}
+                        message="They can run only the approved task and cannot open its settings, workspace, history, resources, or other Runs."
+                      />
+                      <div className="owner-agent-detail">
+                        <span>Private Agent</span>
+                        <strong>{contract.agent.name}</strong>
+                      </div>
                       <p>{contract.sanitizedTaskSummary}</p>
                       {contract.approvedResources.length > 0 && <div className="approved-resource-chips">{contract.approvedResources.map((resource) => <span key={resource.id}>{resource.name}</span>)}</div>}
+                      <ScopeFacts
+                        inputCount={contract.approvedResources.length}
+                        validity={{
+                          kind: "countdown",
+                          expiresAt: contract.expiresAt,
+                          serverNowMs,
+                        }}
+                      />
                       <PolicyExplanation status={effectiveStatus} reasonCode={visuallyExpired ? "DELEGATION_EXPIRED" : contract.policyReasonCode} />
                       {contract.status === "active" && !visuallyExpired && (
                         <button type="button" className="button button-danger revoke-pass-button" onClick={() => void revokePass(contract)} disabled={busyKey !== null}>{busyKey === "revoke-" + contract.id ? <Loading /> : "Revoke pass"}</button>

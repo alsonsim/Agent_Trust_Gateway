@@ -695,21 +695,6 @@ export function TrustPassWorkspace({
         <span className="enforcement-badge"><span /> Backend enforced</span>
       </header>
 
-      <div className="trust-flow" aria-label="Trust Pass lifecycle">
-        {[
-          "Discover",
-          "Request",
-          "Owner approval",
-          "Agent Pass",
-          "One scoped Run",
-        ].map((step, index) => (
-          <div key={step}>
-            <span>{index + 1}</span>
-            <strong>{step}</strong>
-          </div>
-        ))}
-      </div>
-
       <nav
         className="trust-pass-tabs"
         role="tablist"

@@ -210,6 +210,22 @@ AGENT_WORKSPACE_ROOT=workspaces
 CODEX_HOME=codex-home
 ```
 
+### Local Debugging Only: Ark Key Passthrough
+
+Before the trusted model proxy exists, the local Docker Playground can be made
+to work by explicitly forwarding the server-loaded Ark settings into the Runtime
+container:
+
+```env
+LOCAL_INSECURE_RUNTIME_KEY_PASSTHROUGH=true
+
+```
+
+This exposes the long-lived Ark key to the Agent container and invalidates the
+claim that Agent containers cannot access the long-lived provider key. Leave it
+unset or `false` for the secure default. The secure final solution is still a
+server-side model proxy with short-lived Runtime credentials.
+
 ## Deployment
 
 - [Existing Linux ECS with Docker](docs/DEPLOYMENT.md#existing-linux-ecs)
@@ -285,7 +301,8 @@ read-only, capabilities are dropped, and direct networking is disabled.
 The existing local-process runner is a development compatibility path, not a
 shared-department isolation boundary. Connected hardened runs require the next
 milestone, a trusted model proxy/workload-identity adapter, because the Agent
-container intentionally no longer receives `ARK_API_KEY`.
+container intentionally no longer receives `ARK_API_KEY` unless the explicit
+local debugging passthrough is enabled.
 
 The Runtime Action Firewall evaluates explicit file, shell, and network requests
 in a Playground turn before a Run is created and stores an allow or deny decision.

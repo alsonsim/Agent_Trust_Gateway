@@ -57,8 +57,7 @@ export function buildContainerRunArgs(
     "--label",
     "io.codejam.instance-id=" + config.runtimeInstanceId,
     ...(engineName === "podman" ? ["--userns", "keep-id"] : []),
-    "--network",
-    "none",
+    ...(config.localInsecureRuntimeNetwork ? [] : ["--network", "none"]),
     "--security-opt",
     "no-new-privileges",
     "--cap-drop",
@@ -80,6 +79,9 @@ export function buildContainerRunArgs(
     "HOME=/tmp",
     "--env",
     "NO_COLOR=1",
+    ...(config.localInsecureRuntimeKeyPassthrough
+      ? ["--env", "ARK_API_KEY", "--env", "ARK_MODEL"]
+      : []),
     "--mount",
     "type=bind,src=" + request.workspacePath + ",dst=/workspace",
     "--mount",
@@ -101,12 +103,12 @@ export class ContainerCodexRunner implements AgentRunner {
     try {
       await execFileAsync(this.config.containerEngine, ["version"], {
         timeout: 5_000,
-        env: this.childEnvironment(),
+        env: buildContainerCliEnvironment(this.config, false),
       });
       await execFileAsync(
         this.config.containerEngine,
         ["image", "inspect", this.config.containerRuntimeImage],
-        { timeout: 5_000, env: this.childEnvironment() },
+        { timeout: 5_000, env: buildContainerCliEnvironment(this.config, false) },
       );
       return true;
     } catch {
@@ -129,7 +131,7 @@ export class ContainerCodexRunner implements AgentRunner {
       active.termination = execFileAsync(
         this.config.containerEngine,
         ["rm", "--force", active.containerName],
-        { timeout: 8_000, env: this.childEnvironment() },
+        { timeout: 8_000, env: buildContainerCliEnvironment(this.config, false) },
       )
         .then(() => undefined)
         .catch(() => {
@@ -166,7 +168,10 @@ export class ContainerCodexRunner implements AgentRunner {
       buildContainerRunArgs(runtimeRequest, runtimeConfig),
       {
         cwd: runtimeWorkspace,
-        env: this.childEnvironment(),
+        env: buildContainerCliEnvironment(
+          this.config,
+          this.config.localInsecureRuntimeKeyPassthrough,
+        ),
         stdio: ["ignore", "pipe", "pipe"],
       },
     );
@@ -255,23 +260,30 @@ export class ContainerCodexRunner implements AgentRunner {
       await rm(runtimeWorkspace, { recursive: true, force: true });
     }
   }
+}
 
-  private childEnvironment(): NodeJS.ProcessEnv {
-    const environment: NodeJS.ProcessEnv = {
-      NO_COLOR: "1",
-    };
-    for (const name of [
-      "PATH",
-      "HOME",
-      "TMPDIR",
-      "LANG",
-      "LC_ALL",
-      "XDG_RUNTIME_DIR",
-    ] as const) {
-      if (process.env[name] !== undefined) environment[name] = process.env[name];
-    }
-    return environment;
+export function buildContainerCliEnvironment(
+  config: AppConfig,
+  includeRuntimeCredentials = false,
+): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = {
+    NO_COLOR: "1",
+  };
+  if (includeRuntimeCredentials) {
+    environment.ARK_API_KEY = config.arkApiKey;
+    environment.ARK_MODEL = config.arkModel;
   }
+  for (const name of [
+    "PATH",
+    "HOME",
+    "TMPDIR",
+    "LANG",
+    "LC_ALL",
+    "XDG_RUNTIME_DIR",
+  ] as const) {
+    if (process.env[name] !== undefined) environment[name] = process.env[name];
+  }
+  return environment;
 }
 
 export async function createWorkspaceProjection(source: string, destination: string): Promise<void> {

@@ -328,7 +328,7 @@ describe("HTTP identity and authorization boundary", () => {
     await app.close();
   });
 
-  it("denies a Runtime Action Firewall command before the Agent runner starts", async () => {
+  it("denies a dangerous Playground chat command before creating a Run or starting the runner", async () => {
     const { app, service, runner } = await makeHarness();
     const cookie = await login(app, "finance@agent-gateway.local");
     const created = await app.inject({
@@ -343,7 +343,7 @@ describe("HTTP identity and authorization boundary", () => {
       method: "POST",
       url: `/api/agents/${agentId}/messages`,
       headers: { cookie },
-      payload: { content: "Run `rm -rf .` to clean the workspace." },
+      payload: { content: "Run this shell command: rm -rf /workspace/test" },
     });
     expect(denied.statusCode).toBe(403);
     expect(denied.json()).toMatchObject({
@@ -370,6 +370,46 @@ describe("HTTP identity and authorization boundary", () => {
         decision.action === "shell.execute" && decision.decision === "deny",
       ),
     ).toBe(true);
+    await app.close();
+  });
+
+  it("allows a safe Playground chat command through the normal Run path", async () => {
+    const { app, service, runner } = await makeHarness();
+    const cookie = await login(app, "finance@agent-gateway.local");
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/agents",
+      headers: { cookie },
+      payload: { name: "Finance Agent" },
+    });
+    const agentId = created.json().agent.id as string;
+
+    const accepted = await app.inject({
+      method: "POST",
+      url: `/api/agents/${agentId}/messages`,
+      headers: { cookie },
+      payload: { content: "Run pwd and report the current directory." },
+    });
+    expect(accepted.statusCode).toBe(202);
+    expect(accepted.json()).toMatchObject({
+      run: {
+        id: expect.any(String),
+        agentId,
+        status: "queued",
+        prompt: "Run pwd and report the current directory.",
+      },
+      message: {
+        agentId,
+        role: "user",
+        content: "Run pwd and report the current directory.",
+      },
+    });
+    await expect.poll(() => runner.requests).toHaveLength(1);
+    expect(runner.requests[0]).toMatchObject({
+      agentId,
+      prompt: "Run pwd and report the current directory.",
+    });
+    await expect.poll(() => service.getRuns(agentId)[0]?.status).toBe("completed");
     await app.close();
   });
 

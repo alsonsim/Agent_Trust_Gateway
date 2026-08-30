@@ -54,4 +54,22 @@ describe("Codex executable configuration", () => {
       "CONTAINER_CODEX_BIN must name a Linux executable",
     );
   });
+
+  it("keeps Ark Runtime credential passthrough disabled unless explicitly enabled", () => {
+    expect(loadConfig({ NODE_ENV: "test" }).localInsecureRuntimeKeyPassthrough).toBe(
+      false,
+    );
+    expect(
+      loadConfig({
+        NODE_ENV: "test",
+        LOCAL_INSECURE_RUNTIME_KEY_PASSTHROUGH: "true",
+      }).localInsecureRuntimeKeyPassthrough,
+    ).toBe(true);
+    expect(() =>
+      loadConfig({
+        NODE_ENV: "test",
+        LOCAL_INSECURE_RUNTIME_KEY_PASSTHROUGH: "yes",
+      }),
+    ).toThrow();
+  });
 });

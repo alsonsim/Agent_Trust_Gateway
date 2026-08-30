@@ -211,7 +211,7 @@ function PolicyExplanation({
 }) {
   const explanation =
     status === "active"
-      ? "Eligible now. Before dispatch, the middleware verifies the grantee, exact prompt digest, approved inputs, action, expiry, and remaining use."
+      ? "This pass is active and ready for its one approved Run."
       : status === "consumed"
         ? "This one-use pass already admitted its approved Run. Every retry is denied before Runtime dispatch."
         : status === "revoked"
@@ -1067,11 +1067,9 @@ export function TrustPassWorkspace({
                         <small>The issued pass will execute exactly the text shown above—no hidden suffix.</small>
                         <span>Personal information: {request.personalInformation === "possible" ? "possible — review carefully" : "none detected"}</span>
                       </div>
-                      <div className="approval-facts">
-                        <span>Requested uses <strong>one</strong></span>
-                        <span>Result <strong>final output only</strong></span>
-                        <span>Request expires <strong>{formatRemaining(request.expiresAt, serverNowMs)}</strong></span>
-                      </div>
+                      <p className="request-review-deadline">
+                        Review within <strong>{formatRemaining(request.expiresAt, serverNowMs)}</strong>
+                      </p>
                       <details className="request-technical"><summary>Task digest</summary><code>{request.taskDigest}</code></details>
 
                       {pending && (
@@ -1165,7 +1163,14 @@ export function TrustPassWorkspace({
                   </label>
                 ))}
               </fieldset>
-              <div className="locked-scope-note">One Run · ten minutes · final output only · no forwarding</div>
+              <ScopeFacts
+                inputCount={directResourceIds.length}
+                validity={{
+                  kind: "duration",
+                  label: "10 minutes after issue",
+                  hint: "The countdown starts when you issue the pass",
+                }}
+              />
               {recipients.length === 0 && <div className="pending-copy">Another authenticated user must sign in once before they can receive a direct pass.</div>}
               {eligibleAgents.length === 0 && <div className="denied-copy">Create or start a ready Agent before issuing a pass.</div>}
               <button
@@ -1203,14 +1208,20 @@ export function TrustPassWorkspace({
                         <div><span className="eyebrow">{contract.capabilityLabel}</span><h3>{contract.grantee.displayName}</h3></div>
                         <StatusBadge status={effectiveStatus} />
                       </div>
-                      <dl className="issued-details">
-                        <div><dt>Private Agent</dt><dd>{contract.agent.name}</dd></div>
-                        <div><dt>Approved inputs</dt><dd>{contract.approvedResources.length || "None"}</dd></div>
-                        <div><dt>Remaining uses</dt><dd>{contract.remainingUses}</dd></div>
-                        <div><dt>Expires</dt><dd>{formatRemaining(contract.expiresAt, serverNowMs)}</dd></div>
-                      </dl>
+                      <div className="owner-agent-detail">
+                        <span>Private Agent</span>
+                        <strong>{contract.agent.name}</strong>
+                      </div>
                       <p>{contract.sanitizedTaskSummary}</p>
                       {contract.approvedResources.length > 0 && <div className="approved-resource-chips">{contract.approvedResources.map((resource) => <span key={resource.id}>{resource.name}</span>)}</div>}
+                      <ScopeFacts
+                        inputCount={contract.approvedResources.length}
+                        validity={{
+                          kind: "countdown",
+                          expiresAt: contract.expiresAt,
+                          serverNowMs,
+                        }}
+                      />
                       <PolicyExplanation status={effectiveStatus} reasonCode={visuallyExpired ? "DELEGATION_EXPIRED" : contract.policyReasonCode} />
                       {contract.status === "active" && !visuallyExpired && (
                         <button type="button" className="button button-danger revoke-pass-button" onClick={() => void revokePass(contract)} disabled={busyKey !== null}>{busyKey === "revoke-" + contract.id ? <Loading /> : "Revoke pass"}</button>

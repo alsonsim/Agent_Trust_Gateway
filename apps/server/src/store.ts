@@ -104,11 +104,25 @@ function parseDatabase(raw: string): { database: Database; migrated: boolean } {
     ...agent,
     revokedAt: agent.revokedAt ?? null,
   }));
+  let removedLegacyRequesterPrompt = false;
+  const delegationRequests = database.delegationRequests.map((request) => {
+    if (!("requestedPrompt" in request)) return request;
+    removedLegacyRequesterPrompt = true;
+    const { requestedPrompt: _requestedPrompt, ...sanitizedRequest } = request as
+      DelegationRequestWithLegacyPrompt;
+    return sanitizedRequest;
+  });
   return {
-    database: { ...database, agents },
-    migrated: database.agents.some((agent) => agent.revokedAt === undefined),
+    database: { ...database, agents, delegationRequests },
+    migrated:
+      database.agents.some((agent) => agent.revokedAt === undefined) ||
+      removedLegacyRequesterPrompt,
   };
 }
+
+type DelegationRequestWithLegacyPrompt = Database["delegationRequests"][number] & {
+  requestedPrompt: string;
+};
 
 export class JsonStore {
   private data: Database = emptyDatabase();

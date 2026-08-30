@@ -16,6 +16,7 @@ import type {
   AuthorizationDecision,
   Agent,
   AgentRun,
+  Database,
   DelegationContract,
   DelegationContractStatus,
   DelegationRequest,
@@ -109,6 +110,8 @@ export interface DelegatedRunView {
 }
 
 export class DelegationService {
+  private transitionTail: Promise<void> = Promise.resolve();
+
   constructor(
     private readonly store: JsonStore,
     private readonly securityRepository: SecurityRepository,
@@ -170,7 +173,19 @@ export class DelegationService {
     input: {
       requiredCapability: string;
       prompt: string;
-      sanitizedTaskSummary?: string;
+    },
+    requestId: string,
+  ): Promise<{ request: DelegationRequestView; decision: AuthorizationDecision }> {
+    return this.withTransitionLock(() =>
+      this.createRequestLocked(principal, input, requestId),
+    );
+  }
+
+  private async createRequestLocked(
+    principal: HumanPrincipal,
+    input: {
+      requiredCapability: string;
+      prompt: string;
     },
     requestId: string,
   ): Promise<{ request: DelegationRequestView; decision: AuthorizationDecision }> {
@@ -184,6 +199,13 @@ export class DelegationService {
         "Choose a capability managed by another team for delegated access",
       );
     }
+    const discovery = discoverCapability(input.prompt, principal.department);
+    if (!discovery.required || discovery.capability !== capability.id) {
+      throw new HttpError(
+        400,
+        "The requested capability does not match the server recommendation for this task",
+      );
+    }
     const timestamp = this.nowIso();
     const request: DelegationRequest = {
       id: randomUUID(),
@@ -192,11 +214,8 @@ export class DelegationService {
       requesterDisplayName: principal.displayName,
       requesterDepartment: principal.department,
       requiredCapability: capability.id,
-      sanitizedTaskSummary: sanitizeTaskSummary(
-        input.sanitizedTaskSummary ?? input.prompt,
-      ),
+      sanitizedTaskSummary: sanitizeTaskSummary(input.prompt),
       personalInformation: assessPersonalInformation(input.prompt),
-      requestedPrompt: input.prompt,
       taskDigest: digestExactPrompt(input.prompt),
       status: "pending",
       createdAt: timestamp,
@@ -204,7 +223,6 @@ export class DelegationService {
       reviewedAt: null,
       contractId: null,
     };
-    await this.store.mutate((database) => database.delegationRequests.push(request));
     const decision = this.makeDecision({
       principal,
       requestId,
@@ -216,7 +234,25 @@ export class DelegationService {
       reason:
         "The capability broker forwarded a consented request without exposing an Agent.",
     });
-    await this.appendAllowedDecision(decision);
+    const auditPersistedLocally = await this.store.mutate((database) => {
+      database.delegationRequests.push(request);
+      return this.appendAllowedDecisionsToDatabase(database, [decision]);
+    });
+    if (!auditPersistedLocally) {
+      try {
+        await this.appendAllowedDecision(decision);
+      } catch (error) {
+        await this.store.mutate((database) => {
+          database.delegationRequests = database.delegationRequests.filter(
+            (candidate) =>
+              candidate.id !== request.id ||
+              candidate.status !== "pending" ||
+              candidate.contractId !== null,
+          );
+        });
+        throw error;
+      }
+    }
     return { request: this.requestView(request, "outgoing"), decision };
   }
 
@@ -243,8 +279,18 @@ export class DelegationService {
     requestIdValue: string,
     auditRequestId: string,
   ): Promise<{ request: DelegationRequestView; decision: AuthorizationDecision }> {
+    return this.withTransitionLock(() =>
+      this.rejectRequestLocked(principal, requestIdValue, auditRequestId),
+    );
+  }
+
+  private async rejectRequestLocked(
+    principal: HumanPrincipal,
+    requestIdValue: string,
+    auditRequestId: string,
+  ): Promise<{ request: DelegationRequestView; decision: AuthorizationDecision }> {
     await this.expireRequests();
-    const updated = await this.store.mutate((database) => {
+    const transition = await this.store.mutate((database) => {
       const request = database.delegationRequests.find(
         (candidate) => candidate.id === requestIdValue,
       );
@@ -263,24 +309,68 @@ export class DelegationService {
       }
       request.status = "rejected";
       request.reviewedAt = this.nowIso();
-      return structuredClone(request);
+      const updated = structuredClone(request);
+      const decision = this.makeDecision({
+        principal,
+        requestId: auditRequestId,
+        action: "delegation.reject",
+        targetType: "delegation",
+        targetId: updated.id,
+        targetLabel: capability.label,
+        reasonCode: "DELEGATION_REJECTED",
+        reason: "The capability owner rejected the pending permission request.",
+      });
+      return {
+        updated,
+        decision,
+        auditPersistedLocally: this.appendAllowedDecisionsToDatabase(database, [
+          decision,
+        ]),
+      };
     });
-    const capability = getCapabilityDefinition(updated.requiredCapability)!;
-    const decision = this.makeDecision({
-      principal,
-      requestId: auditRequestId,
-      action: "delegation.reject",
-      targetType: "delegation",
-      targetId: updated.id,
-      targetLabel: capability.label,
-      reasonCode: "DELEGATION_REJECTED",
-      reason: "The capability owner rejected the pending permission request.",
-    });
-    await this.appendAllowedDecision(decision);
-    return { request: this.requestView(updated, "incoming"), decision };
+    if (!transition.auditPersistedLocally) {
+      try {
+        await this.appendAllowedDecision(transition.decision);
+      } catch (error) {
+        await this.store.mutate((database) => {
+          const request = database.delegationRequests.find(
+            (candidate) => candidate.id === transition.updated.id,
+          );
+          if (request?.status === "rejected" && request.contractId === null) {
+            request.status = "pending";
+            request.reviewedAt = null;
+          }
+        });
+        throw error;
+      }
+    }
+    return {
+      request: this.requestView(transition.updated, "incoming"),
+      decision: transition.decision,
+    };
   }
 
   async approveRequest(
+    principal: HumanPrincipal,
+    requestIdValue: string,
+    input: {
+      agentId: string;
+      approvedResourceIds: string[];
+      expiresInSeconds: number;
+    },
+    auditRequestId: string,
+  ): Promise<{ contract: OwnerDelegationContractView; decision: AuthorizationDecision }> {
+    return this.withTransitionLock(() =>
+      this.approveRequestLocked(
+        principal,
+        requestIdValue,
+        input,
+        auditRequestId,
+      ),
+    );
+  }
+
+  private async approveRequestLocked(
     principal: HumanPrincipal,
     requestIdValue: string,
     input: {
@@ -314,7 +404,9 @@ export class DelegationService {
         personalInformation: request.personalInformation,
         granteeHumanId: request.requesterHumanId,
         agentId: input.agentId,
-        approvedPrompt: request.requestedPrompt,
+        // The owner approves exactly the redacted task shown in the inbox. Never
+        // execute a longer requester-controlled prompt hidden behind its summary.
+        approvedPrompt: request.sanitizedTaskSummary,
         approvedResourceIds: input.approvedResourceIds,
         expiresInSeconds: input.expiresInSeconds,
         requestExpiresAt: request.expiresAt,
@@ -330,7 +422,23 @@ export class DelegationService {
       granteeHumanId: string;
       agentId: string;
       exactPrompt: string;
-      sanitizedTaskSummary?: string;
+      approvedResourceIds: string[];
+      expiresInSeconds: number;
+    },
+    auditRequestId: string,
+  ): Promise<{ contract: OwnerDelegationContractView; decision: AuthorizationDecision }> {
+    return this.withTransitionLock(() =>
+      this.createContractLocked(principal, input, auditRequestId),
+    );
+  }
+
+  private async createContractLocked(
+    principal: HumanPrincipal,
+    input: {
+      requiredCapability: string;
+      granteeHumanId: string;
+      agentId: string;
+      exactPrompt: string;
       approvedResourceIds: string[];
       expiresInSeconds: number;
     },
@@ -341,9 +449,7 @@ export class DelegationService {
       {
         requestId: null,
         requiredCapability: input.requiredCapability,
-        sanitizedTaskSummary: sanitizeTaskSummary(
-          input.sanitizedTaskSummary ?? input.exactPrompt,
-        ),
+        sanitizedTaskSummary: sanitizeTaskSummary(input.exactPrompt),
         personalInformation: assessPersonalInformation(input.exactPrompt),
         granteeHumanId: input.granteeHumanId,
         agentId: input.agentId,
@@ -386,8 +492,18 @@ export class DelegationService {
     contractId: string,
     auditRequestId: string,
   ): Promise<{ contract: OwnerDelegationContractView; decision: AuthorizationDecision }> {
+    return this.withTransitionLock(() =>
+      this.revokeContractLocked(principal, contractId, auditRequestId),
+    );
+  }
+
+  private async revokeContractLocked(
+    principal: HumanPrincipal,
+    contractId: string,
+    auditRequestId: string,
+  ): Promise<{ contract: OwnerDelegationContractView; decision: AuthorizationDecision }> {
     await this.expireContracts();
-    const updated = await this.store.mutate((database) => {
+    const transition = await this.store.mutate((database) => {
       const contract = database.delegationContracts.find(
         (candidate) => candidate.id === contractId,
       );
@@ -401,25 +517,51 @@ export class DelegationService {
       }
       contract.status = "revoked";
       contract.revokedAt = this.nowIso();
-      return structuredClone(contract);
+      const updated = structuredClone(contract);
+      const agent = this.safeGetAgent(updated.agentId);
+      const decision = this.makeDecision({
+        principal,
+        requestId: auditRequestId,
+        action: "delegation.revoke",
+        targetType: "delegation",
+        targetId: updated.id,
+        targetLabel: "One-use Agent Trust Pass",
+        reasonCode: "DELEGATION_REVOKED",
+        reason: "The Agent owner revoked the Trust Pass before use.",
+        ...(agent ? { agent } : {}),
+      });
+      return {
+        updated,
+        decision,
+        auditPersistedLocally: this.appendAllowedDecisionsToDatabase(database, [
+          decision,
+        ]),
+      };
     });
-    const agent = this.safeGetAgent(updated.agentId);
-    const decision = this.makeDecision({
-      principal,
-      requestId: auditRequestId,
-      action: "delegation.revoke",
-      targetType: "delegation",
-      targetId: updated.id,
-      targetLabel: "One-use Agent Trust Pass",
-      reasonCode: "DELEGATION_REVOKED",
-      reason: "The Agent owner revoked the Trust Pass before use.",
-      ...(agent ? { agent } : {}),
-    });
-    await this.appendAllowedDecision(decision);
+    if (!transition.auditPersistedLocally) {
+      try {
+        await this.appendAllowedDecision(transition.decision);
+      } catch (error) {
+        await this.store.mutate((database) => {
+          const contract = database.delegationContracts.find(
+            (candidate) => candidate.id === transition.updated.id,
+          );
+          if (
+            contract?.status === "revoked" &&
+            contract.usesConsumed === 0 &&
+            contract.runId === null
+          ) {
+            contract.status = "active";
+            contract.revokedAt = null;
+          }
+        });
+        throw error;
+      }
+    }
     const resources = await this.securityRepository.listResources();
     return {
-      contract: this.contractView(updated, "outgoing", resources),
-      decision,
+      contract: this.contractView(transition.updated, "outgoing", resources),
+      decision: transition.decision,
     };
   }
 
@@ -433,11 +575,43 @@ export class DelegationService {
     decision: AuthorizationDecision;
     result: DelegatedRunView;
   }> {
+    return this.withTransitionLock(() =>
+      this.invokeContractLocked(principal, contractId, prompt, auditRequestId),
+    );
+  }
+
+  private async invokeContractLocked(
+    principal: HumanPrincipal,
+    contractId: string,
+    prompt: string,
+    auditRequestId: string,
+  ): Promise<{
+    contract: GranteeDelegationContractView;
+    decision: AuthorizationDecision;
+    result: DelegatedRunView;
+  }> {
     await this.expireContracts();
     const contract = this.store
       .snapshot()
       .delegationContracts.find((candidate) => candidate.id === contractId);
-    if (!contract || contract.granteeHumanId !== principal.id) {
+    if (!contract) {
+      throw new HttpError(404, "Approved task not found");
+    }
+    if (contract.granteeHumanId !== principal.id) {
+      const protectedAgent = this.safeGetAgent(contract.agentId);
+      const decision = this.makeDecision({
+        principal,
+        requestId: auditRequestId,
+        action: "agent.invoke",
+        targetType: "delegation",
+        targetId: contract.id,
+        targetLabel: "One-use Agent Trust Pass",
+        reasonCode: "DELEGATION_GRANTEE_MISMATCH",
+        reason: "The authenticated human is not the approved Trust Pass grantee.",
+        decision: "deny",
+        ...(protectedAgent ? { agent: protectedAgent } : {}),
+      });
+      await this.appendDeniedDecision(decision);
       throw new HttpError(404, "Approved task not found");
     }
     const agent = this.safeGetAgent(contract.agentId);
@@ -488,62 +662,104 @@ export class DelegationService {
     }
     if (!agent) throw new Error("Approved capability became unavailable");
 
-    const approvedInputs: Array<{ fileName: string; content: string }> = [];
-    for (const [index, resourceId] of contract.approvedResourceIds.entries()) {
-      const resource = await this.securityRepository.readResourceForDelegation(
-        resourceId,
-        contract.approvingHumanId,
-      );
-      if (
-        !resource ||
-        digestResourceContent(resource.content) !==
-          contract.approvedResourceDigests[resourceId]
-      ) {
-        await this.denyInvocation(
-          principal,
-          contract,
-          auditRequestId,
-          "DELEGATION_RESOURCE_CHANGED",
-          "An owner-approved input changed after approval, so execution failed closed.",
-          agent,
-        );
-      }
-      if (!resource) throw new Error("Approved input became unavailable");
-      approvedInputs.push({
-        fileName: `approved-input-${index + 1}.md`,
-        content: resource.content,
-      });
-    }
+    const approvedResources: Array<{
+      id: string;
+      name: string;
+    }> = [];
 
     try {
       let allowedDecision: AuthorizationDecision | null = null;
+      const buildAuthorizationEvidence = (
+        claimedContract: DelegationContract,
+        claimedAgent: Agent,
+      ): AuthorizationDecision[] => {
+        const resourceDecisions = approvedResources.map((resource) =>
+          this.makeDecision({
+            principal,
+            requestId: auditRequestId,
+            action: "resource.read",
+            targetType: "resource",
+            targetId: resource.id,
+            targetLabel: resource.name,
+            reasonCode: "DELEGATION_ACTIVE",
+            reason:
+              "The Agent owner approved this exact resource as an input to the one-use Run.",
+            agent: claimedAgent,
+          }),
+        );
+        const decision = this.makeDecision({
+          principal,
+          requestId: auditRequestId,
+          action: "agent.invoke",
+          targetType: "delegation",
+          targetId: claimedContract.id,
+          targetLabel: "One-use Agent Trust Pass",
+          reasonCode: "DELEGATION_ACTIVE",
+          reason:
+            "The grantee, exact task, action, approved inputs, expiry, and remaining use matched.",
+          agent: claimedAgent,
+        });
+        allowedDecision = decision;
+        return [...resourceDecisions, decision];
+      };
       const reservation = await this.agents.sendDelegatedMessage({
         contractId: contract.id,
         granteeHumanId: principal.id,
         prompt,
         promptDigest,
-        approvedInputs,
+        loadApprovedInputs: async () => {
+          const approvedInputs: Array<{ fileName: string; content: string }> = [];
+          for (const [index, resourceId] of contract.approvedResourceIds.entries()) {
+            const resource = await this.securityRepository.readResourceForDelegation(
+              resourceId,
+              contract.approvingHumanId,
+            );
+            if (
+              !resource ||
+              digestResourceContent(resource.content) !==
+                contract.approvedResourceDigests[resourceId]
+            ) {
+              await this.denyInvocation(
+                principal,
+                contract,
+                auditRequestId,
+                "DELEGATION_RESOURCE_CHANGED",
+                "An owner-approved input changed after approval, so execution failed closed.",
+                agent,
+              );
+            }
+            if (!resource) throw new Error("Approved input became unavailable");
+            approvedInputs.push({
+              fileName: `approved-input-${index + 1}.md`,
+              content: resource.content,
+            });
+            approvedResources.push({
+              id: resource.resource.id,
+              name: resource.resource.name,
+            });
+          }
+          return approvedInputs;
+        },
         runtimeAuthorization: {
           humanUserId: principal.id,
           humanEmail: principal.email,
           humanDepartment: principal.department,
           requestId: auditRequestId,
         },
+        commitAuthorizationEvidence: (
+          database,
+          claimedContract,
+          _run,
+          claimedAgent,
+        ) =>
+          this.appendAllowedDecisionsToDatabase(
+            database,
+            buildAuthorizationEvidence(claimedContract, claimedAgent),
+          ),
         onAuthorized: async (claimedContract, _run, claimedAgent) => {
-          const decision = this.makeDecision({
-            principal,
-            requestId: auditRequestId,
-            action: "agent.invoke",
-            targetType: "delegation",
-            targetId: claimedContract.id,
-            targetLabel: "One-use Agent Trust Pass",
-            reasonCode: "DELEGATION_ACTIVE",
-            reason:
-              "The grantee, exact task, action, approved inputs, expiry, and remaining use matched.",
-            agent: claimedAgent,
-          });
-          await this.appendAllowedDecision(decision);
-          allowedDecision = decision;
+          await this.appendAllowedDecisions(
+            buildAuthorizationEvidence(claimedContract, claimedAgent),
+          );
         },
       });
       if (!allowedDecision) {
@@ -699,7 +915,19 @@ export class DelegationService {
       consumedAt: null,
       revokedAt: null,
     };
-    await this.store.mutate((database) => {
+    const decision = this.makeDecision({
+      principal,
+      requestId: auditRequestId,
+      action: "delegation.approve",
+      targetType: "delegation",
+      targetId: contract.id,
+      targetLabel: "One-use Agent Trust Pass",
+      reasonCode: "DELEGATION_APPROVED",
+      reason:
+        "The Agent owner approved one exact task, one grantee, one Run, and bounded inputs.",
+      agent,
+    });
+    const auditPersistedLocally = await this.store.mutate((database) => {
       const storedAgent = database.agents.find(
         (candidate) => candidate.id === agent.id,
       );
@@ -730,38 +958,37 @@ export class DelegationService {
         request.contractId = contract.id;
       }
       database.delegationContracts.push(contract);
+      return this.appendAllowedDecisionsToDatabase(database, [decision]);
     });
-    const decision = this.makeDecision({
-      principal,
-      requestId: auditRequestId,
-      action: "delegation.approve",
-      targetType: "delegation",
-      targetId: contract.id,
-      targetLabel: "One-use Agent Trust Pass",
-      reasonCode: "DELEGATION_APPROVED",
-      reason:
-        "The Agent owner approved one exact task, one grantee, one Run, and bounded inputs.",
-      agent,
-    });
-    try {
-      await this.appendAllowedDecision(decision);
-    } catch (error) {
-      await this.store.mutate((database) => {
-        database.delegationContracts = database.delegationContracts.filter(
-          (candidate) => candidate.id !== contract.id,
-        );
-        if (contract.requestId) {
-          const request = database.delegationRequests.find(
-            (candidate) => candidate.id === contract.requestId,
+    if (!auditPersistedLocally) {
+      try {
+        await this.appendAllowedDecision(decision);
+      } catch (error) {
+        await this.store.mutate((database) => {
+          const storedContract = database.delegationContracts.find(
+            (candidate) => candidate.id === contract.id,
           );
-          if (request?.contractId === contract.id) {
-            request.status = "pending";
-            request.reviewedAt = null;
-            request.contractId = null;
+          const canRollback =
+            storedContract?.status === "active" &&
+            storedContract.usesConsumed === 0 &&
+            storedContract.runId === null;
+          if (!canRollback) return;
+          database.delegationContracts = database.delegationContracts.filter(
+            (candidate) => candidate.id !== contract.id,
+          );
+          if (contract.requestId) {
+            const request = database.delegationRequests.find(
+              (candidate) => candidate.id === contract.requestId,
+            );
+            if (request?.contractId === contract.id) {
+              request.status = "pending";
+              request.reviewedAt = null;
+              request.contractId = null;
+            }
           }
-        }
-      });
-      throw error;
+        });
+        throw error;
+      }
     }
     const resources = await this.securityRepository.listResources();
     return {
@@ -1007,8 +1234,32 @@ export class DelegationService {
   }
 
   private async appendAllowedDecision(decision: AuthorizationDecision): Promise<void> {
+    await this.appendAllowedDecisions([decision]);
+  }
+
+  private appendAllowedDecisionsToDatabase(
+    database: Database,
+    decisions: readonly AuthorizationDecision[],
+  ): boolean {
+    const append = this.securityRepository.appendDecisionsToDatabase;
+    if (!append) return false;
     try {
-      await this.securityRepository.appendDecision(decision);
+      append.call(this.securityRepository, database, decisions);
+      return true;
+    } catch {
+      throw new HttpError(
+        503,
+        "Authorization evidence could not be persisted; access failed closed",
+        { code: "AUTHORIZATION_AUDIT_UNAVAILABLE" },
+      );
+    }
+  }
+
+  private async appendAllowedDecisions(
+    decisions: readonly AuthorizationDecision[],
+  ): Promise<void> {
+    try {
+      await this.securityRepository.appendDecisions(decisions);
     } catch {
       throw new HttpError(
         503,
@@ -1023,6 +1274,20 @@ export class DelegationService {
       await this.securityRepository.appendDecision(decision);
     } catch {
       // The request remains denied even if the evidence sink is unavailable.
+    }
+  }
+
+  private async withTransitionLock<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this.transitionTail;
+    let release!: () => void;
+    this.transitionTail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
     }
   }
 

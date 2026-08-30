@@ -64,7 +64,6 @@ const createDelegationRequestBody = z
   .object({
     requiredCapability: z.string().min(1).max(120),
     prompt: z.string().min(1).max(50_000).refine((value) => value.trim().length > 0),
-    sanitizedTaskSummary: z.string().min(1).max(500).optional(),
   })
   .strict();
 const delegationRequestQuery = z
@@ -82,7 +81,6 @@ const createDelegationContractBody = z
     requiredCapability: z.string().min(1).max(120),
     granteeHumanId: z.string().uuid(),
     exactPrompt: z.string().min(1).max(50_000).refine((value) => value.trim().length > 0),
-    sanitizedTaskSummary: z.string().min(1).max(500).optional(),
     ...delegationScopeFields,
   })
   .strict();
@@ -216,9 +214,6 @@ export async function createApp(
       {
         requiredCapability: body.requiredCapability,
         prompt: body.prompt,
-        ...(body.sanitizedTaskSummary === undefined
-          ? {}
-          : { sanitizedTaskSummary: body.sanitizedTaskSummary }),
       },
       String(request.id),
     );
@@ -265,9 +260,6 @@ export async function createApp(
         exactPrompt: body.exactPrompt,
         approvedResourceIds: body.approvedResourceIds,
         expiresInSeconds: body.expiresInSeconds,
-        ...(body.sanitizedTaskSummary === undefined
-          ? {}
-          : { sanitizedTaskSummary: body.sanitizedTaskSummary }),
       },
       String(request.id),
     );
@@ -421,6 +413,17 @@ export async function createApp(
     };
   });
 
+  app.post("/api/agents/:id/resources/cross-owner-demo", async (request) => {
+    const { id } = agentIdParams.parse(request.params);
+    const principal = requirePrincipal(request);
+    return gateway.demonstrateCrossOwnerResourceDenial(
+      principal,
+      request.userAccessToken,
+      id,
+      String(request.id),
+    );
+  });
+
   app.post("/api/agents/:id/files/read", async (request) => {
     const { id } = agentIdParams.parse(request.params);
     const body = workspaceFileReadBody.parse(request.body);
@@ -455,20 +458,6 @@ export async function createApp(
     );
   }
 
-  if (config.nodeEnv === "production") {
-    const webRoot = fileURLToPath(new URL("../../web/dist", import.meta.url));
-    await app.register(fastifyStatic, {
-      root: webRoot,
-      prefix: "/",
-    });
-    app.setNotFoundHandler((request, reply) => {
-      if (request.url.startsWith("/api/")) {
-        return reply.code(404).send({ error: "API route not found" });
-      }
-      return reply.sendFile("index.html");
-    });
-  }
-
   app.setErrorHandler((error, request, reply) => {
     const appError = error instanceof Error ? error : new Error(String(error));
     const validationError = error instanceof z.ZodError;
@@ -485,8 +474,12 @@ export async function createApp(
             ? frameworkStatus
             : 500;
     if (statusCode >= 500) request.log.error(appError);
+    const publicMessage =
+      statusCode >= 500 && !(error instanceof HttpError)
+        ? "Internal server error"
+        : appError.message;
     return reply.code(statusCode).send({
-      error: appError.message,
+      error: publicMessage,
       ...(error instanceof HttpError && error.code ? { code: error.code } : {}),
       ...(error instanceof HttpError &&
       (error.code === "AUTHORIZATION_DENIED" || error.code === "RUNTIME_ACTION_DENIED")
@@ -495,6 +488,20 @@ export async function createApp(
       ...(validationError ? { details: error.issues } : {}),
     });
   });
+
+  if (config.nodeEnv === "production") {
+    const webRoot = fileURLToPath(new URL("../../web/dist", import.meta.url));
+    await app.register(fastifyStatic, {
+      root: webRoot,
+      prefix: "/",
+    });
+    app.setNotFoundHandler((request, reply) => {
+      if (request.url.startsWith("/api/")) {
+        return reply.code(404).send({ error: "API route not found" });
+      }
+      return reply.sendFile("index.html");
+    });
+  }
 
   return app;
 }

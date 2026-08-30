@@ -157,6 +157,14 @@ export async function writeCodexConfig(config: AppConfig): Promise<void> {
     'wire_api = "responses"',
     "requires_openai_auth = false",
     "",
+    "[sandbox_workspace_write]",
+    "network_access = false",
+    "",
+    "[shell_environment_policy]",
+    'inherit = "core"',
+    "ignore_default_excludes = false",
+    "experimental_use_profile = false",
+    "",
   ].join("\n");
   await writeFile(path.join(config.codexHome, "config.toml"), toml, {
     encoding: "utf8",

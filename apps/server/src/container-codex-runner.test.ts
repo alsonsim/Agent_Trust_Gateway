@@ -1,9 +1,76 @@
-import { describe, expect, it } from "vitest";
+import type { ChildProcess } from "node:child_process";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const childProcessMocks = vi.hoisted(() => ({
+  execFile: vi.fn(),
+  spawn: vi.fn(),
+}));
+
+vi.mock("node:child_process", () => childProcessMocks);
+
 import { loadConfig } from "./config.js";
 import {
   buildContainerRunArgs,
+  ContainerCodexRunner,
+  ContainerRemovalUnverifiedError,
   containerName,
 } from "./container-codex-runner.js";
+
+function missingContainerError(): Error & { stderr: string } {
+  return Object.assign(new Error("No such container"), {
+    stderr: "Error: No such container: delegated-test",
+  });
+}
+
+function makeChild(): ChildProcess {
+  return Object.assign(new EventEmitter(), {
+    stdout: new PassThrough(),
+    stderr: new PassThrough(),
+    kill: vi.fn(),
+  }) as unknown as ChildProcess;
+}
+
+function runnerConfig() {
+  return loadConfig({
+    NODE_ENV: "test",
+    ARK_API_KEY: "test-provider-key",
+    ARK_MODEL: "ep-test",
+    CODEX_HOME: "/tmp/codex-home",
+    RUNTIME_PROVIDER: "container",
+    CONTAINER_ENGINE: "docker",
+    CONTAINER_RUNTIME_IMAGE: "runtime:test",
+    RUNTIME_INSTANCE_ID: "settlement-test",
+  });
+}
+
+const runnerRequest = {
+  agentId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  workspacePath: "/tmp/delegated-workspace",
+  prompt: "complete the approved task",
+  threadId: null,
+  codexHome: "/tmp/delegated-codex-home",
+} as const;
+
+beforeEach(() => {
+  childProcessMocks.execFile.mockReset();
+  childProcessMocks.spawn.mockReset();
+  childProcessMocks.execFile.mockImplementation(
+    (
+      _file: string,
+      args: string[],
+      _options: unknown,
+      callback: (error: Error | null, stdout?: string, stderr?: string) => void,
+    ) => {
+      if (args[0] === "inspect") {
+        callback(missingContainerError());
+        return;
+      }
+      callback(null, "", "");
+    },
+  );
+});
 
 describe("Container Codex runner", () => {
   it("builds an isolated Docker/Podman-compatible invocation", () => {
@@ -24,6 +91,7 @@ describe("Container Codex runner", () => {
         workspacePath: "/tmp/agent-workspace",
         prompt: "write a small program",
         threadId: null,
+        codexHome: "/tmp/delegated-codex-home",
       },
       config,
     );
@@ -34,6 +102,9 @@ describe("Container Codex runner", () => {
     expect(args).toContain("runtime:test");
     expect(args).toContain("type=bind,src=/tmp/agent-workspace,dst=/workspace");
     expect(args).toContain(
+      "type=bind,src=/tmp/delegated-codex-home,dst=/codex-home",
+    );
+    expect(args).not.toContain(
       "type=bind,src=" + config.codexHome + ",dst=/codex-home",
     );
     expect(args).toContain("501:20");
@@ -61,5 +132,141 @@ describe("Container Codex runner", () => {
     );
     expect(args.slice(-3)).toEqual(["resume", "thread-123", "continue"]);
     expect(args).not.toContain("keep-id");
+    expect(args).toContain(
+      "type=bind,src=" + config.codexHome + ",dst=/codex-home",
+    );
+  });
+
+  it("rejects a relative per-Run Codex home before invoking the container engine", () => {
+    const config = loadConfig({
+      NODE_ENV: "test",
+      CODEX_HOME: "/tmp/codex-home",
+      RUNTIME_PROVIDER: "container",
+    });
+
+    expect(() =>
+      buildContainerRunArgs(
+        {
+          agentId: "agent",
+          workspacePath: "/tmp/workspace",
+          prompt: "run once",
+          threadId: null,
+          codexHome: "relative/home",
+        },
+        config,
+      ),
+    ).toThrow("absolute path");
+  });
+
+  it.each([
+    { name: "successful completion", settlement: "success" as const },
+    { name: "a child-process error", settlement: "error" as const },
+    { name: "a non-zero exit", settlement: "nonzero" as const },
+  ])("force-removes and inspects after $name", async ({ settlement }) => {
+    const child = makeChild();
+    childProcessMocks.spawn.mockReturnValue(child);
+    const runner = new ContainerCodexRunner(runnerConfig());
+    const result = runner.run(runnerRequest);
+
+    queueMicrotask(() => {
+      if (settlement === "success") {
+        child.stdout!.write(
+          JSON.stringify({
+            type: "item.completed",
+            item: { type: "agent_message", text: "approved result" },
+          }) + "\n",
+        );
+        child.emit("close", 0);
+      } else if (settlement === "error") {
+        child.emit("error", new Error("container client failed"));
+      } else {
+        child.stderr!.write("runtime failure");
+        child.emit("close", 17);
+      }
+    });
+
+    if (settlement === "success") {
+      await expect(result).resolves.toMatchObject({ output: "approved result" });
+    } else if (settlement === "error") {
+      await expect(result).rejects.toThrow("container client failed");
+    } else {
+      await expect(result).rejects.toThrow("Runtime exited with code 17");
+    }
+
+    const lifecycleArguments = childProcessMocks.execFile.mock.calls.map(
+      (call) => call[1],
+    );
+    const expectedName = containerName(runnerRequest.agentId, "settlement-test");
+    expect(lifecycleArguments).toContainEqual(["rm", "--force", expectedName]);
+    expect(lifecycleArguments).toContainEqual(["inspect", expectedName]);
+  });
+
+  it("surfaces an unverified removal instead of reporting a settled Run", async () => {
+    const child = makeChild();
+    childProcessMocks.spawn.mockReturnValue(child);
+    childProcessMocks.execFile.mockImplementation(
+      (
+        _file: string,
+        _args: string[],
+        _options: unknown,
+        callback: (error: Error | null, stdout?: string, stderr?: string) => void,
+      ) => callback(null, "", ""),
+    );
+    const runner = new ContainerCodexRunner(runnerConfig());
+    const result = runner.run(runnerRequest);
+
+    queueMicrotask(() => {
+      child.stdout!.write(
+        JSON.stringify({
+          type: "item.completed",
+          item: { type: "agent_message", text: "must not escape" },
+        }) + "\n",
+      );
+      child.emit("close", 0);
+    });
+
+    await expect(result).rejects.toBeInstanceOf(ContainerRemovalUnverifiedError);
+  });
+
+  it("removes and verifies every labeled stale container before recovery", async () => {
+    const staleIds = ["a".repeat(64), "b".repeat(64)];
+    childProcessMocks.execFile.mockImplementation(
+      (
+        _file: string,
+        args: string[],
+        _options: unknown,
+        callback: (error: Error | null, stdout?: string, stderr?: string) => void,
+      ) => {
+        if (args[0] === "ps") {
+          callback(null, staleIds.join("\n") + "\n", "");
+          return;
+        }
+        if (args[0] === "inspect") {
+          callback(missingContainerError());
+          return;
+        }
+        callback(null, "", "");
+      },
+    );
+    const runner = new ContainerCodexRunner(runnerConfig());
+
+    await runner.removeStaleContainers();
+
+    const lifecycleArguments = childProcessMocks.execFile.mock.calls.map(
+      (call) => call[1],
+    );
+    expect(lifecycleArguments[0]).toEqual([
+      "ps",
+      "--all",
+      "--quiet",
+      "--filter",
+      "label=io.codejam.launchpad=agent-runtime",
+      "--filter",
+      "label=io.codejam.instance-id=settlement-test",
+    ]);
+    for (const staleId of staleIds) {
+      expect(lifecycleArguments).toContainEqual(["rm", "--force", staleId]);
+      expect(lifecycleArguments).toContainEqual(["inspect", staleId]);
+    }
   });
 });

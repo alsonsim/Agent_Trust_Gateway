@@ -68,10 +68,22 @@ await delegations.observePrincipals(
 
 const app = await createApp(config, service, gateway, delegations);
 
+let shutdownStarted = false;
 const shutdown = async (signal: string) => {
+  if (shutdownStarted) return;
+  shutdownStarted = true;
   app.log.info({ signal }, "Shutting down");
   await app.close();
-  process.exit(0);
+  try {
+    await service.shutdown();
+    process.exit(0);
+  } catch (error) {
+    process.exitCode = 1;
+    app.log.error(
+      { err: error },
+      "Shutdown stopped because a Runtime container could not be proven removed",
+    );
+  }
 };
 
 process.on("SIGTERM", () => void shutdown("SIGTERM"));

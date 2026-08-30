@@ -21,8 +21,12 @@ function recordingRepository(decisions: AuthorizationDecision[]): SecurityReposi
     initialize: async () => undefined,
     listResources: async () => [],
     readResource: async () => null,
+    readResourceForDelegation: async () => null,
     appendDecision: async (decision) => {
       decisions.push(decision);
+    },
+    appendDecisions: async (next) => {
+      decisions.push(...next);
     },
     listDecisions: async () => decisions,
   };

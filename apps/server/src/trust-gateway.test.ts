@@ -3,6 +3,7 @@ import type { AgentService } from "./agent-service.js";
 import {
   DemoIdentityProvider,
   FINANCE_PRINCIPAL,
+  HR_PRINCIPAL,
 } from "./identity-provider.js";
 import type { SecurityRepository } from "./security-repository.js";
 import { TrustGateway } from "./trust-gateway.js";
@@ -59,13 +60,41 @@ function repository(overrides: Partial<SecurityRepository> = {}): SecurityReposi
     initialize: async () => undefined,
     listResources: async () => [financeResource],
     readResource: async () => ({ resource: financeResource, content: "sensitive" }),
+    readResourceForDelegation: async () => ({
+      resource: financeResource,
+      content: "sensitive",
+    }),
     appendDecision: async () => undefined,
+    appendDecisions: async () => undefined,
     listDecisions: async () => [],
     ...overrides,
   };
 }
 
 describe("TrustGateway fail-closed behavior", () => {
+  it("lists only protected resources owned by the authenticated human", async () => {
+    const hrResource: ProtectedResource = {
+      ...financeResource,
+      id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2",
+      ownerId: HR_PRINCIPAL.id,
+      ownerDepartment: "hr",
+      name: "Compensation bands",
+      fileName: "compensation-bands.md",
+      storageKey: "hr/compensation-bands.md",
+    };
+    const gateway = makeGateway(
+      repository({ listResources: async () => [financeResource, hrResource] }),
+    );
+
+    await expect(gateway.listResources({ ...HR_PRINCIPAL })).resolves.toEqual([
+      expect.objectContaining({
+        id: hrResource.id,
+        ownerId: HR_PRINCIPAL.id,
+        ownedByCurrentUser: true,
+      }),
+    ]);
+  });
+
   it("does not return allowed content when audit evidence cannot be persisted", async () => {
     const gateway = makeGateway(
       repository({

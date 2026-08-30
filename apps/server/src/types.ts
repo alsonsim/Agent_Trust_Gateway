@@ -112,7 +112,6 @@ export interface DelegationRequest {
   requiredCapability: string;
   sanitizedTaskSummary: string;
   personalInformation: PersonalInformationAssessment;
-  requestedPrompt: string;
   taskDigest: string;
   status: DelegationRequestStatus;
   createdAt: string;
@@ -232,6 +231,7 @@ export interface RunnerRequest {
   workspacePath: string;
   prompt: string;
   threadId: string | null;
+  codexHome?: string | undefined;
 }
 
 export interface RuntimeAuthorizationContext {
@@ -245,4 +245,5 @@ export interface AgentRunner {
   run(request: RunnerRequest): Promise<RunnerResult>;
   cancel(agentId: string): Promise<boolean>;
   isAvailable(): Promise<boolean>;
+  removeStaleContainers?(): Promise<void>;
 }

@@ -150,10 +150,12 @@ export class TrustGateway {
 
   async listResources(principal: HumanPrincipal): Promise<ProtectedResourceSummary[]> {
     const resources = await this.securityRepository.listResources();
-    return resources.map(({ storageKey: _storageKey, ...resource }) => ({
-      ...resource,
-      ownedByCurrentUser: resource.ownerId === principal.id,
-    }));
+    return resources
+      .filter((resource) => resource.ownerId === principal.id)
+      .map(({ storageKey: _storageKey, ...resource }) => ({
+        ...resource,
+        ownedByCurrentUser: true,
+      }));
   }
 
   async revokeAgent(
@@ -220,6 +222,7 @@ export class TrustGateway {
         "HUMAN_AGENT_OWNER_MISMATCH",
         "The authenticated user cannot act through an Agent owned by another user.",
         true,
+        true,
       );
       await this.appendDeniedDecision(decision);
       throw deniedError(decision);
@@ -246,6 +249,8 @@ export class TrustGateway {
         false,
         "AGENT_RESOURCE_OWNER_MISMATCH",
         "The Agent owner and protected resource owner do not match.",
+        false,
+        true,
       );
       await this.appendDeniedDecision(decision);
       throw deniedError(decision);
@@ -273,6 +278,28 @@ export class TrustGateway {
     );
     await this.appendAllowedDecision(decision);
     return { resource: result, decision };
+  }
+
+  async demonstrateCrossOwnerResourceDenial(
+    principal: HumanPrincipal,
+    userAccessToken: string,
+    agentId: string,
+    requestId: string,
+  ): Promise<never> {
+    const foreignResource = (await this.securityRepository.listResources()).find(
+      (resource) => resource.ownerId !== principal.id,
+    );
+    if (!foreignResource) {
+      throw new HttpError(404, "No cross-owner demo resource is configured");
+    }
+    await this.readResource(
+      principal,
+      userAccessToken,
+      agentId,
+      foreignResource.id,
+      requestId,
+    );
+    throw new Error("Cross-owner resource policy unexpectedly allowed access");
   }
 
   async readWorkspaceFile(
@@ -363,7 +390,14 @@ export class TrustGateway {
     principal: HumanPrincipal,
     limit: number,
   ): Promise<AuthorizationDecision[]> {
-    const decisions = await this.securityRepository.listDecisions(principal.id, limit);
+    const ownedAgentIds = this.agents
+      .listAgents(principal.id)
+      .map((agent) => agent.id);
+    const decisions = await this.securityRepository.listDecisions(
+      principal.id,
+      limit,
+      ownedAgentIds,
+    );
     return decisions.map((decision) => {
       if (!decision.agentId) return decision;
       let ownsAgent = false;
@@ -372,17 +406,20 @@ export class TrustGateway {
       } catch {
         ownsAgent = false;
       }
-      return ownsAgent
-        ? decision
-        : {
-            ...decision,
-            agentId: null,
-            agentName: null,
-            targetLabel:
-              decision.targetType === "delegation"
-                ? "Approved delegated task"
-                : decision.targetLabel,
-          };
+      if (ownsAgent) return decision;
+      return {
+        ...decision,
+        agentId: null,
+        agentName: null,
+        ...(decision.targetType === "delegation"
+          ? { targetLabel: "Approved delegated task" }
+          : decision.targetType === "resource"
+            ? {
+                targetId: "redacted",
+                targetLabel: "Approved delegated input",
+              }
+            : {}),
+      };
     });
   }
 
@@ -395,6 +432,7 @@ export class TrustGateway {
     reasonCode: AuthorizationDecision["reasonCode"],
     reason: string,
     redactAgent = false,
+    redactResource = false,
   ): AuthorizationDecision {
     return this.makeDecision({
       principal,
@@ -402,8 +440,8 @@ export class TrustGateway {
       agent,
       action: "resource.read",
       targetType: "resource",
-      targetId: resource.id,
-      targetLabel: resource.name,
+      targetId: redactResource ? "redacted" : resource.id,
+      targetLabel: redactResource ? "Protected resource" : resource.name,
       allowed,
       reasonCode,
       reason,

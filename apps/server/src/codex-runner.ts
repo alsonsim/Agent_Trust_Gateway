@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { spawn, type ChildProcess } from "node:child_process";
+import path from "node:path";
 import { promisify } from "node:util";
 import type { AppConfig } from "./config.js";
 import { RunCancelledError } from "./errors.js";
@@ -39,6 +40,53 @@ export function buildCodexArgs(
     args.push(request.prompt);
   }
   return args;
+}
+
+export function resolveRunnerCodexHome(
+  request: Pick<RunnerRequest, "codexHome">,
+  config: AppConfig,
+): string {
+  const selectedHome = request.codexHome ?? config.codexHome;
+  if (!path.isAbsolute(selectedHome)) {
+    throw new Error("Runner Codex home must be an absolute path");
+  }
+  return path.resolve(selectedHome);
+}
+
+export function buildCodexChildEnvironment(
+  config: AppConfig,
+  codexHomeOverride?: string,
+): NodeJS.ProcessEnv {
+  const selectedHome = resolveRunnerCodexHome(
+    codexHomeOverride === undefined ? {} : { codexHome: codexHomeOverride },
+    config,
+  );
+  const inheritedNames = [
+    "PATH",
+    "HOME",
+    "TMPDIR",
+    "LANG",
+    "LC_ALL",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "NODE_EXTRA_CA_CERTS",
+    "TERM",
+  ] as const;
+  const environment: NodeJS.ProcessEnv = {
+    CODEX_HOME: selectedHome,
+    ARK_API_KEY: config.arkApiKey,
+    NO_COLOR: "1",
+    ...(codexHomeOverride === undefined ? {} : { HOME: selectedHome }),
+  };
+  for (const name of inheritedNames) {
+    if (environment[name] === undefined && process.env[name] !== undefined) {
+      environment[name] = process.env[name];
+    }
+  }
+  return environment;
 }
 
 export function parseCodexEventLine(line: string, parsed: ParsedEvents): void {
@@ -105,7 +153,7 @@ export class CodexRunner implements AgentRunner {
     try {
       await execFileAsync(this.config.codexBin, ["--version"], {
         timeout: 5_000,
-        env: this.childEnvironment(),
+        env: buildCodexChildEnvironment(this.config),
       });
       return true;
     } catch {
@@ -132,7 +180,7 @@ export class CodexRunner implements AgentRunner {
     const args = buildCodexArgs(request, this.config.codexSandboxMode);
     const child = spawn(this.config.codexBin, args, {
       cwd: request.workspacePath,
-      env: this.childEnvironment(),
+      env: buildCodexChildEnvironment(this.config, request.codexHome),
       stdio: ["ignore", "pipe", "pipe"],
     });
     const settled = new Promise<void>((resolve) => {
@@ -237,31 +285,5 @@ export class CodexRunner implements AgentRunner {
       active.forceKillTimer = setTimeout(() => active.child.kill("SIGKILL"), 3_000);
       active.forceKillTimer.unref();
     }
-  }
-
-  private childEnvironment(): NodeJS.ProcessEnv {
-    const inheritedNames = [
-      "PATH",
-      "HOME",
-      "TMPDIR",
-      "LANG",
-      "LC_ALL",
-      "SSL_CERT_FILE",
-      "SSL_CERT_DIR",
-      "HTTP_PROXY",
-      "HTTPS_PROXY",
-      "NO_PROXY",
-      "NODE_EXTRA_CA_CERTS",
-      "TERM",
-    ] as const;
-    const environment: NodeJS.ProcessEnv = {
-      CODEX_HOME: this.config.codexHome,
-      ARK_API_KEY: this.config.arkApiKey,
-      NO_COLOR: "1",
-    };
-    for (const name of inheritedNames) {
-      if (process.env[name] !== undefined) environment[name] = process.env[name];
-    }
-    return environment;
   }
 }

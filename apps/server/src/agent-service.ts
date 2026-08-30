@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { AppConfig } from "./config.js";
 import { isArkConfigured } from "./config.js";
+import { ContainerRemovalUnverifiedError } from "./container-codex-runner.js";
+import { DelegatedCodexHomeManager } from "./delegated-codex-home.js";
 import { HttpError, RunCancelledError } from "./errors.js";
 import type { RuntimeActionFirewall } from "./runtime-action-firewall.js";
 import { JsonStore } from "./store.js";
@@ -9,6 +11,7 @@ import type {
   AgentRun,
   AgentRunner,
   CreateAgentInput,
+  Database,
   DelegationContract,
   Message,
   RuntimeAuthorizationContext,
@@ -22,6 +25,7 @@ const now = () => new Date().toISOString();
 export class AgentService {
   private readonly activeExecutions = new Map<string, Promise<void>>();
   private readonly cancellationRequests = new Set<string>();
+  private readonly delegatedCodexHomes: DelegatedCodexHomeManager;
 
   constructor(
     private readonly config: AppConfig,
@@ -29,11 +33,39 @@ export class AgentService {
     private readonly workspaces: WorkspaceManager,
     private readonly runner: AgentRunner,
     private readonly runtimeFirewall?: RuntimeActionFirewall,
-  ) {}
+  ) {
+    this.delegatedCodexHomes = new DelegatedCodexHomeManager(
+      config.dataDirectory,
+      config.codexHome,
+    );
+  }
 
   async initialize(): Promise<void> {
     await this.store.initialize();
     await this.workspaces.initialize();
+    await this.delegatedCodexHomes.initialize();
+    if (
+      this.config.runtimeProvider === "container" &&
+      this.runner.removeStaleContainers
+    ) {
+      await this.runner.removeStaleContainers();
+      const cleanupOutcomes = await Promise.allSettled([
+        this.workspaces.cleanupStaleDelegatedRunWorkspaces(),
+        this.delegatedCodexHomes.cleanupStale(),
+      ]);
+      const cleanupFailures = cleanupOutcomes
+        .filter(
+          (outcome): outcome is PromiseRejectedResult =>
+            outcome.status === "rejected",
+        )
+        .map((outcome) => outcome.reason);
+      if (cleanupFailures.length > 0) {
+        throw new AggregateError(
+          cleanupFailures,
+          "Stale delegated data could not be safely removed after Runtime recovery",
+        );
+      }
+    }
     await this.store.mutate((database) => {
       for (const run of database.runs) {
         if (run.status === "queued" || run.status === "running") {
@@ -49,6 +81,31 @@ export class AgentService {
         }
       }
     });
+  }
+
+  async shutdown(): Promise<void> {
+    const activeAgentIds = [...this.activeExecutions.keys()];
+    if (activeAgentIds.length === 0) return;
+    await this.store.mutate((database) => {
+      const timestamp = now();
+      for (const agent of database.agents) {
+        if (!activeAgentIds.includes(agent.id)) continue;
+        agent.status = "stopped";
+        agent.updatedAt = timestamp;
+      }
+    });
+    const outcomes = await Promise.allSettled(
+      activeAgentIds.map((agentId) => this.cancelExecution(agentId)),
+    );
+    const failures = outcomes
+      .filter((outcome): outcome is PromiseRejectedResult => outcome.status === "rejected")
+      .map((outcome) => outcome.reason);
+    if (failures.length > 0) {
+      throw new AggregateError(
+        failures,
+        "One or more Runtime containers could not be proven stopped",
+      );
+    }
   }
 
   listAgents(ownerId?: string): Agent[] {
@@ -114,12 +171,20 @@ export class AgentService {
 
   async deleteAgent(id: string): Promise<{ archivedWorkspace: string }> {
     const agent = this.getAgent(id);
+    await this.setStatus(id, "stopped");
     await this.cancelExecution(id);
     const archivedWorkspace = await this.workspaces.archive(agent);
     await this.store.mutate((database) => {
       database.agents = database.agents.filter((item) => item.id !== id);
       database.messages = database.messages.filter((item) => item.agentId !== id);
-      database.runs = database.runs.filter((item) => item.agentId !== id);
+      const delegatedRunIds = new Set(
+        database.delegationContracts
+          .filter((contract) => contract.agentId === id && contract.runId !== null)
+          .map((contract) => contract.runId!),
+      );
+      database.runs = database.runs.filter(
+        (item) => item.agentId !== id || delegatedRunIds.has(item.id),
+      );
     });
     return { archivedWorkspace };
   }
@@ -131,8 +196,9 @@ export class AgentService {
 
   async stopAgent(id: string): Promise<Agent> {
     this.getAgent(id);
+    await this.setStatus(id, "stopped");
     await this.cancelExecution(id);
-    return this.setStatus(id, "stopped");
+    return this.getAgent(id);
   }
 
   async revokeAgent(id: string): Promise<Agent> {
@@ -259,18 +325,31 @@ export class AgentService {
     granteeHumanId: string;
     prompt: string;
     promptDigest: string;
-    approvedInputs: DelegatedWorkspaceInput[];
+    loadApprovedInputs: () => Promise<DelegatedWorkspaceInput[]>;
     runtimeAuthorization: RuntimeAuthorizationContext;
     onAuthorized: (
       contract: DelegationContract,
       run: AgentRun,
       agent: Agent,
     ) => Promise<void>;
+    commitAuthorizationEvidence?: (
+      database: Database,
+      contract: DelegationContract,
+      run: AgentRun,
+      agent: Agent,
+    ) => boolean;
   }): Promise<{ run: AgentRun; contract: DelegationContract }> {
     if (!isArkConfigured(this.config)) {
       throw new HttpError(
         503,
         "Ark is not configured. Set ARK_API_KEY and ARK_MODEL, then restart.",
+      );
+    }
+    if (this.config.runtimeProvider !== "container") {
+      throw new HttpError(
+        503,
+        "Delegated Runs require the isolated container Runtime",
+        { code: "DELEGATED_RUNTIME_ISOLATION_REQUIRED" },
       );
     }
     const initialContract = this.store
@@ -290,20 +369,12 @@ export class AgentService {
 
     const timestamp = now();
     const runId = randomUUID();
-    const workspacePath = await this.workspaces.createDelegatedRunWorkspace(
-      agent,
-      runId,
-      input.approvedInputs,
-    );
-    const delegatedAgent = { ...agent, workspacePath };
+    let workspacePath: string | null = null;
+    let delegatedCodexHome: string | null = null;
+    let launchStarted = false;
+    let reservationMade = false;
+    let queuedRun: AgentRun | null = null;
     try {
-      if (this.runtimeFirewall) {
-        await this.runtimeFirewall.authorize(
-          delegatedAgent,
-          input.prompt,
-          input.runtimeAuthorization,
-        );
-      }
       const run: AgentRun = {
         id: runId,
         agentId: agent.id,
@@ -316,6 +387,24 @@ export class AgentService {
         completedAt: null,
         createdAt: timestamp,
       };
+      queuedRun = run;
+      const approvedInputs = await input.loadApprovedInputs();
+      if (this.runtimeFirewall) {
+        await this.runtimeFirewall.authorize(
+          agent,
+          input.prompt,
+          input.runtimeAuthorization,
+        );
+      }
+      workspacePath = await this.workspaces.createDelegatedRunWorkspace(
+        runId,
+        {
+          id: initialContract.requiredCapability,
+          label: "Approved delegated capability",
+        },
+        approvedInputs,
+      );
+      delegatedCodexHome = await this.delegatedCodexHomes.create(runId);
       const reservation = await this.store.mutate((database) => {
         const contract = database.delegationContracts.find(
           (candidate) => candidate.id === input.contractId,
@@ -369,27 +458,32 @@ export class AgentService {
         storedAgent.status = "busy";
         storedAgent.lastError = null;
         storedAgent.updatedAt = timestamp;
+        const auditPersistedLocally =
+          input.commitAuthorizationEvidence?.(
+            database,
+            contract,
+            run,
+            storedAgent,
+          ) ?? false;
         return {
           contract: structuredClone(contract),
           agent: structuredClone(storedAgent),
+          auditPersistedLocally,
         };
       });
-      try {
+      reservationMade = true;
+      if (!reservation.auditPersistedLocally) {
         await input.onAuthorized(reservation.contract, run, reservation.agent);
-      } catch (error) {
-        await this.rollbackDelegatedReservation(
-          reservation.contract.id,
-          run.id,
-          reservation.agent.id,
-        );
-        throw error;
       }
       const execution = this.executeRun(reservation.agent, run, {
         prompt: input.prompt,
         workspacePath,
         threadId: null,
         delegated: true,
+        contractId: reservation.contract.id,
+        codexHome: delegatedCodexHome,
       });
+      launchStarted = true;
       this.activeExecutions.set(agent.id, execution);
       void execution
         .finally(() => {
@@ -400,13 +494,56 @@ export class AgentService {
         .catch(() => undefined);
       return { run, contract: reservation.contract };
     } catch (error) {
-      const reserved = this.store
-        .snapshot()
-        .delegationContracts.find(
-          (candidate) => candidate.id === input.contractId && candidate.runId === runId,
+      const recoveryOperations: Array<{ label: string; operation: Promise<void> }> = [];
+      if (!launchStarted && reservationMade) {
+        recoveryOperations.push({
+          label: "reservation rollback",
+          operation: this.rollbackDelegatedReservation(input.contractId, runId, agent.id),
+        });
+      }
+      if (workspacePath) {
+        recoveryOperations.push({
+          label: "workspace cleanup",
+          operation: this.workspaces.cleanupDelegatedRunWorkspace(workspacePath),
+        });
+      }
+      if (delegatedCodexHome) {
+        recoveryOperations.push({
+          label: "Codex home cleanup",
+          operation: this.delegatedCodexHomes.cleanup(delegatedCodexHome),
+        });
+      }
+
+      const recoveryOutcomes = await Promise.allSettled(
+        recoveryOperations.map(({ operation }) => operation),
+      );
+      const recoveryFailures = recoveryOutcomes.flatMap((outcome, index) =>
+        outcome.status === "rejected"
+          ? [
+              new Error(recoveryOperations[index]!.label + " failed", {
+                cause: outcome.reason,
+              }),
+            ]
+          : [],
+      );
+      if (recoveryFailures.length > 0) {
+        const failedLabels = recoveryOutcomes.flatMap((outcome, index) =>
+          outcome.status === "rejected" ? [recoveryOperations[index]!.label] : [],
         );
-      if (!reserved) {
-        await this.workspaces.cleanupDelegatedRunWorkspace(workspacePath);
+        if (queuedRun) {
+          try {
+            await this.recordDelegatedPrelaunchRecoveryFailure(queuedRun);
+          } catch (recordingError) {
+            recoveryFailures.push(
+              new Error("recovery failure recording failed", { cause: recordingError }),
+            );
+          }
+        }
+        throw new AggregateError(
+          [error, ...recoveryFailures],
+          "Delegated pre-launch recovery failed: " + failedLabels.join(", "),
+          { cause: error },
+        );
       }
       throw error;
     }
@@ -439,6 +576,8 @@ export class AgentService {
       workspacePath: string;
       threadId: string | null;
       delegated: boolean;
+      contractId?: string;
+      codexHome?: string;
     } = {
       prompt: run.prompt,
       workspacePath: agentAtStart.workspacePath,
@@ -446,14 +585,47 @@ export class AgentService {
       delegated: false,
     },
   ): Promise<void> {
-    await this.store.mutate((database) => {
-      const storedRun = database.runs.find((item) => item.id === run.id);
-      if (storedRun) {
+    let delegatedMountCleanupAllowed = true;
+    try {
+      const admitted = await this.store.mutate((database) => {
+        const storedRun = database.runs.find((item) => item.id === run.id);
+        const agent = database.agents.find((item) => item.id === agentAtStart.id);
+        const contract = options.contractId
+          ? database.delegationContracts.find(
+              (candidate) => candidate.id === options.contractId,
+            )
+          : null;
+        const invalidDelegation =
+          options.delegated &&
+          (!contract ||
+            contract.status !== "consumed" ||
+            contract.runId !== run.id ||
+            contract.agentId !== agentAtStart.id);
+        if (
+          !storedRun ||
+          !agent ||
+          storedRun.status !== "queued" ||
+          agent.status !== "busy" ||
+          agent.revokedAt !== null ||
+          invalidDelegation ||
+          this.cancellationRequests.has(agentAtStart.id)
+        ) {
+          if (storedRun?.status === "queued") {
+            storedRun.status = "cancelled";
+            storedRun.error = "The Run was cancelled before execution started";
+            storedRun.completedAt = now();
+          }
+          if (agent?.status === "busy") {
+            agent.status = agent.revokedAt ? "stopped" : "ready";
+            agent.updatedAt = now();
+          }
+          return false;
+        }
         storedRun.status = "running";
         storedRun.startedAt = now();
-      }
-    });
-    try {
+        return true;
+      });
+      if (!admitted) return;
       if (this.cancellationRequests.has(agentAtStart.id)) {
         throw new RunCancelledError();
       }
@@ -462,14 +634,23 @@ export class AgentService {
         workspacePath: options.workspacePath,
         prompt: options.prompt,
         threadId: options.threadId,
+        codexHome: options.codexHome,
       });
+      const output = options.delegated
+        ? redactDelegatedOutput(result.output, [
+            this.config.arkApiKey,
+            this.config.supabaseSecretKey,
+            this.config.authSessionSecret,
+            this.config.authToken,
+          ])
+        : result.output;
       const completedAt = now();
       await this.store.mutate((database) => {
         const storedRun = database.runs.find((item) => item.id === run.id);
         const agent = database.agents.find((item) => item.id === agentAtStart.id);
         if (!storedRun || !agent) return;
         storedRun.status = "completed";
-        storedRun.output = result.output;
+        storedRun.output = output;
         storedRun.usage = result.usage;
         storedRun.completedAt = completedAt;
         if (!options.delegated) {
@@ -478,16 +659,21 @@ export class AgentService {
             agentId: agent.id,
             runId: run.id,
             role: "assistant",
-            content: result.output,
+            content: output,
             createdAt: completedAt,
           });
         }
-        agent.status = agent.revokedAt ? "stopped" : "ready";
+        if (agent.status !== "stopped") {
+          agent.status = agent.revokedAt ? "stopped" : "ready";
+        }
         if (!options.delegated) agent.codexThreadId = result.threadId;
         agent.lastError = null;
         agent.updatedAt = completedAt;
       });
     } catch (error) {
+      if (error instanceof ContainerRemovalUnverifiedError) {
+        delegatedMountCleanupAllowed = false;
+      }
       const completedAt = now();
       const cancelled = error instanceof RunCancelledError;
       const message = error instanceof Error ? error.message : String(error);
@@ -508,8 +694,31 @@ export class AgentService {
         }
       });
     } finally {
-      if (options.delegated) {
-        await this.workspaces.cleanupDelegatedRunWorkspace(options.workspacePath);
+      if (options.delegated && delegatedMountCleanupAllowed) {
+        let cleanupFailed = false;
+        try {
+          await this.workspaces.cleanupDelegatedRunWorkspace(options.workspacePath);
+        } catch {
+          cleanupFailed = true;
+        }
+        if (options.codexHome) {
+          try {
+            await this.delegatedCodexHomes.cleanup(options.codexHome);
+          } catch {
+            cleanupFailed = true;
+          }
+        }
+        if (cleanupFailed) {
+          await this.store.mutate((database) => {
+            const storedRun = database.runs.find((item) => item.id === run.id);
+            if (!storedRun) return;
+            storedRun.status = "failed";
+            storedRun.output = null;
+            storedRun.usage = null;
+            storedRun.error = "Delegated input cleanup failed";
+            storedRun.completedAt = now();
+          });
+        }
       }
     }
   }
@@ -523,19 +732,36 @@ export class AgentService {
       const contract = database.delegationContracts.find(
         (candidate) => candidate.id === contractId,
       );
-      if (contract?.runId === runId && contract.status === "consumed") {
+      const ownsReservation =
+        contract?.runId === runId && contract.status === "consumed";
+      if (ownsReservation) {
         contract.status = "active";
         contract.usesConsumed = 0;
         contract.runId = null;
         contract.consumedAt = null;
+        database.runs = database.runs.filter((candidate) => candidate.id !== runId);
+        const agent = database.agents.find((candidate) => candidate.id === agentId);
+        if (agent?.status === "busy") {
+          agent.status = "ready";
+          agent.lastError = null;
+          agent.updatedAt = now();
+        }
       }
-      database.runs = database.runs.filter((candidate) => candidate.id !== runId);
-      const agent = database.agents.find((candidate) => candidate.id === agentId);
-      if (agent?.status === "busy") {
-        agent.status = "ready";
-        agent.lastError = null;
-        agent.updatedAt = now();
+    });
+  }
+
+  private async recordDelegatedPrelaunchRecoveryFailure(run: AgentRun): Promise<void> {
+    await this.store.mutate((database) => {
+      let storedRun = database.runs.find((candidate) => candidate.id === run.id);
+      if (!storedRun) {
+        storedRun = structuredClone(run);
+        database.runs.push(storedRun);
       }
+      storedRun.status = "failed";
+      storedRun.output = null;
+      storedRun.usage = null;
+      storedRun.error = "Delegated pre-launch rollback or cleanup failed";
+      storedRun.completedAt = now();
     });
   }
 
@@ -576,4 +802,39 @@ export class AgentService {
       });
     }
   }
+}
+
+export function redactDelegatedOutput(
+  output: string,
+  secrets: readonly string[],
+): string {
+  let redacted = output;
+  for (const secret of secrets) {
+    if (secret.length < 8) continue;
+    const encodedVariants = [
+      [...secret].reverse().join(""),
+      Buffer.from(secret, "utf8").toString("base64"),
+      Buffer.from(secret, "utf8").toString("base64url"),
+      Buffer.from(secret, "utf8").toString("hex"),
+      encodeURIComponent(secret),
+    ].filter((variant) => variant !== secret);
+    const normalizedSecret = secret.replace(/[^a-z0-9]/gi, "").toLowerCase();
+    const normalizedOutput = output.replace(/[^a-z0-9]/gi, "").toLowerCase();
+    if (
+      encodedVariants.some(
+        (variant) => variant.length >= 8 && output.includes(variant),
+      ) ||
+      (secret.length >= 16 &&
+        !output.includes(secret) &&
+        normalizedSecret.length >= 12 &&
+        normalizedOutput.includes(normalizedSecret))
+    ) {
+      return "[delegated output withheld: possible secret disclosure]";
+    }
+    redacted = redacted.split(secret).join("[secret redacted]");
+  }
+  return redacted.replace(
+    /\b(?:api[_ -]?key|access[_ -]?token|password|secret)\s*[:=]\s*[^\s,;]+/gi,
+    "[secret redacted]",
+  );
 }

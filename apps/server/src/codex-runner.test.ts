@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { buildCodexArgs, parseCodexEventLine } from "./codex-runner.js";
+import {
+  buildCodexArgs,
+  buildCodexChildEnvironment,
+  parseCodexEventLine,
+  resolveRunnerCodexHome,
+} from "./codex-runner.js";
+import { loadConfig } from "./config.js";
 
 describe("Codex runner protocol", () => {
   it("builds a new-session invocation", () => {
@@ -69,5 +75,38 @@ describe("Codex runner protocol", () => {
     expect(parsed.threadId).toBe("thread-123");
     expect(parsed.messages).toEqual(["Done."]);
     expect(parsed.usage).toEqual({ inputTokens: 10, outputTokens: 4 });
+  });
+
+  it("uses a delegated Codex home without exposing the configured home through HOME", () => {
+    const config = loadConfig({
+      NODE_ENV: "test",
+      CODEX_HOME: "/tmp/configured-codex-home",
+    });
+    const delegatedHome = "/tmp/delegated-codex-home";
+
+    expect(
+      resolveRunnerCodexHome({ codexHome: delegatedHome }, config),
+    ).toBe(delegatedHome);
+    const environment = buildCodexChildEnvironment(config, delegatedHome);
+    expect(environment.CODEX_HOME).toBe(delegatedHome);
+    expect(environment.HOME).toBe(delegatedHome);
+  });
+
+  it("uses the configured Codex home for ordinary Runs", () => {
+    const config = loadConfig({
+      NODE_ENV: "test",
+      CODEX_HOME: "/tmp/configured-codex-home",
+    });
+
+    expect(resolveRunnerCodexHome({}, config)).toBe(config.codexHome);
+    expect(buildCodexChildEnvironment(config).CODEX_HOME).toBe(config.codexHome);
+  });
+
+  it("rejects a relative per-Run Codex home", () => {
+    const config = loadConfig({ NODE_ENV: "test", CODEX_HOME: "/tmp/codex-home" });
+
+    expect(() =>
+      resolveRunnerCodexHome({ codexHome: "relative/home" }, config),
+    ).toThrow("absolute path");
   });
 });

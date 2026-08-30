@@ -48,38 +48,32 @@ export class RuntimeActionFirewall {
     prompt: string,
     context: RuntimeAuthorizationContext,
   ): Promise<void> {
+    const decisions: AuthorizationDecision[] = [];
     for (const action of extractRuntimeActions(prompt)) {
       const policy = await evaluateRuntimeAction(agent.workspacePath, action);
       const decision = makeDecision(agent, context, policy);
-      if (policy.allowed) {
-        await this.appendAllowedDecision(decision);
-        continue;
+      decisions.push(decision);
+      if (!policy.allowed) {
+        try {
+          await this.securityRepository.appendDecisions(decisions);
+        } catch {
+          // The action remains denied even if the evidence sink is unavailable.
+        }
+        throw new HttpError(403, "Runtime action denied by Agent Trust Gateway", {
+          code: "RUNTIME_ACTION_DENIED",
+          details: decision,
+        });
       }
-      await this.appendDeniedDecision(decision);
-      throw new HttpError(403, "Runtime action denied by Agent Trust Gateway", {
-        code: "RUNTIME_ACTION_DENIED",
-        details: decision,
-      });
     }
-  }
-
-  private async appendAllowedDecision(decision: AuthorizationDecision): Promise<void> {
+    if (decisions.length === 0) return;
     try {
-      await this.securityRepository.appendDecision(decision);
+      await this.securityRepository.appendDecisions(decisions);
     } catch {
       throw new HttpError(
         503,
         "Runtime authorization evidence could not be persisted; execution failed closed",
         { code: "AUTHORIZATION_AUDIT_UNAVAILABLE" },
       );
-    }
-  }
-
-  private async appendDeniedDecision(decision: AuthorizationDecision): Promise<void> {
-    try {
-      await this.securityRepository.appendDecision(decision);
-    } catch {
-      // Denial remains in force even if the evidence sink is unavailable.
     }
   }
 }

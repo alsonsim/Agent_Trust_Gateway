@@ -3248,6 +3248,34 @@ textarea:focus {
   padding-top: 12px;
 }
 
+.approval-preview {
+  margin-top: 12px;
+  overflow: hidden;
+  border: 1px solid #dcd7ef;
+  border-radius: 9px;
+  background: #fbfaff;
+}
+
+.approval-preview summary {
+  padding: 10px 12px;
+  color: #554892;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.approval-preview[open] summary {
+  border-bottom: 1px solid #e3dff2;
+}
+
+.approval-preview-content {
+  padding: 12px;
+}
+
+.approval-preview-content .private-agent-note {
+  margin-top: 0;
+}
+
 .resource-selector {
   min-width: 0;
   margin: 11px 0 0;

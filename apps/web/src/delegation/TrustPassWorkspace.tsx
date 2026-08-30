@@ -151,12 +151,12 @@ function EmptyState({ children }: { children: React.ReactNode }) {
 
 function ScopeFacts({
   inputCount,
-  expiresAt,
-  serverNowMs,
+  validity,
 }: {
   inputCount: number;
-  expiresAt: string;
-  serverNowMs: number;
+  validity:
+    | { kind: "countdown"; expiresAt: string; serverNowMs: number }
+    | { kind: "duration"; label: string; hint: string };
 }) {
   return (
     <dl className="trust-scope-grid">
@@ -164,14 +164,41 @@ function ScopeFacts({
       <div><dt>Uses</dt><dd>One Run</dd></div>
       <div><dt>Inputs</dt><dd>{inputCount} owner-approved</dd></div>
       <div><dt>Result</dt><dd>Final output only</dd></div>
+      <div><dt>Prompt</dt><dd>Exact task only</dd></div>
+      <div><dt>Sharing</dt><dd>Cannot be forwarded</dd></div>
       <div className="trust-scope-wide">
         <dt>Valid for</dt>
         <dd>
-          <time dateTime={expiresAt}>{formatRemaining(expiresAt, serverNowMs)}</time>
-          <small> Backend expiry is authoritative</small>
+          {validity.kind === "countdown" ? (
+            <time dateTime={validity.expiresAt}>
+              {formatRemaining(validity.expiresAt, validity.serverNowMs)}
+            </time>
+          ) : (
+            validity.label
+          )}
+          <small>
+            {validity.kind === "countdown"
+              ? " Backend expiry is authoritative"
+              : ` ${validity.hint}`}
+          </small>
         </dd>
       </div>
     </dl>
+  );
+}
+
+function PrivateAgentNote({
+  title = "Underlying Agent remains private",
+  message = "You cannot open its settings, workspace, history, resources, or other Runs.",
+}: {
+  title?: string;
+  message?: string;
+}) {
+  return (
+    <div className="private-agent-note">
+      <span aria-hidden="true">◆</span>
+      <div><strong>{title}</strong><span>{message}</span></div>
+    </div>
   );
 }
 
@@ -941,16 +968,20 @@ export function TrustPassWorkspace({
                         </div>
                         <StatusBadge status={visuallyExpired && contract.status === "active" ? "expired" : contract.status} />
                       </div>
-                      <div className="private-agent-note">
-                        <span aria-hidden="true">◆</span>
-                        <div><strong>Underlying Agent remains private</strong><span>You cannot open its settings, workspace, history, resources, or other Runs.</span></div>
-                      </div>
+                      <PrivateAgentNote />
                       <label className="locked-prompt">
                         Exact owner-approved task
                         <textarea value={contract.approvedPrompt} readOnly rows={4} />
                         <span>Locked to the backend prompt digest</span>
                       </label>
-                      <ScopeFacts inputCount={contract.approvedInputCount} expiresAt={contract.expiresAt} serverNowMs={serverNowMs} />
+                      <ScopeFacts
+                        inputCount={contract.approvedInputCount}
+                        validity={{
+                          kind: "countdown",
+                          expiresAt: contract.expiresAt,
+                          serverNowMs,
+                        }}
+                      />
                       <PolicyExplanation status={visuallyExpired && contract.status === "active" ? "expired" : contract.status} reasonCode={visuallyExpired && contract.status === "active" ? "DELEGATION_EXPIRED" : contract.policyReasonCode} />
                       <button
                         type="button"
@@ -1061,9 +1092,31 @@ export function TrustPassWorkspace({
                               </label>
                             ))}
                           </fieldset>
-                          <div className="locked-scope-note">
-                            Locked scope: <code>agent.invoke</code> · one Run · ten minutes · final output only
-                          </div>
+                          <details className="approval-preview" open>
+                            <summary>
+                              Preview what {request.requester?.displayName ?? "the requester"} will see
+                            </summary>
+                            <div className="approval-preview-content">
+                              <PrivateAgentNote />
+                              <label className="locked-prompt">
+                                Approved task
+                                <textarea
+                                  value={request.sanitizedTaskSummary}
+                                  readOnly
+                                  rows={4}
+                                />
+                                <span>This exact task is locked and cannot be changed.</span>
+                              </label>
+                              <ScopeFacts
+                                inputCount={draft.resourceIds.length}
+                                validity={{
+                                  kind: "duration",
+                                  label: "10 minutes after approval",
+                                  hint: "The countdown starts when you approve",
+                                }}
+                              />
+                            </div>
+                          </details>
                           {eligibleAgents.length === 0 && <div className="denied-copy">Create or start a ready {departmentLabel(principal.department)} Agent before approving.</div>}
                           <div className="approval-actions">
                             <button type="button" className="button button-danger" onClick={() => void rejectRequest(request)} disabled={busyKey !== null}>{busyKey === "reject-" + request.id ? <Loading /> : "Reject"}</button>

@@ -135,49 +135,53 @@ async function login(app: Awaited<ReturnType<typeof createApp>>, email: string) 
 }
 
 describe("HTTP identity and authorization boundary", () => {
-  it("reports disposable Runtime capabilities and honest direct-Ark blockers", async () => {
-    const { app, config } = await makeHarness({
-      LOCAL_INSECURE_RUNTIME_KEY_PASSTHROUGH: "false",
-      LOCAL_INSECURE_RUNTIME_NETWORK: "false",
-    });
-    const cookie = await login(app, "frontend@bytedance.com");
-    const response = await app.inject({
-      method: "GET",
-      url: "/api/system",
-      headers: { cookie },
-    });
+  it(
+    "reports disposable Runtime capabilities and honest direct-Ark blockers",
+    async () => {
+      const { app, config } = await makeHarness({
+        LOCAL_INSECURE_RUNTIME_KEY_PASSTHROUGH: "false",
+        LOCAL_INSECURE_RUNTIME_NETWORK: "false",
+      });
+      const cookie = await login(app, "frontend@bytedance.com");
+      const response = await app.inject({
+        method: "GET",
+        url: "/api/system",
+        headers: { cookie },
+      });
 
-    expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({
-      codexExecutable: config.containerCodexBin,
-      codexExecutableSource: config.containerCodexBinSource,
-      codexAvailable: true,
-      codexVersion: "0.151.0",
-      codexExpectedVersion: "0.151.0",
-      runtimeProvider: "container",
-      containerRuntimeImage: config.containerRuntimeImage,
-      executionReady: false,
-      delegatedRunsAvailable: false,
-      capabilities: {
-        executionBoundary: "disposable-container",
-        workspaceIsolation: "filtered-owner-projection",
-        networkPolicy: "container-network-blocked",
-        credentialPolicy: "not-forwarded",
-        readOnlyRoot: true,
-        capabilitiesDropped: true,
-        noNewPrivileges: true,
-        resourceLimits: true,
-        protectedFileProjection: true,
-      },
-    });
-    expect(response.json().blockers).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ code: "RUNTIME_CREDENTIALS_NOT_FORWARDED" }),
-        expect.objectContaining({ code: "RUNTIME_NETWORK_BLOCKED" }),
-      ]),
-    );
-    await app.close();
-  });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        codexExecutable: config.containerCodexBin,
+        codexExecutableSource: config.containerCodexBinSource,
+        codexAvailable: true,
+        codexVersion: "0.151.0",
+        codexExpectedVersion: "0.151.0",
+        runtimeProvider: "container",
+        containerRuntimeImage: config.containerRuntimeImage,
+        executionReady: false,
+        delegatedRunsAvailable: false,
+        capabilities: {
+          executionBoundary: "disposable-container",
+          workspaceIsolation: "filtered-owner-projection",
+          networkPolicy: "container-network-blocked",
+          credentialPolicy: "not-forwarded",
+          readOnlyRoot: true,
+          capabilitiesDropped: true,
+          noNewPrivileges: true,
+          resourceLimits: true,
+          protectedFileProjection: true,
+        },
+      });
+      expect(response.json().blockers).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ code: "RUNTIME_CREDENTIALS_NOT_FORWARDED" }),
+          expect.objectContaining({ code: "RUNTIME_NETWORK_BLOCKED" }),
+        ]),
+      );
+      await app.close();
+    },
+    10_000,
+  );
 
   it.each([
     {

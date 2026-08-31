@@ -10,6 +10,9 @@ codex-home/
 coverage/
 *.log
 *.tsbuildinfo
+*.un~
+*.swp
+*.swo
 .DS_Store
 deploy/volcengine/.terraform/
 deploy/volcengine/*.tfstate*

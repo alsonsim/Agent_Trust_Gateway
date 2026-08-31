@@ -8,6 +8,8 @@ workspaces
 codex-home
 deploy/volcengine/.terraform
 deploy/volcengine/*.tfstate*
-.env
-.env.production
+.env*
+*.un~
+*.swp
+*.swo
 *.log

@@ -166,8 +166,12 @@ if [[ "$codex_sandbox_mode" == "workspace-write" ]] \
   codex_sandbox_mode=danger-full-access
 fi
 
+# The built web application is served in production mode, while this explicit
+# marker and forced loopback bind keep the local-only Ark escape hatches from
+# being accepted by Docker/ECS or a publicly reachable server.
 export NODE_ENV=production
-export HOST="${HOST:-127.0.0.1}"
+export LOCAL_POC_MODE=true
+export HOST=127.0.0.1
 export PORT="${PORT:-3000}"
 export CODEX_SANDBOX_MODE="$codex_sandbox_mode"
 export RUNTIME_PROVIDER=container

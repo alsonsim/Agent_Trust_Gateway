@@ -15,6 +15,14 @@ services:
       NODE_ENV: production
       HOST: 0.0.0.0
       PORT: 3000
+      # The whole application is already inside this image. Per-Run disposable
+      # containers are provided by scripts/start-local-poc.sh, not by nesting a
+      # privileged Docker daemon or socket inside the web container.
+      RUNTIME_PROVIDER: application-container
+      CODEX_BIN: codex
+      LOCAL_POC_MODE: "false"
+      LOCAL_INSECURE_RUNTIME_KEY_PASSTHROUGH: "false"
+      LOCAL_INSECURE_RUNTIME_NETWORK: "false"
       APP_DATA_DIR: /app/data
       AGENT_WORKSPACE_ROOT: /app/workspaces
       CODEX_HOME: /app/codex-home

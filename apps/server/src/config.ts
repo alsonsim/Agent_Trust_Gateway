@@ -1,4 +1,4 @@
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import path from "node:path";
 import { z } from "zod";
@@ -21,7 +21,9 @@ const envSchema = z.object({
     .default("workspace-write"),
   CODEX_TIMEOUT_MS: z.coerce.number().int().min(1_000).default(600_000),
   CODEX_MAX_OUTPUT_BYTES: z.coerce.number().int().min(65_536).default(2_097_152),
-  RUNTIME_PROVIDER: z.enum(["local-process", "container"]).default("local-process"),
+  RUNTIME_PROVIDER: z
+    .enum(["local-process", "application-container", "container"])
+    .default("local-process"),
   CONTAINER_ENGINE: z.string().min(1).default("docker"),
   CONTAINER_RUNTIME_IMAGE: z.string().min(1).default("volc-agent-runtime:local"),
   CONTAINER_CPU_LIMIT: z.coerce.number().positive().default(2),
@@ -49,6 +51,7 @@ const envSchema = z.object({
   AUTH_SESSION_TTL_SECONDS: z.coerce.number().int().min(300).max(86_400).default(28_800),
   AUTH_COOKIE_SECURE: booleanEnvironmentValue.default(false),
   ALLOW_INSECURE_DEMO_AUTH: booleanEnvironmentValue.default(false),
+  LOCAL_POC_MODE: booleanEnvironmentValue.default(false),
   LOCAL_INSECURE_RUNTIME_KEY_PASSTHROUGH: booleanEnvironmentValue.default(false),
   LOCAL_INSECURE_RUNTIME_NETWORK: booleanEnvironmentValue.default(false),
   SUPABASE_URL: z.string().url().optional(),
@@ -107,15 +110,25 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
   const codexExecutable = resolveCodexExecutable(env.CODEX_BIN);
   const containerCodexExecutable = resolveContainerCodexExecutable(env.CONTAINER_CODEX_BIN);
   const authToken = env.APP_AUTH_TOKEN?.trim() ?? "";
+  const loopbackHosts = new Set(["127.0.0.1", "::1", "localhost"]);
+  const localPocProfile =
+    env.LOCAL_POC_MODE &&
+    loopbackHosts.has(env.HOST) &&
+    env.RUNTIME_PROVIDER === "container";
   if (
     env.NODE_ENV === "production" &&
-    (env.LOCAL_INSECURE_RUNTIME_KEY_PASSTHROUGH || env.LOCAL_INSECURE_RUNTIME_NETWORK)
+    (env.LOCAL_INSECURE_RUNTIME_KEY_PASSTHROUGH || env.LOCAL_INSECURE_RUNTIME_NETWORK) &&
+    !localPocProfile
   ) {
     throw new Error(
-      "LOCAL_INSECURE_RUNTIME_KEY_PASSTHROUGH and LOCAL_INSECURE_RUNTIME_NETWORK are development-only escape hatches",
+      "LOCAL_INSECURE_RUNTIME_KEY_PASSTHROUGH and LOCAL_INSECURE_RUNTIME_NETWORK are loopback local-POC escape hatches",
     );
   }
-  const loopbackHosts = new Set(["127.0.0.1", "::1", "localhost"]);
+  if (env.LOCAL_POC_MODE && !localPocProfile) {
+    throw new Error(
+      "LOCAL_POC_MODE requires a loopback HOST and RUNTIME_PROVIDER=container",
+    );
+  }
   if (env.NODE_ENV === "production" && !loopbackHosts.has(env.HOST)) {
     if (
       env.AUTH_MODE === "legacy" &&
@@ -175,6 +188,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     authSessionTtlSeconds: env.AUTH_SESSION_TTL_SECONDS,
     authCookieSecure: env.AUTH_COOKIE_SECURE,
     allowInsecureDemoAuth: env.ALLOW_INSECURE_DEMO_AUTH,
+    localPocMode: env.LOCAL_POC_MODE,
     localInsecureRuntimeKeyPassthrough: env.LOCAL_INSECURE_RUNTIME_KEY_PASSTHROUGH,
     localInsecureRuntimeNetwork: env.LOCAL_INSECURE_RUNTIME_NETWORK,
     supabaseUrl: env.SUPABASE_URL?.replace(/\/+$/, "") ?? "",
@@ -194,6 +208,25 @@ export function isArkConfigured(config: AppConfig): boolean {
     config.arkModel.length > 0 &&
     !config.arkModel.includes("replace-")
   );
+}
+
+let pinnedCodexVersionPromise: Promise<string> | null = null;
+
+export function readPinnedCodexVersion(): Promise<string> {
+  pinnedCodexVersionPromise ??= readFile(
+    new URL("../../../package.json", import.meta.url),
+    "utf8",
+  ).then((source) => {
+    const packageJson = JSON.parse(source) as {
+      dependencies?: Record<string, unknown>;
+    };
+    const version = packageJson.dependencies?.["@openai/codex"];
+    if (typeof version !== "string" || !/^\d+\.\d+\.\d+$/.test(version)) {
+      throw new Error("package.json must pin @openai/codex to an exact version");
+    }
+    return version;
+  });
+  return pinnedCodexVersionPromise;
 }
 
 export async function writeCodexConfig(config: AppConfig): Promise<void> {

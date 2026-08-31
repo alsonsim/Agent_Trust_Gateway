@@ -853,6 +853,63 @@ export function TrustPassWorkspace({
           <div className="trust-loading"><Loading /> Loading Trust Passes…</div>
         ) : tab === "need-access" ? (
           <div className="trust-grouped-view">
+            <section className="trust-list-section full-trust-section" aria-labelledby="outgoing-request-title">
+              <div className="trust-section-heading">
+                <div><span className="eyebrow">Your requests</span><h2 id="outgoing-request-title">Permission status</h2></div>
+                <button className="button button-ghost trust-refresh" onClick={() => void refreshAll()} disabled={busyKey !== null}>Refresh</button>
+              </div>
+              {outgoingRequests.length === 0 ? (
+                <EmptyState>No permission requests yet.</EmptyState>
+              ) : (
+                <div className="trust-card-list">
+                  {outgoingRequests.map((request) => {
+                    const visuallyExpired =
+                      request.status === "pending" &&
+                      isExpired(request.expiresAt, serverNowMs);
+                    const effectiveStatus: DelegationRequestView["status"] =
+                      visuallyExpired ? "expired" : request.status;
+                    return (
+                      <article
+                        className={
+                          "trust-card compact-trust-card" +
+                          (request.id === recentRequestId ? " request-delivered" : "")
+                        }
+                        key={request.id}
+                      >
+                        <div className="trust-card-heading">
+                          <div><span className="eyebrow">{request.capabilityLabel}</span><h3>{request.sanitizedTaskSummary}</h3></div>
+                          <StatusBadge status={effectiveStatus} />
+                        </div>
+                        <div className="request-meta">
+                          <span>{departmentLabel(request.providerDepartment)} capability</span>
+                          <span>
+                            <time dateTime={request.expiresAt}>
+                              {isExpired(request.expiresAt, serverNowMs)
+                                ? "Expired"
+                                : `${formatRemaining(request.expiresAt, serverNowMs)} remaining`}
+                            </time>
+                          </span>
+                        </div>
+                        <details className="request-technical">
+                          <summary>Technical details</summary>
+                          <code>Task digest: {request.taskDigest}</code>
+                        </details>
+                        {effectiveStatus === "pending" && (
+                          <p className="pending-copy">
+                            Delivered to the {departmentLabel(request.providerDepartment)} capability
+                            owner for review. No Agent access exists until they approve this exact task.
+                          </p>
+                        )}
+                        {effectiveStatus === "approved" && <p className="allowed-copy">Approved. Use the one-use pass in Approved tasks below.</p>}
+                        {effectiveStatus === "rejected" && <p className="denied-copy">The owner declined this request. No pass was issued.</p>}
+                        {effectiveStatus === "expired" && <p className="denied-copy">The request expired before approval.</p>}
+                      </article>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
+
             <div className="trust-view-grid request-view-grid">
             <article className="trust-card trust-form-card">
               <div className="trust-card-heading">
@@ -939,64 +996,6 @@ export function TrustPassWorkspace({
                 </div>
               )}
             </article>
-
-            <section className="trust-list-section" aria-labelledby="outgoing-request-title">
-              <div className="trust-section-heading">
-                <div><span className="eyebrow">Your requests</span><h2 id="outgoing-request-title">Permission status</h2></div>
-                <button className="button button-ghost trust-refresh" onClick={() => void refreshAll()} disabled={busyKey !== null}>Refresh</button>
-              </div>
-              {outgoingRequests.length === 0 ? (
-                <EmptyState>No permission requests yet.</EmptyState>
-              ) : (
-                <div className="trust-card-list">
-                  {outgoingRequests.map((request) => {
-                    const visuallyExpired =
-                      request.status === "pending" &&
-                      isExpired(request.expiresAt, serverNowMs);
-                    const effectiveStatus: DelegationRequestView["status"] =
-                      visuallyExpired ? "expired" : request.status;
-                    return (
-                      <article
-                        className={
-                          "trust-card compact-trust-card" +
-                          (request.id === recentRequestId ? " request-delivered" : "")
-                        }
-                        key={request.id}
-                      >
-                        <div className="trust-card-heading">
-                          <div><span className="eyebrow">{request.capabilityLabel}</span><h3>{request.sanitizedTaskSummary}</h3></div>
-                          <StatusBadge status={effectiveStatus} />
-                        </div>
-                        <div className="request-meta">
-                          <span>{departmentLabel(request.providerDepartment)} capability</span>
-                          <span>
-                            <time dateTime={request.expiresAt}>
-                              {isExpired(request.expiresAt, serverNowMs)
-                                ? "Expired"
-                                : `${formatRemaining(request.expiresAt, serverNowMs)} remaining`}
-                            </time>
-                          </span>
-                        </div>
-                        <details className="request-technical">
-                          <summary>Technical details</summary>
-                          <code>Task digest: {request.taskDigest}</code>
-                        </details>
-                        {effectiveStatus === "pending" && (
-                          <p className="pending-copy">
-                            Delivered to the {departmentLabel(request.providerDepartment)} capability
-                            owner for review. No Agent access exists until they approve this exact task.
-                          </p>
-                        )}
-                        {effectiveStatus === "approved" && <p className="allowed-copy">Approved. Use the one-use pass in Approved tasks below.</p>}
-                        {effectiveStatus === "rejected" && <p className="denied-copy">The owner declined this request. No pass was issued.</p>}
-                        {effectiveStatus === "expired" && <p className="denied-copy">The request expired before approval.</p>}
-                      </article>
-                    );
-                  })}
-                </div>
-              )}
-            </section>
-            </div>
 
             <section className="trust-list-section full-trust-section" aria-labelledby="approved-task-title">
             <div className="trust-section-heading">
@@ -1085,6 +1084,7 @@ export function TrustPassWorkspace({
               </div>
             )}
             </section>
+            </div>
           </div>
         ) : (
           <div className="trust-grouped-view">

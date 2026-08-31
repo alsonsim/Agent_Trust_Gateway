@@ -861,7 +861,7 @@ export function TrustPassWorkspace({
               {outgoingRequests.length === 0 ? (
                 <EmptyState>No permission requests yet.</EmptyState>
               ) : (
-                <div className="trust-card-list">
+                <div className="trust-card-list permission-status-list">
                   {outgoingRequests.map((request) => {
                     const visuallyExpired =
                       request.status === "pending" &&
@@ -915,7 +915,7 @@ export function TrustPassWorkspace({
               <div className="trust-card-heading">
                 <div>
                   <span className="eyebrow">Capability broker</span>
-                  <h2>Ask without exposing an Agent</h2>
+                  <h2>Request new permission</h2>
                 </div>
                 <span className="privacy-chip">Private discovery</span>
               </div>
@@ -999,7 +999,7 @@ export function TrustPassWorkspace({
 
             <section className="trust-list-section full-trust-section" aria-labelledby="approved-task-title">
             <div className="trust-section-heading">
-              <div><span className="eyebrow">Approved tasks</span><h2 id="approved-task-title">Run only what the owner approved</h2></div>
+              <div><span className="eyebrow">Approved tasks</span><h2 id="approved-task-title">Run an approved task</h2></div>
               <button className="button button-ghost trust-refresh" onClick={() => void refreshAll()} disabled={busyKey !== null}>Refresh</button>
             </div>
             {approvedTasks.length === 0 ? (

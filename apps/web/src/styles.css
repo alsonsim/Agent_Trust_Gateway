@@ -2949,6 +2949,7 @@ textarea:focus {
   line-height: 1.5;
 }
 
+.permission-status-list,
 .approved-task-list {
   grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
 }
@@ -3876,6 +3877,7 @@ textarea:focus {
     position: static;
   }
 
+  .permission-status-list,
   .approved-task-list {
     grid-template-columns: 1fr;
   }

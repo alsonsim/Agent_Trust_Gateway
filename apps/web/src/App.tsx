@@ -4,6 +4,17 @@ import {
   TrustPassWorkspace,
   type CapabilityRequestSeed,
 } from "./delegation/TrustPassWorkspace";
+import {
+  codexVersionMatches,
+  runtimeCredentialLabel,
+  runtimeExecutionBoundaryLabel,
+  runtimeNetworkLabel,
+  runtimePrimaryBlocker,
+  runtimeProviderLabel,
+  runtimeStatusLabel,
+  runtimeStatusTone,
+  runtimeWorkspaceLabel,
+} from "./runtime-status";
 import type {
   Agent,
   AgentRun,
@@ -300,6 +311,8 @@ export default function App() {
   const [system, setSystem] = useState<SystemInfo | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showRuntimeDetails, setShowRuntimeDetails] = useState(false);
+  const [runtimeRefreshing, setRuntimeRefreshing] = useState(false);
   const [form, setForm] = useState(emptyForm);
   const [prompt, setPrompt] = useState("");
   const [activeRun, setActiveRun] = useState<AgentRun | null>(null);
@@ -423,6 +436,8 @@ export default function App() {
     setActiveRun(null);
     setShowCreate(false);
     setShowSettings(false);
+    setShowRuntimeDetails(false);
+    setRuntimeRefreshing(false);
     capabilityOfferRequestRef.current += 1;
     setShellView("agent");
     setActiveView("playground");
@@ -552,6 +567,23 @@ export default function App() {
     },
     [invalidateSession, refreshDecisions],
   );
+
+  const refreshSystem = useCallback(async () => {
+    const generation = sessionGenerationRef.current;
+    setRuntimeRefreshing(true);
+    try {
+      const nextSystem = await api.system();
+      if (mountedRef.current && generation === sessionGenerationRef.current) {
+        setSystem(nextSystem);
+      }
+    } catch (reason) {
+      handleRequestError(reason);
+    } finally {
+      if (mountedRef.current && generation === sessionGenerationRef.current) {
+        setRuntimeRefreshing(false);
+      }
+    }
+  }, [handleRequestError]);
 
   const discoverPrivateCapabilityOffer = async (
     task: string,
@@ -1171,6 +1203,14 @@ export default function App() {
   const sendMessage = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!selected || !prompt.trim()) return;
+    if (!system?.executionReady) {
+      setShowRuntimeDetails(true);
+      setError(
+        runtimePrimaryBlocker(system) ??
+          "Runtime execution is unavailable. Review the Runtime details before retrying.",
+      );
+      return;
+    }
     const content = prompt.trim();
     const generation = sessionGenerationRef.current;
     capabilityOfferRequestRef.current += 1;
@@ -1484,9 +1524,9 @@ export default function App() {
           <div>
             <strong>Agent Launchpad</strong>
             <span>
-              {system?.runtimeProvider === "container"
-                ? "Local container · Codex CLI"
-                : "ECS / Docker · Codex CLI"}
+              {system
+                ? runtimeProviderLabel(system.runtimeProvider) + " · Codex CLI"
+                : "Checking Runtime…"}
             </span>
           </div>
         </div>
@@ -1578,45 +1618,51 @@ export default function App() {
             </button>
           </div>
 
-          <div
-            className="runtime-card"
-            role="status"
+          <button
+            type="button"
+            className={"runtime-card runtime-card-" + runtimeStatusTone(system)}
+            onClick={() => setShowRuntimeDetails(true)}
             aria-label={
-              "Runtime: " +
-              (system?.runtime ?? "Checking runtime") +
-              (system?.arkModel ? ". Model: " + system.arkModel : "")
+              runtimeStatusLabel(system) + ". " +
+              (system ? runtimeProviderLabel(system.runtimeProvider) : "Checking Runtime") +
+              (system?.arkModel ? ". Model: " + system.arkModel : "") +
+              ". Open Runtime details."
             }
             title={
-              (system?.runtime ?? "Checking runtime") +
-              (system?.arkModel ? " · " + system.arkModel : "")
+              runtimeStatusLabel(system) + " · Open Runtime details"
             }
           >
             <span className="runtime-compact" aria-hidden="true">RT</span>
             <span className="eyebrow">Runtime</span>
-            <strong>{system?.runtime ?? "Checking…"}</strong>
+            <strong><span className="runtime-state-dot" />{runtimeStatusLabel(system)}</strong>
             <span>
-              {system?.arkModel ?? "Ark model not configured"}
+              {system ? runtimeProviderLabel(system.runtimeProvider) : "Checking…"}
+              {system?.arkModel ? " · " + system.arkModel : ""}
               {system?.containerEngine ? " · " + system.containerEngine : ""}
             </span>
-          </div>
+          </button>
         </div>
       </aside>
 
       <main className="main">
-        {!system?.arkConfigured || !system?.codexAvailable ? (
+        {system && !system.executionReady ? (
           <div className="config-banner">
             <span>!</span>
             <div>
               <strong>Runtime configuration needed</strong>
               <p>
-                {!system?.arkConfigured
-                  ? "Set ARK_API_KEY and ARK_MODEL in .env before using the Playground."
-                  : system.runtimeProvider === "container"
-                    ? "The local container engine or Agent Runtime image is unavailable. Rerun npm run poc."
-                    : "Codex CLI was not found at " +
-                      (system.codexExecutable ?? "the configured executable") +
-                      ". Install @openai/codex, or set CODEX_BIN to an existing executable."}
+                {runtimePrimaryBlocker(system)}
+                {system.blockers.length > 1
+                  ? ` Open Runtime details for ${system.blockers.length - 1} more ${system.blockers.length === 2 ? "issue" : "issues"}.`
+                  : ""}
               </p>
+              <button
+                type="button"
+                className="config-banner-action"
+                onClick={() => setShowRuntimeDetails(true)}
+              >
+                View Runtime details
+              </button>
             </div>
           </div>
         ) : null}
@@ -1639,6 +1685,7 @@ export default function App() {
             principal={principal}
             agents={agents}
             resources={resources}
+            system={system}
             requestSeed={capabilityRequestSeed}
             onRequestSeedCleared={handleRequestSeedCleared}
             onCountsChange={handleTrustPassCounts}
@@ -1901,10 +1948,13 @@ export default function App() {
                       ? "This Agent has been revoked."
                       : selected.status === "stopped"
                       ? "Start this Agent to continue…"
+                      : system?.executionReady !== true
+                      ? "Runtime execution is unavailable. Open Runtime details to continue…"
                       : "Describe what you want the Agent to do…"
                   }
                   disabled={
                     capabilityChecking ||
+                    system?.executionReady !== true ||
                     selected.revokedAt !== null ||
                     selected.status === "stopped" ||
                     selected.status === "busy" ||
@@ -1914,13 +1964,16 @@ export default function App() {
                 />
                 <div className="composer-footer">
                   <span>
-                    Enter to send · Shift + Enter for newline · {system?.codexSandboxMode ?? "checking sandbox"}
+                    {system?.executionReady
+                      ? `Enter to send · Shift + Enter for newline · ${system.codexSandboxMode}`
+                      : "Runtime blocked · Access & audit tests remain available"}
                   </span>
                   <button
                     className="send-button"
                     disabled={
                       !prompt.trim() ||
                       capabilityChecking ||
+                      system?.executionReady !== true ||
                       selected.revokedAt !== null ||
                       selected.status === "stopped" ||
                       selected.status === "busy" ||
@@ -2323,8 +2376,16 @@ export default function App() {
           <div className="no-agent">
             <div className="no-agent-art">A</div>
             <span className="eyebrow">Agent Launchpad</span>
-            <h1>Your runtime is ready for an Agent.</h1>
-            <p>Create a workspace, give Codex a job, and continue the conversation here.</p>
+            <h1>
+              {system?.executionReady
+                ? "Your Runtime is ready for an Agent."
+                : "Create an Agent while the Runtime is being configured."}
+            </h1>
+            <p>
+              {system?.executionReady
+                ? "Create a workspace, give Codex a job, and continue the conversation here."
+                : "Workspace and middleware demos remain available; Agent execution will unlock when the Runtime is ready."}
+            </p>
             <button
               className="button button-primary"
               onClick={() => {
@@ -2337,6 +2398,182 @@ export default function App() {
           </div>
         )}
       </main>
+
+      {showRuntimeDetails && (
+        <div className="modal-backdrop" onMouseDown={() => setShowRuntimeDetails(false)}>
+          <section
+            className="modal runtime-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="runtime-details-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="modal-heading runtime-modal-heading">
+              <div>
+                <span className="eyebrow">Execution environment</span>
+                <h2 id="runtime-details-title">Runtime capabilities</h2>
+                <p>
+                  The backend probes local CLI readiness and reports its configured boundary.
+                  It does not spend model quota or grant capabilities.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowRuntimeDetails(false)}
+                aria-label="Close Runtime details"
+              >
+                ×
+              </button>
+            </div>
+
+            {!system ? (
+              <div className="runtime-probe-state"><Spinner /> Checking the Runtime…</div>
+            ) : (
+              <>
+                <div className={"runtime-readiness runtime-readiness-" + runtimeStatusTone(system)}>
+                  <span className="runtime-readiness-dot" />
+                  <div>
+                    <strong>{runtimeStatusLabel(system)}</strong>
+                    <span>{runtimeProviderLabel(system.runtimeProvider)}</span>
+                  </div>
+                </div>
+
+                <dl className="runtime-facts">
+                  <div>
+                    <dt>Codex CLI</dt>
+                    <dd>
+                      <strong>{system.codexVersion ?? "Unavailable"}</strong>
+                      <small><code>{system.codexExecutable}</code></small>
+                      <small>
+                        Expected {system.codexExpectedVersion}
+                        {system.codexVersion
+                          ? codexVersionMatches(system) ? " · matched" : " · mismatch"
+                          : ""}
+                        {" · " + system.codexSandboxMode}
+                      </small>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Model</dt>
+                    <dd>
+                      <strong>{system.arkModel ?? "Not configured"}</strong>
+                      <small>{system.arkConfigured ? "Server configuration found" : "Configuration missing"}</small>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Normal Agent Runs</dt>
+                    <dd>
+                      <strong>{system.executionReady ? "Locally available" : "Blocked"}</strong>
+                      <small>Provider credentials and quota are exercised only by a real Run</small>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Trust Pass Runs</dt>
+                    <dd>
+                      <strong>
+                        {system.executionReady && system.delegatedRunsAvailable
+                          ? "Available"
+                          : "Blocked"}
+                      </strong>
+                      <small>Requires the disposable container boundary</small>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Execution boundary</dt>
+                    <dd><strong>{runtimeExecutionBoundaryLabel(system.capabilities.executionBoundary)}</strong></dd>
+                  </div>
+                  <div>
+                    <dt>Workspace</dt>
+                    <dd><strong>{runtimeWorkspaceLabel(system.capabilities.workspaceIsolation)}</strong></dd>
+                  </div>
+                  <div>
+                    <dt>Network</dt>
+                    <dd><strong>{runtimeNetworkLabel(system.capabilities.networkPolicy)}</strong></dd>
+                  </div>
+                  <div>
+                    <dt>Credentials</dt>
+                    <dd><strong>{runtimeCredentialLabel(system.capabilities.credentialPolicy)}</strong></dd>
+                  </div>
+                  {system.containerRuntimeImage && (
+                    <div className="runtime-fact-wide">
+                      <dt>Runtime image</dt>
+                      <dd>
+                        <strong><code>{system.containerRuntimeImage}</code></strong>
+                        <small>{system.containerEngine ?? "Container engine not detected"}</small>
+                      </dd>
+                    </div>
+                  )}
+                </dl>
+
+                <div className="runtime-security-section">
+                  <span className="eyebrow">Backend-attested hardening</span>
+                  {system.runtimeProvider === "application-container" && (
+                    <p className="runtime-attestation-note">
+                      Docker Compose requests dropped capabilities, no-new-privileges and
+                      resource limits. The application cannot attest orchestrator launch
+                      flags from an environment label, so they are not shown as verified here.
+                    </p>
+                  )}
+                  <div className="runtime-security-chips">
+                    <span className={system.capabilities.protectedFileProjection ? "active" : "inactive"}>
+                      {system.capabilities.protectedFileProjection ? "✓" : "—"} Protected-file projection
+                    </span>
+                    <span className={system.capabilities.readOnlyRoot ? "active" : "inactive"}>
+                      {system.capabilities.readOnlyRoot ? "✓" : "—"} Read-only root
+                    </span>
+                    <span className={system.capabilities.capabilitiesDropped ? "active" : "inactive"}>
+                      {system.capabilities.capabilitiesDropped ? "✓" : "—"} Linux capabilities dropped
+                    </span>
+                    <span className={system.capabilities.noNewPrivileges ? "active" : "inactive"}>
+                      {system.capabilities.noNewPrivileges ? "✓" : "—"} No new privileges
+                    </span>
+                    <span className={system.capabilities.resourceLimits ? "active" : "inactive"}>
+                      {system.capabilities.resourceLimits ? "✓" : "—"} CPU, memory and PID limits
+                    </span>
+                  </div>
+                </div>
+
+                <div className={"runtime-blockers " + (system.blockers.length === 0 ? "runtime-blockers-clear" : "")}>
+                  <strong>{system.blockers.length === 0 ? "No local configuration blockers" : "Runtime blockers"}</strong>
+                  {system.blockers.length === 0 ? (
+                    <span>
+                      CLI and configuration checks passed. Model credentials, service health
+                      and quota are verified only when an Agent Run begins.
+                    </span>
+                  ) : (
+                    <ul>
+                      {system.blockers.map((blocker) => (
+                        <li key={blocker.code}>
+                          <code>{blocker.code}</code>
+                          <span>{blocker.message}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              </>
+            )}
+
+            <div className="modal-footer runtime-modal-footer">
+              <button
+                type="button"
+                className="button button-ghost"
+                onClick={() => void refreshSystem()}
+                disabled={runtimeRefreshing}
+              >
+                {runtimeRefreshing ? <Spinner /> : "Refresh probe"}
+              </button>
+              <button
+                type="button"
+                className="button button-primary"
+                onClick={() => setShowRuntimeDetails(false)}
+              >
+                Close
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
 
       {showCreate && (
         <div className="modal-backdrop" onMouseDown={() => setShowCreate(false)}>

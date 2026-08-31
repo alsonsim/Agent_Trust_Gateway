@@ -75,8 +75,10 @@ describe("delegated Codex homes", () => {
     ).toBe("deny dangerous-action\n");
     await expect(access(path.join(home, "sessions"))).rejects.toThrow();
     await expect(access(path.join(home, "auth.json"))).rejects.toThrow();
-    expect((await stat(home)).mode & 0o777).toBe(0o700);
-    expect((await stat(path.join(home, "config.toml"))).mode & 0o777).toBe(0o600);
+    if (process.platform !== "win32") {
+      expect((await stat(home)).mode & 0o777).toBe(0o700);
+      expect((await stat(path.join(home, "config.toml"))).mode & 0o777).toBe(0o600);
+    }
   });
 
   it("creates an empty isolated home when optional allowlisted files are absent", async () => {

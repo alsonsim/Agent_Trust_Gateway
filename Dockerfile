@@ -28,14 +28,19 @@ RUN if [ -n "$DEBIAN_SECURITY_MIRROR" ]; then \
     fi \
     && apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates git ripgrep \
-    && npm install --global @openai/codex@0.111.0 \
-    && codex --version \
     && rm -rf /var/lib/apt/lists/*
 
+ENV PATH="/app/node_modules/.bin:${PATH}"
+
+COPY --from=build /app/package.json ./package.json
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/apps/server/package.json ./apps/server/package.json
 COPY --from=build /app/apps/server/dist ./apps/server/dist
 COPY --from=build /app/apps/web/dist ./apps/web/dist
+
+# The application image and host npm workflow use the same exact Codex package
+# from package-lock.json. Fail the image build if its native binary is missing.
+RUN codex --version
 
 RUN mkdir -p /app/data /app/workspaces /app/codex-home \
     && chown -R node:node /app

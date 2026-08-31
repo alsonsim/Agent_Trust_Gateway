@@ -1,13 +1,15 @@
 ARG NODE_IMAGE=node:22-bookworm-slim
 FROM ${NODE_IMAGE}
 
-ARG CODEX_VERSION=0.111.0
 ARG DEBIAN_MIRROR=""
 ARG DEBIAN_SECURITY_MIRROR=""
 ARG RUNTIME_APT_PACKAGES="ca-certificates git ripgrep"
 
 LABEL org.opencontainers.image.title="Volc Agent Runtime"
 LABEL org.opencontainers.image.description="Disposable local Codex CLI runtime for the CodeJam Starter Kit"
+
+WORKDIR /runtime-build
+COPY package.json ./package.json
 
 RUN if [ -n "$DEBIAN_SECURITY_MIRROR" ]; then \
       find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) \
@@ -19,6 +21,8 @@ RUN if [ -n "$DEBIAN_SECURITY_MIRROR" ]; then \
     fi \
     && apt-get update \
     && apt-get install -y --no-install-recommends $RUNTIME_APT_PACKAGES \
+    && CODEX_VERSION="$(node -p 'require("./package.json").dependencies["@openai/codex"]')" \
+    && test -n "$CODEX_VERSION" \
     && npm install --global "@openai/codex@${CODEX_VERSION}" \
     && codex --version \
     && rm -rf /var/lib/apt/lists/*

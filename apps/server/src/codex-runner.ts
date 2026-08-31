@@ -5,6 +5,7 @@ import { RunCancelledError } from "./errors.js";
 import { prepareScopedCodexHome, runtimeStateKey } from "./runtime-state.js";
 import type {
   AgentRunner,
+  RuntimeInspection,
   RunUsage,
   RunnerRequest,
   RunnerResult,
@@ -15,6 +16,13 @@ export interface ParsedEvents {
   threadId: string | null;
   usage: RunUsage | null;
   errors: string[];
+}
+
+export function parseCodexVersion(output: string): string | null {
+  const match = output.match(
+    /\b(?:codex(?:-cli)?)\s+v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)/i,
+  );
+  return match?.[1] ?? null;
 }
 
 export function buildCodexArgs(
@@ -111,25 +119,46 @@ export class CodexRunner implements AgentRunner {
   constructor(private readonly config: AppConfig) {}
 
   async isAvailable(): Promise<boolean> {
+    return (await this.inspect()).available;
+  }
+
+  async inspect(): Promise<RuntimeInspection> {
     try {
-      const child = this.startCodex(["--version"], { stdio: "ignore" });
-      return await new Promise<boolean>((resolve) => {
+      const child = this.startCodex(["--version"], {
+        stdio: ["ignore", "pipe", "pipe"],
+      }, this.config.codexHome, false);
+      return await new Promise<RuntimeInspection>((resolve) => {
+        let settled = false;
+        let output = "";
+        const finish = (inspection: RuntimeInspection) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeout);
+          resolve(inspection);
+        };
         const timeout = setTimeout(() => {
           child.kill();
-          resolve(false);
+          finish({ available: false, codexVersion: null });
         }, 5_000);
         timeout.unref();
+        child.stdout?.on("data", (chunk: Buffer | string) => {
+          if (output.length < 4_096) output += chunk.toString();
+        });
+        child.stderr?.on("data", (chunk: Buffer | string) => {
+          if (output.length < 4_096) output += chunk.toString();
+        });
         child.once("error", () => {
-          clearTimeout(timeout);
-          resolve(false);
+          finish({ available: false, codexVersion: null });
         });
         child.once("close", (code) => {
-          clearTimeout(timeout);
-          resolve(code === 0);
+          finish({
+            available: code === 0,
+            codexVersion: code === 0 ? parseCodexVersion(output) : null,
+          });
         });
       });
     } catch {
-      return false;
+      return { available: false, codexVersion: null };
     }
   }
 
@@ -285,10 +314,16 @@ export class CodexRunner implements AgentRunner {
       stdio: "ignore" | ["ignore", "pipe", "pipe"];
     },
     codexHome = this.config.codexHome,
+    includeRuntimeCredentials = true,
   ): ChildProcess {
     const spawnOptions = {
       ...options,
-      env: buildCodexChildEnvironment(this.config, codexHome),
+      env: buildCodexChildEnvironment(
+        this.config,
+        codexHome,
+        process.env,
+        includeRuntimeCredentials,
+      ),
     };
     if (this.usesWindowsCommandShell()) {
       return spawn(
@@ -300,7 +335,7 @@ export class CodexRunner implements AgentRunner {
           "/c",
           buildWindowsCmdCommand(this.config.codexBin, args),
         ],
-        spawnOptions,
+        { ...spawnOptions, windowsVerbatimArguments: true },
       );
     }
     return spawn(this.config.codexBin, args, spawnOptions);
@@ -337,6 +372,7 @@ export function buildCodexChildEnvironment(
   config: AppConfig,
   codexHome = config.codexHome,
   sourceEnvironment: NodeJS.ProcessEnv = process.env,
+  includeRuntimeCredentials = true,
 ): NodeJS.ProcessEnv {
   const inheritedNames = [
     "PATH",
@@ -355,9 +391,9 @@ export function buildCodexChildEnvironment(
   const environment: NodeJS.ProcessEnv = {
     CODEX_HOME: codexHome,
     HOME: codexHome,
-    ARK_API_KEY: config.arkApiKey,
     NO_COLOR: "1",
   };
+  if (includeRuntimeCredentials) environment.ARK_API_KEY = config.arkApiKey;
   for (const name of inheritedNames) {
     if (environment[name] === undefined && sourceEnvironment[name] !== undefined) {
       environment[name] = sourceEnvironment[name];
@@ -367,7 +403,7 @@ export function buildCodexChildEnvironment(
 }
 
 export function buildWindowsCmdCommand(executable: string, args: string[]): string {
-  return [executable, ...args]
+  const command = [executable, ...args]
     .map((value) =>
       '"' +
       value
@@ -379,4 +415,7 @@ export function buildWindowsCmdCommand(executable: string, args: string[]): stri
       '"',
     )
     .join(" ");
+  // `cmd.exe /s /c` strips one outer quote pair. Supplying that pair keeps the
+  // quoted .cmd path intact when it contains spaces.
+  return '"' + command + '"';
 }

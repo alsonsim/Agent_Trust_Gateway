@@ -16,6 +16,7 @@ vi.mock("node:child_process", () => childProcessMocks);
 import { loadConfig } from "./config.js";
 import {
   buildContainerCliEnvironment,
+  buildContainerProbeArgs,
   buildContainerRunArgs,
   ContainerCodexRunner,
   ContainerRemovalUnverifiedError,
@@ -79,6 +80,103 @@ beforeEach(() => {
 });
 
 describe("Container Codex runner", () => {
+  it("verifies the configured Codex executable inside the Runtime image", async () => {
+    childProcessMocks.execFile.mockImplementation(
+      (
+        _file: string,
+        args: string[],
+        _options: unknown,
+        callback: (error: Error | null, stdout?: string, stderr?: string) => void,
+      ) => {
+        if (args[0] === "inspect") {
+          callback(missingContainerError());
+          return;
+        }
+        callback(null, args[0] === "run" ? "codex-cli 0.151.0\n" : "", "");
+      },
+    );
+    const config = runnerConfig();
+    const runner = new ContainerCodexRunner(config);
+
+    await expect(runner.inspect()).resolves.toEqual({
+      available: true,
+      codexVersion: "0.151.0",
+    });
+    const probeArgs = childProcessMocks.execFile.mock.calls
+      .map((call) => call[1] as string[])
+      .find((args) => args[0] === "run");
+    expect(probeArgs).toEqual(expect.arrayContaining([
+      "--rm",
+      "--init",
+      "--network",
+      "none",
+      "--read-only",
+      "--cap-drop",
+      "ALL",
+      "--security-opt",
+      "no-new-privileges",
+      "--cpus",
+      "--memory",
+      "--pids-limit",
+      "--user",
+      config.containerUser,
+      "--entrypoint",
+      "codex",
+      "runtime:test",
+      "--version",
+    ]));
+    expect(probeArgs?.[probeArgs.indexOf("--name") + 1]).toMatch(
+      /^launchpad-settlement-test-runtime-probe-/,
+    );
+    expect(
+      childProcessMocks.execFile.mock.calls.some(
+        (call) => (call[1] as string[])[0] === "rm",
+      ),
+    ).toBe(true);
+  });
+
+  it("builds a constrained non-root readiness probe", () => {
+    const config = runnerConfig();
+    const args = buildContainerProbeArgs(config, "launchpad-probe-fixed");
+
+    expect(args).toContain("launchpad-probe-fixed");
+    expect(args).toContain(config.containerUser);
+    expect(args).toContain(String(config.containerCpuLimit));
+    expect(args).toContain(config.containerMemoryLimit);
+    expect(args).toContain(String(config.containerPidsLimit));
+    expect(args).toContain("/tmp:rw,noexec,nosuid,size=64m");
+    expect(args).not.toContain("ARK_API_KEY");
+    expect(args).not.toContain("ARK_MODEL");
+  });
+
+  it("reports unavailable when the Runtime image lacks its configured Codex executable", async () => {
+    childProcessMocks.execFile.mockImplementation(
+      (
+        _file: string,
+        args: string[],
+        _options: unknown,
+        callback: (error: Error | null, stdout?: string, stderr?: string) => void,
+      ) => {
+        if (args[0] === "run") {
+          callback(new Error("executable file not found"));
+          return;
+        }
+        if (args[0] === "inspect") {
+          callback(missingContainerError());
+          return;
+        }
+        callback(null, "", "");
+      },
+    );
+    const runner = new ContainerCodexRunner(runnerConfig());
+
+    await expect(runner.inspect()).resolves.toEqual({
+      available: false,
+      codexVersion: null,
+    });
+    await expect(runner.isAvailable()).resolves.toBe(false);
+  });
+
   it("builds an isolated Docker/Podman-compatible invocation", () => {
     const config = loadConfig({
       NODE_ENV: "test",
@@ -113,7 +211,7 @@ describe("Container Codex runner", () => {
     expect(args).not.toContain("codex.cmd");
     expect(args).toContain("type=bind,src=/tmp/agent-workspace,dst=/workspace");
     expect(args).toContain(
-      "type=bind,src=/tmp/delegated-codex-home,dst=/codex-home",
+      "type=bind,src=" + path.resolve("/tmp/delegated-codex-home") + ",dst=/codex-home",
     );
     expect(args).not.toContain(
       "type=bind,src=" + config.codexHome + ",dst=/codex-home",

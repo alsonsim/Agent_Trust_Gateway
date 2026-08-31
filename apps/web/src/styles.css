@@ -515,6 +515,22 @@ textarea:focus-visible {
   border-radius: 12px;
   padding: 13px;
   background: #292925;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 140ms ease, background 140ms ease;
+}
+
+.runtime-card:hover,
+.runtime-card:focus-visible {
+  border-color: #625c89;
+  background: #302f2b;
+}
+
+.runtime-card:focus-visible {
+  outline: 2px solid #8a78e8;
+  outline-offset: 2px;
 }
 
 .runtime-card strong,
@@ -523,8 +539,32 @@ textarea:focus-visible {
 }
 
 .runtime-card strong {
+  align-items: center;
+  gap: 6px;
   font-size: 11px;
   margin: 6px 0 4px;
+}
+
+.runtime-card strong {
+  display: flex;
+}
+
+.runtime-state-dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: #8d8d86;
+}
+
+.runtime-card-ready .runtime-state-dot {
+  background: #58c69d;
+  box-shadow: 0 0 0 3px rgba(88, 198, 157, 0.12);
+}
+
+.runtime-card-blocked .runtime-state-dot {
+  background: #e1756d;
+  box-shadow: 0 0 0 3px rgba(225, 117, 109, 0.12);
 }
 
 .runtime-card > span:last-child {
@@ -596,6 +636,20 @@ textarea:focus-visible {
   font-size: 10px;
   margin-top: 2px;
   opacity: 0.78;
+}
+
+.config-banner-action {
+  border: 0;
+  padding: 0;
+  margin-top: 4px;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 750;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
 }
 
 .error-banner {
@@ -1253,6 +1307,251 @@ textarea:focus {
   justify-content: flex-end;
   gap: 8px;
   margin-top: 20px;
+}
+
+.runtime-modal {
+  width: min(720px, 100%);
+}
+
+.runtime-modal-heading p {
+  margin-bottom: 0;
+}
+
+.runtime-probe-state {
+  min-height: 150px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.runtime-readiness {
+  margin-top: 18px;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 13px 14px;
+  background: #f5f4f0;
+}
+
+.runtime-readiness-dot {
+  width: 11px;
+  height: 11px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: #8d8d86;
+}
+
+.runtime-readiness-ready {
+  color: #116d54;
+  border-color: #b8dfd2;
+  background: #edf8f4;
+}
+
+.runtime-readiness-ready .runtime-readiness-dot {
+  background: #42b98d;
+  box-shadow: 0 0 0 4px rgba(66, 185, 141, 0.14);
+}
+
+.runtime-readiness-blocked {
+  color: #9c3f3c;
+  border-color: #ebc4c0;
+  background: #fff2f0;
+}
+
+.runtime-readiness-blocked .runtime-readiness-dot {
+  background: #dc6b63;
+  box-shadow: 0 0 0 4px rgba(220, 107, 99, 0.13);
+}
+
+.runtime-readiness strong,
+.runtime-readiness span {
+  display: block;
+}
+
+.runtime-readiness strong {
+  font-size: 13px;
+}
+
+.runtime-readiness div > span {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.runtime-facts {
+  margin: 14px 0 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.runtime-facts > div {
+  min-width: 0;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.runtime-facts > div:nth-child(odd):not(.runtime-fact-wide) {
+  border-right: 1px solid var(--line);
+}
+
+.runtime-facts > .runtime-fact-wide {
+  grid-column: 1 / -1;
+  border-bottom: 0;
+}
+
+.runtime-facts dt {
+  margin-bottom: 5px;
+  color: #8a8982;
+  font-size: 9px;
+  font-weight: 750;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.runtime-facts dd {
+  min-width: 0;
+  margin: 0;
+}
+
+.runtime-facts dd strong,
+.runtime-facts dd small {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.runtime-facts dd strong {
+  font-size: 11px;
+}
+
+.runtime-facts dd small {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.runtime-facts code {
+  white-space: normal;
+}
+
+.runtime-security-section {
+  margin-top: 15px;
+}
+
+.runtime-attestation-note {
+  margin: 7px 0 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.runtime-security-chips {
+  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.runtime-security-chips span {
+  border: 1px solid #d8d6ce;
+  border-radius: 999px;
+  padding: 5px 8px;
+  color: #77766f;
+  background: #f4f3ef;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.runtime-security-chips span.active {
+  color: #116d54;
+  border-color: #b8dfd2;
+  background: #edf8f4;
+}
+
+.runtime-blockers {
+  margin-top: 15px;
+  border: 1px solid #ebc4c0;
+  border-radius: 12px;
+  padding: 12px 14px;
+  color: #8f3937;
+  background: #fff2f0;
+}
+
+.runtime-blockers > strong,
+.runtime-blockers > span {
+  display: block;
+}
+
+.runtime-blockers > strong {
+  font-size: 11px;
+}
+
+.runtime-blockers > span {
+  margin-top: 3px;
+  font-size: 10px;
+}
+
+.runtime-blockers ul {
+  margin: 8px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+  list-style: none;
+}
+
+.runtime-blockers li {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  font-size: 10px;
+}
+
+.runtime-blockers li code {
+  color: inherit;
+  font-size: 8px;
+}
+
+.runtime-blockers-clear {
+  color: #116d54;
+  border-color: #b8dfd2;
+  background: #edf8f4;
+}
+
+.runtime-modal-footer {
+  align-items: center;
+  justify-content: space-between;
+}
+
+.trust-runtime-blocker {
+  margin: 10px 0;
+  border: 1px solid #eddda1;
+  border-radius: 10px;
+  padding: 10px 12px;
+  color: #765a1b;
+  background: #fff8df;
+}
+
+.trust-runtime-blocker strong,
+.trust-runtime-blocker span {
+  display: block;
+}
+
+.trust-runtime-blocker strong {
+  font-size: 10px;
+}
+
+.trust-runtime-blocker span {
+  margin-top: 3px;
+  font-size: 9px;
+  line-height: 1.45;
 }
 
 .security-panel {
@@ -3915,6 +4214,36 @@ textarea:focus {
 }
 
 @media (max-width: 680px) {
+  .runtime-modal {
+    padding: 18px;
+  }
+
+  .runtime-facts {
+    grid-template-columns: 1fr;
+  }
+
+  .runtime-facts > div:nth-child(odd):not(.runtime-fact-wide) {
+    border-right: 0;
+  }
+
+  .runtime-facts > .runtime-fact-wide {
+    grid-column: auto;
+  }
+
+  .runtime-blockers li {
+    grid-template-columns: 1fr;
+    gap: 3px;
+  }
+
+  .runtime-modal-footer {
+    align-items: stretch;
+    flex-direction: column-reverse;
+  }
+
+  .runtime-modal-footer .button {
+    width: 100%;
+  }
+
   .trust-sidebar-button {
     flex: 0 0 38px;
     width: 38px;

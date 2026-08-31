@@ -3,29 +3,61 @@
 Agent Trust Gateway is a single-node control plane with an identity and
 authorization middleware boundary for hackathon use.
 
+The diagram below is the one-page submission view. Solid arrows show request or
+data flow; the labelled groups identify the browser, control-plane, protected
+data, and disposable execution trust boundaries.
+
 ```mermaid
 flowchart LR
-    UI["React Web UI"] --> AuthN["Authentication middleware"]
-    AuthN --> AuthZ["Human → Agent authorization"]
-    AuthZ --> API["Fastify API"]
-    API --> Service["AgentService"]
-    Service --> Store["JSON store"]
-    Service --> Workspace["Agent workspace"]
-    AuthZ --> Resource["Protected resource policy"]
-    Resource --> Evidence["ALLOW / DENY evidence"]
-    Resource --> Supabase["Local fixtures or Supabase RLS"]
-    UI --> FileRead["POST /api/agents/:id/files/read"]
-    FileRead --> FilePolicy["Workspace file policy"]
-    FilePolicy --> Evidence
+    subgraph Browser["Browser — untrusted client"]
+        UI["React UI<br/>login · Agents · Trust Pass · audit"]
+    end
+
+    subgraph Control["Trusted control plane — backend enforcement"]
+        AuthN["HttpOnly session<br/>authentication"]
+        OwnerGate["Human → Agent<br/>owner gate"]
+        Pass["Consent + Trust Pass validator<br/>identity · prompt digest · Agent · resources<br/>expiry · revocation · one use"]
+        FilePolicy["Resource + file policy<br/>owner · canonical path · secret · size"]
+        Service["AgentService<br/>lifecycle + serialized admission"]
+        Firewall["Runtime Action Firewall<br/>pre-dispatch shell/file/network checks"]
+        Evidence["Append-only ALLOW / DENY evidence<br/>request ID · actor · action · reason"]
+        Recovery["Recovery supervisor<br/>cancel · force-remove · verify · fail closed"]
+    end
+
+    subgraph Data["Protected data boundary"]
+        Store["Local JSON state<br/>or Supabase auth/resources/audit"]
+        Workspace["Owner-scoped workspace<br/>protected resources"]
+    end
+
+    subgraph Runtime["Disposable per-Run boundary — local POC"]
+        Projection["Filtered workspace projection<br/>approved inputs only"]
+        Container["Codex Runtime container<br/>read-only root · cap-drop · limits"]
+    end
+
+    Ark["Volcengine Ark<br/>explicit local network/key opt-in"]
+
+    UI -->|"credentials / session request"| AuthN
+    AuthN --> OwnerGate
+    OwnerGate -->|"ordinary owned action"| Service
+    OwnerGate --> FilePolicy
+    OwnerGate --> Pass
+    Pass -->|"one approved delegated Run"| Service
     FilePolicy --> Workspace
-    API --> Firewall["Runtime Action Firewall"]
+    Service --> Store
+    Service --> Workspace
+    Service --> Firewall
+    Firewall --> Projection
+    Projection --> Container
+    Container --> Ark
+    Container --> Recovery
+    Recovery -->|"verified cleanup or preserved evidence"| Store
+    OwnerGate --> Evidence
+    Pass --> Evidence
+    FilePolicy --> Evidence
     Firewall --> Evidence
-    Firewall --> Runner
-    Service --> Runner{"AgentRunner"}
-    Runner -->|Local POC| Container["Disposable Runtime container"]
-    Runner -->|ECS| Process["Codex child process"]
-    Container --> Ark["Volcengine Ark"]
-    Process --> Ark
+    Recovery --> Evidence
+    Evidence -->|"redacted decision timeline"| UI
+    Evidence --> Store
 ```
 
 ## Components

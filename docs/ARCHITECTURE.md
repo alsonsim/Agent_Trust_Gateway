@@ -3,61 +3,22 @@
 Agent Trust Gateway is a single-node control plane with an identity and
 authorization middleware boundary for hackathon use.
 
-The diagram below is the one-page submission view. Solid arrows show request or
-data flow; the labelled groups identify the browser, control-plane, protected
-data, and disposable execution trust boundaries.
+The [one-page submission diagram](assets/agent-trust-gateway-architecture.svg)
+shows the request path, trust boundaries, enforcement, instrumentation, and
+recovery points at a glance. The compact Mermaid view below mirrors that flow.
+
+[![Agent Trust Gateway one-page architecture](assets/agent-trust-gateway-architecture.png)](assets/agent-trust-gateway-architecture.svg)
 
 ```mermaid
 flowchart LR
-    subgraph Browser["Browser — untrusted client"]
-        UI["React UI<br/>login · Agents · Trust Pass · audit"]
-    end
-
-    subgraph Control["Trusted control plane — backend enforcement"]
-        AuthN["HttpOnly session<br/>authentication"]
-        OwnerGate["Human → Agent<br/>owner gate"]
-        Pass["Consent + Trust Pass validator<br/>identity · prompt digest · Agent · resources<br/>expiry · revocation · one use"]
-        FilePolicy["Resource + file policy<br/>owner · canonical path · secret · size"]
-        Service["AgentService<br/>lifecycle + serialized admission"]
-        Firewall["Runtime Action Firewall<br/>pre-dispatch shell/file/network checks"]
-        Evidence["Append-only ALLOW / DENY evidence<br/>request ID · actor · action · reason"]
-        Recovery["Recovery supervisor<br/>cancel · force-remove · verify · fail closed"]
-    end
-
-    subgraph Data["Protected data boundary"]
-        Store["Local JSON state<br/>or Supabase auth/resources/audit"]
-        Workspace["Owner-scoped workspace<br/>protected resources"]
-    end
-
-    subgraph Runtime["Disposable per-Run boundary — local POC"]
-        Projection["Filtered workspace projection<br/>approved inputs only"]
-        Container["Codex Runtime container<br/>read-only root · cap-drop · limits"]
-    end
-
-    Ark["Volcengine Ark<br/>explicit local network/key opt-in"]
-
-    UI -->|"credentials / session request"| AuthN
-    AuthN --> OwnerGate
-    OwnerGate -->|"ordinary owned action"| Service
-    OwnerGate --> FilePolicy
-    OwnerGate --> Pass
-    Pass -->|"one approved delegated Run"| Service
-    FilePolicy --> Workspace
-    Service --> Store
-    Service --> Workspace
-    Service --> Firewall
-    Firewall --> Projection
-    Projection --> Container
-    Container --> Ark
-    Container --> Recovery
-    Recovery -->|"verified cleanup or preserved evidence"| Store
-    OwnerGate --> Evidence
-    Pass --> Evidence
-    FilePolicy --> Evidence
-    Firewall --> Evidence
-    Recovery --> Evidence
-    Evidence -->|"redacted decision timeline"| UI
-    Evidence --> Store
+    UI["Requester / grantee + Agent owner<br/>React UI"] -->|Request| API["Fastify API<br/>session identity"]
+    API --> Gateway["Trust Gateway middleware<br/>owner gate · Trust Pass · action firewall"]
+    Gateway -->|Authorized request| Service["AgentService<br/>atomic admission · lifecycle"]
+    Service --> Runtime["Disposable Runtime<br/>approved inputs · Codex · verified cleanup"]
+    Runtime -.->|Explicit local POC opt-in| Model["BytePlus ModelArk"]
+    Runtime -->|Delegated final output only, via backend| UI
+    Gateway --> Evidence["State + evidence<br/>ALLOW / DENY · reason · request ID"]
+    Service --> Evidence
 ```
 
 ## Components
@@ -78,9 +39,10 @@ legacy shared-token mode remains available only for starter-kit compatibility.
 ### TrustGateway
 
 Derives the Agent principal from the stored Agent, compares human/Agent/resource
-ownership, fails closed before protected content is returned, and persists
-attributed `ALLOW`/`DENY` evidence. The same policy contract uses local
-synthetic files in demo mode or Supabase Auth, tables, and RLS in Supabase mode.
+ownership, fails closed before unauthorized protected content is returned, and
+persists attributed `ALLOW`/`DENY` evidence. The same policy contract uses local
+synthetic files in demo mode or Supabase Auth and adapter-backed resource/audit
+tables in Supabase mode.
 
 The engineering fixtures form one coherent profile-feature workflow while
 remaining separately owned:

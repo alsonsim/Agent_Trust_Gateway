@@ -1,0 +1,201 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080" role="img" aria-labelledby="title desc">
+  <title id="title">Agent Trust Gateway architecture</title>
+  <desc id="desc">A left-to-right architecture diagram showing users and the React interface, the Fastify API, Trust Gateway middleware, AgentService, a disposable Agent Runtime, BytePlus ModelArk, policy evidence, and reviewer submission evidence.</desc>
+  <defs>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="5" stdDeviation="8" flood-color="#211A33" flood-opacity="0.10"/>
+    </filter>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L12,6 L0,12 z" fill="#6D4AFF"/>
+    </marker>
+    <marker id="data-arrow" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L10,5 L0,10 z" fill="#7C8798"/>
+    </marker>
+    <marker id="result-arrow" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L10,5 L0,10 z" fill="#118568"/>
+    </marker>
+    <marker id="provider-arrow" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L10,5 L0,10 z" fill="#8A6724"/>
+    </marker>
+    <style>
+      .canvas { fill: #FBFAF7; }
+      .title { font: 700 44px 'Segoe UI', Arial, sans-serif; fill: #171321; }
+      .subtitle { font: 400 21px 'Segoe UI', Arial, sans-serif; fill: #5E5968; }
+      .zone { fill: #FFFFFF; fill-opacity: .54; stroke-width: 2.5; stroke-dasharray: 9 8; rx: 24; }
+      .zone-label { font: 700 14px 'Segoe UI', Arial, sans-serif; letter-spacing: 1.6px; }
+      .box { fill: #FFFFFF; stroke: #DED9E8; stroke-width: 2; rx: 20; filter: url(#shadow); }
+      .box-title { font: 700 22px 'Segoe UI', Arial, sans-serif; fill: #201A2B; }
+      .body { font: 400 16px 'Segoe UI', Arial, sans-serif; fill: #625D6B; }
+      .small { font: 400 14px 'Segoe UI', Arial, sans-serif; fill: #6C6675; }
+      .tiny { font: 600 12px 'Segoe UI', Arial, sans-serif; letter-spacing: .8px; }
+      .arrow { fill: none; stroke: #6D4AFF; stroke-width: 4; marker-end: url(#arrow); }
+      .provider-line { fill: none; stroke: #8A6724; stroke-width: 3; stroke-dasharray: 7 6; marker-end: url(#provider-arrow); }
+      .result-line { fill: none; stroke: #118568; stroke-width: 3; marker-end: url(#result-arrow); }
+      .data-line { fill: none; stroke: #7C8798; stroke-width: 2.5; marker-end: url(#data-arrow); }
+      .divider { stroke: #E7E3EC; stroke-width: 1.5; }
+      .evidence-title { font: 700 18px 'Segoe UI', Arial, sans-serif; fill: #201A2B; }
+      .evidence-body { font: 400 15px 'Segoe UI', Arial, sans-serif; fill: #625D6B; }
+    </style>
+  </defs>
+
+  <rect class="canvas" width="1920" height="1080"/>
+
+  <text class="title" x="56" y="68">Agent Trust Gateway</text>
+  <text class="subtitle" x="56" y="104">Consent-bound, one-use delegation for coding Agents</text>
+  <text class="tiny" x="56" y="136" fill="#6041DE">REQUEST  →  IDENTITY  →  POLICY  →  RUN  →  ISOLATED EXECUTION  →  RESULT</text>
+  <g transform="translate(1510 42)">
+    <rect width="354" height="52" rx="16" fill="#EEE8FF" stroke="#CFC1FF" stroke-width="1.5"/>
+    <circle cx="25" cy="26" r="7" fill="#6D4AFF"/>
+    <text x="43" y="31" class="tiny" fill="#5D3CD3">BOUNCER · IDENTITY &amp; AUTHORIZATION</text>
+  </g>
+
+  <!-- Trust zones -->
+  <rect class="zone" x="40" y="150" width="270" height="620" stroke="#97A1B0"/>
+  <text class="zone-label" x="64" y="181" fill="#667181">UNTRUSTED CLIENT</text>
+
+  <rect class="zone" x="335" y="150" width="895" height="620" stroke="#8A6CF0"/>
+  <text class="zone-label" x="360" y="181" fill="#6848DA">TRUSTED BACKEND · POLICY AUTHORITY</text>
+
+  <rect class="zone" x="1255" y="150" width="410" height="620" stroke="#2B84B7"/>
+  <text class="zone-label" x="1280" y="181" fill="#246F9A">DISPOSABLE RUNTIME</text>
+
+  <text class="zone-label" x="1700" y="181" fill="#8A6724">EXTERNAL PROVIDER</text>
+
+  <!-- Main architecture boxes -->
+  <g>
+    <rect class="box" x="66" y="263" width="218" height="337"/>
+    <circle cx="104" cy="307" r="20" fill="#EEE8FF"/>
+    <path d="M95 307a9 9 0 1 1 18 0 9 9 0 0 1-18 0m-6 20c2-10 28-10 30 0" fill="none" stroke="#6D4AFF" stroke-width="3" stroke-linecap="round"/>
+    <text class="box-title" x="132" y="314">React Web UI</text>
+    <line class="divider" x1="88" y1="344" x2="262" y2="344"/>
+    <text class="body" x="90" y="390">Requester / grantee</text>
+    <text class="body" x="90" y="416">Separate Agent owner</text>
+    <rect x="88" y="438" width="174" height="1" fill="#E7E3EC"/>
+    <text class="body" x="90" y="474">Create and test Agents</text>
+    <text class="body" x="90" y="508">Request or approve access</text>
+    <text class="body" x="90" y="542">View audit evidence</text>
+    <rect x="88" y="565" width="151" height="24" rx="12" fill="#FFF0F0"/>
+    <text class="tiny" x="100" y="582" fill="#B43A43">UI IS NOT THE BOUNDARY</text>
+  </g>
+
+  <g>
+    <rect class="box" x="365" y="300" width="190" height="200"/>
+    <rect x="389" y="324" width="88" height="26" rx="13" fill="#EEE8FF"/>
+    <text class="tiny" x="402" y="342" fill="#5D3CD3">IDENTITY</text>
+    <text class="box-title" x="389" y="386">Fastify API</text>
+    <text class="body" x="389" y="426">Validate request</text>
+    <text class="body" x="389" y="456">Resolve session</text>
+    <text class="small" x="389" y="484">HttpOnly cookie</text>
+  </g>
+
+  <g>
+    <rect x="585" y="218" width="330" height="375" rx="22" fill="#F7F3FF" stroke="#BDAEF6" stroke-width="2.5" filter="url(#shadow)"/>
+    <text class="box-title" x="611" y="268">Trust Gateway middleware</text>
+    <text class="small" x="611" y="294">Every authorization decision is server-enforced</text>
+
+    <rect x="611" y="320" width="278" height="62" rx="12" fill="#FFFFFF" stroke="#DDD5F8"/>
+    <text class="tiny" x="627" y="344" fill="#5D3CD3">OWNER GATE</text>
+    <text class="small" x="627" y="367">User ↔ Agent ↔ resource ownership</text>
+
+    <rect x="611" y="395" width="278" height="72" rx="12" fill="#FFFFFF" stroke="#DDD5F8"/>
+    <text class="tiny" x="627" y="419" fill="#5D3CD3">TRUST PASS</text>
+    <text class="small" x="627" y="442">Owner-approved task + inputs</text>
+    <text class="small" x="627" y="461">Grantee · expiry · revoke · one use</text>
+
+    <rect x="611" y="480" width="278" height="66" rx="12" fill="#FFF9E9" stroke="#E5C86B"/>
+    <text class="tiny" x="627" y="504" fill="#A26A00">ACTION FIREWALL</text>
+    <text class="small" x="627" y="527">File · shell · network before Run</text>
+    <rect x="611" y="555" width="278" height="24" rx="12" fill="#FFF0F0"/>
+    <text class="tiny" x="664" y="572" fill="#B43A43">DENY STOPS HERE · NO RUN</text>
+  </g>
+
+  <g>
+    <rect class="box" x="945" y="300" width="245" height="200"/>
+    <rect x="969" y="324" width="92" height="26" rx="13" fill="#E7F7F1"/>
+    <text class="tiny" x="982" y="342" fill="#08775C">CONTROL</text>
+    <text class="box-title" x="969" y="383">AgentService</text>
+    <text class="body" x="969" y="422">Atomic Run admission</text>
+    <text class="body" x="969" y="452">Agent lifecycle</text>
+    <text class="small" x="969" y="480">One active Run per Agent</text>
+  </g>
+
+  <g>
+    <rect x="1280" y="228" width="355" height="345" rx="22" fill="#EEF8FC" stroke="#77B7D8" stroke-width="2.5" filter="url(#shadow)"/>
+    <rect x="1306" y="254" width="86" height="26" rx="13" fill="#DDEFF8"/>
+    <text class="tiny" x="1319" y="272" fill="#246F9A">ISOLATED</text>
+    <text class="box-title" x="1306" y="314">Disposable Agent Runtime</text>
+    <line class="divider" x1="1306" y1="338" x2="1609" y2="338"/>
+    <text class="body" x="1306" y="374">✓ Approved inputs only</text>
+    <text class="body" x="1306" y="408">✓ Isolated workspace + Codex home</text>
+    <text class="body" x="1306" y="442">✓ Read-only root + resource limits</text>
+    <text class="body" x="1306" y="476">✓ Network + keys off by default</text>
+    <rect x="1306" y="499" width="298" height="58" rx="12" fill="#E2F7EF" stroke="#8ACFB6"/>
+    <text class="small" x="1324" y="523" fill="#08775C">Verify removal → cleanup</text>
+    <text class="small" x="1324" y="545" fill="#08775C">Otherwise preserve + fail closed</text>
+  </g>
+
+  <g>
+    <rect x="1700" y="300" width="170" height="200" rx="20" fill="#FFF8E9" stroke="#E5C86B" stroke-width="2" filter="url(#shadow)"/>
+    <circle cx="1785" cy="347" r="23" fill="#F0E4B9"/>
+    <path d="M1769 351q16-22 32 0M1774 351q11-13 22 0" fill="none" stroke="#8A6724" stroke-width="4" stroke-linecap="round"/>
+    <text class="box-title" x="1731" y="400">BytePlus</text>
+    <text class="box-title" x="1725" y="428">ModelArk</text>
+    <text class="small" x="1735" y="462">Responses API</text>
+    <text class="tiny" x="1727" y="486" fill="#8A6724">LOCAL POC OPT-IN</text>
+  </g>
+
+  <!-- One straight request flow; meaning is named above the diagram -->
+  <path class="arrow" d="M284 400 H365"/>
+  <path class="arrow" d="M555 400 H585"/>
+  <path class="arrow" d="M915 400 H945"/>
+  <path class="arrow" d="M1190 400 H1280"/>
+  <path class="provider-line" d="M1635 400 H1700"/>
+  <text class="tiny" x="1643" y="383" fill="#8A6724">OPT-IN</text>
+
+  <!-- State and instrumentation -->
+  <g>
+    <rect x="585" y="610" width="605" height="105" rx="18" fill="#FFFFFF" stroke="#C9C2D3" stroke-width="2"/>
+    <text class="box-title" x="611" y="645">State + authorization evidence</text>
+    <text class="body" x="611" y="677">Agent / Run / pass state</text>
+    <text class="body" x="842" y="677">ALLOW / DENY · reason · request ID</text>
+    <text class="small" x="611" y="701">Local JSON POC · Supabase adapter for identity, resources, and audit</text>
+  </g>
+  <path class="data-line" d="M750 573 V610"/>
+  <path class="data-line" d="M1068 500 V610"/>
+  <path class="result-line" d="M1457 573 V746 H175 V600"/>
+  <text class="tiny" x="713" y="739" fill="#08775C">DELEGATED FINAL OUTPUT ONLY · VIA BACKEND</text>
+
+  <!-- Reviewer evidence strip -->
+  <text class="zone-label" x="56" y="805" fill="#5F5968">SUBMISSION EVIDENCE</text>
+
+  <g>
+    <rect x="56" y="830" width="565" height="145" rx="20" fill="#F7F3FF" stroke="#CEC1F5" stroke-width="2"/>
+    <circle cx="92" cy="868" r="15" fill="#6D4AFF"/>
+    <path d="M85 868l5 5 9-11" fill="none" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    <text class="evidence-title" x="119" y="874">Reviewer-ready</text>
+    <text class="evidence-body" x="82" y="913">Clone · configure .env · npm run dev / poc · Create Agent</text>
+    <text class="evidence-body" x="82" y="943">README · Architecture · demo guides · npm run check: PASS</text>
+  </g>
+
+  <g>
+    <rect x="649" y="830" width="565" height="145" rx="20" fill="#EEF8FC" stroke="#9CCAE2" stroke-width="2"/>
+    <circle cx="685" cy="868" r="15" fill="#2B84B7"/>
+    <path d="M678 868l5 5 9-11" fill="none" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    <text class="evidence-title" x="712" y="874">Backend security evidence</text>
+    <text class="evidence-body" x="675" y="913">Ignored env · backend-only keys · redacted output</text>
+    <text class="evidence-body" x="675" y="943">Cross-owner · secret · traversal · unsafe shell → DENY · no Run</text>
+  </g>
+
+  <g>
+    <rect x="1242" y="830" width="622" height="145" rx="20" fill="#EFF9F4" stroke="#95D2BB" stroke-width="2"/>
+    <circle cx="1278" cy="868" r="15" fill="#118568"/>
+    <path d="M1271 868l5 5 9-11" fill="none" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    <text class="evidence-title" x="1305" y="874">Delegation + reliability evidence</text>
+    <text class="evidence-body" x="1268" y="913">Exact task · scoped · revocable · one-use permission</text>
+    <text class="evidence-body" x="1268" y="943">Lifecycle · serialized Runs · cleanup verification + recovery</text>
+  </g>
+
+  <line x1="56" y1="1012" x2="1864" y2="1012" stroke="#DED9E8" stroke-width="1.5"/>
+  <text class="small" x="56" y="1044">Implemented: persisted policy timeline + Run summaries</text>
+  <text class="small" x="1190" y="1044" fill="#7A7382">Not claimed: full model / tool / sandbox trace (#8 optional)</text>
+</svg>

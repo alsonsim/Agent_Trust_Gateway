@@ -83,6 +83,14 @@ Open <http://localhost:3000>. The script stores local POC state under `.local/`,
 uses demo identities by default, and builds the Docker Runtime image. Supabase
 keys are not required for this local POC.
 
+## Selected Track: Bouncer — Identity and Authorization
+
+Agent Trust Gateway demonstrates identity and authorization middleware through
+two connected flows: direct owner policy enforcement, and scoped owner-approved
+delegation. The first flow proves the Human -> Agent ownership boundary; the
+second shows how that boundary can be extended through a narrow, revocable Trust
+Pass without exposing the underlying Agent.
+
 ### Demo identities
 
 | Identity | Login email | Owned protected resource |
@@ -92,14 +100,6 @@ keys are not required for this local POC.
 | QA | `qa@bytedance.com` | **Profile release test plan** (`profile-release-test-plan.md`) |
 
 Enter the assigned email on the login page. In Supabase mode, use `test-password` for these demo accounts.
-
-## Selected Track: Bouncer — Identity and Authorization
-
-Agent Trust Gateway demonstrates identity and authorization middleware through
-two connected flows: direct owner policy enforcement, and scoped owner-approved
-delegation. The first flow proves the Human -> Agent ownership boundary; the
-second shows how that boundary can be extended through a narrow, revocable Trust
-Pass without exposing the underlying Agent.
 
 ### 1. Ownership and Policy Enforcement
 

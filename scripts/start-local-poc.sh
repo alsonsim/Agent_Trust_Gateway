@@ -202,11 +202,15 @@ export NODE_ENV=production
 if [[ "$requested_runtime_provider" == "offline-demo" ]]; then
   export LOCAL_POC_MODE=false
   export AUTH_MODE=demo
+  export LOCAL_INSECURE_RUNTIME_KEY_PASSTHROUGH=false
+  export LOCAL_INSECURE_RUNTIME_NETWORK=false
   unset ARK_API_KEY ARK_MODEL
   unset SUPABASE_URL SUPABASE_PUBLISHABLE_KEY SUPABASE_ANON_KEY
   unset SUPABASE_SECRET_KEY SUPABASE_SERVICE_ROLE_KEY
 else
   export LOCAL_POC_MODE=true
+  export LOCAL_INSECURE_RUNTIME_KEY_PASSTHROUGH=true
+  export LOCAL_INSECURE_RUNTIME_NETWORK=true
 fi
 export HOST=127.0.0.1
 export PORT="${PORT:-3000}"

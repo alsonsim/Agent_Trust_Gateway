@@ -59,6 +59,7 @@ export const BACKEND_PRINCIPAL = DEMO_PRINCIPALS[1];
 export const QA_PRINCIPAL = DEMO_PRINCIPALS[2];
 
 const AUTHENTICATION_FAILED = "Authentication failed";
+const DEMO_PASSWORD = "test-password";
 
 export class IdentityAuthenticationError extends Error {
   readonly statusCode = 401;
@@ -217,6 +218,9 @@ export class DemoIdentityProvider implements IdentityProvider {
     const email = normalizeEmail(credentials.email);
     const principal = DEMO_PRINCIPALS.find((candidate) => candidate.email === email);
     if (!principal) throw authenticationFailed();
+    if (credentials.password !== undefined && credentials.password !== DEMO_PASSWORD) {
+      throw authenticationFailed();
+    }
 
     const issuedAt = Math.floor(this.now() / 1_000);
     const expiresAt = issuedAt + this.tokenTtlSeconds;

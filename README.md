@@ -6,8 +6,8 @@ kit with backend-enforced ownership, protected-resource policy, Runtime action
 checks, audit evidence, and scoped Trust Pass delegation.
 
 The original Agent CRUD, browser Playground, persistent workspaces, and
-Codex/Ark Runtime remain intact. Hackathon evaluators can run the full POC
-locally with Docker.
+Codex/Ark Runtime remain intact. Hackathon evaluators can run the full local POC
+with Docker, a Volcengine Ark API key, and an Ark endpoint ID.
 
 > [!NOTE]
 > This is a hackathon proof of concept with synthetic protected resources. The
@@ -38,7 +38,7 @@ Core app:
 Identity and policy:
 
 - Frontend, Backend, and QA engineering login identities
-- HttpOnly sessions, append-only audit evidence, and a Supabase Auth/RLS adapter
+- HttpOnly sessions and append-only audit evidence
 - Server-side Human -> Agent ownership enforcement on every Agent and Run route
 - Owner-scoped protected-resource and workspace-file gateways with visible
   `ALLOW` / `DENY` decisions
@@ -53,7 +53,8 @@ Runtime and delegation:
   execpolicy rules
 - Explicit Agent revocation that cancels active work and fail-closes future
   actions
-- Disposable Docker container for each local turn
+- Disposable Docker container for each real Codex/Ark Run
+- Optional deterministic offline runner for credential-free smoke tests
 - Private capability discovery that never reveals another team's Agent
 - Requester- and owner-initiated Trust Passes backed by one delegation contract
 - Exact-task, exact-Agent, resource-scoped, expiring, revocable one-use Runs
@@ -64,7 +65,8 @@ Runtime and delegation:
 - Node.js 22+
 - npm 10+
 - Docker for the full local POC
-- A Volcengine Ark API key and Responses-capable endpoint for real model Runs
+- A Volcengine Ark API key and Responses-capable endpoint for real Codex/Ark
+  model Runs
 
 The Web UI **Runtime** card shows local readiness, execution boundary, workspace
 policy, network policy, credential policy, and backend-attested hardening status
@@ -72,16 +74,23 @@ without exposing secrets.
 
 ## Quick Start
 
-Use this path for container-backed Runs, Trust Pass execution, and the complete
-demo flow:
+Use this path for real Codex/Ark-backed container Runs and the complete demo
+flow. No `.env` file is required for the judge run; provide the Ark values in
+the terminal command:
 
 ```bash
 ARK_API_KEY=your-ark-api-key ARK_MODEL=ep-your-endpoint-id npm run poc
 ```
 
-Open <http://localhost:3000>. The script stores local POC state under `.local/`,
-uses demo identities by default, and builds the Docker Runtime image. Supabase
-keys are not required for this local POC.
+Open <http://localhost:3000>. The launcher stores local POC state under
+`.local/`, uses demo identities by default, builds the Docker Runtime image, and
+starts each Run in a disposable container.
+
+For a credential-free smoke test only, the repository also has an offline runner:
+
+```bash
+RUNTIME_PROVIDER=offline-demo npm run poc
+```
 
 ## Selected Track: Bouncer — Identity and Authorization
 
@@ -99,7 +108,7 @@ Pass without exposing the underlying Agent.
 | Backend | `backend@bytedance.com` | **Profile API contract** (`profile-api-contract.md`) |
 | QA | `qa@bytedance.com` | **Profile release test plan** (`profile-release-test-plan.md`) |
 
-Enter the assigned email on the login page. In Supabase mode, use `test-password` for these demo accounts.
+Enter the assigned email on the login page with password `test-password`.
 
 ### 1. Ownership and Policy Enforcement
 
@@ -252,16 +261,23 @@ Skip this step when already working from the repository root.
 
 ### 3. Start the POC
 
-Provide the Volcengine Ark key and endpoint ID in the terminal:
+Real Codex/Ark container mode:
 
 ```bash
 ARK_API_KEY=your-ark-api-key ARK_MODEL=ep-your-endpoint-id npm run poc
 ```
 
-The local control plane stores POC state under `.local/`, uses demo identities,
-starts each Run in a disposable container, builds the Runtime image on first
-launch, and uses Docker for the Runtime boundary. Supabase keys are not required
-for this judge run.
+No `.env` file is needed for this judge path. The launcher stores local POC
+state under `.local/`, uses demo identities, builds the Docker Runtime image on
+first launch, and starts each Run in a disposable container.
+
+Credential-free smoke-test mode:
+
+```bash
+RUNTIME_PROVIDER=offline-demo npm run poc
+```
+
+This does not call Ark, Codex cloud services, or a Runtime container.
 
 On Windows, install Docker Desktop and Git for Windows. The Node launcher finds
 Git for Windows Bash without accidentally selecting a separate WSL toolchain.
@@ -297,56 +313,39 @@ later messages.
 
 ### 5. Stop and resume
 
-Press `Ctrl+C` in the startup terminal. The script removes temporary Runtime
-containers but keeps Agent workspaces and conversations.
+Press `Ctrl+C` in the startup terminal. The script keeps Agent workspaces and
+conversations.
 
 - POC state: `.local/`
 
-Run `npm run poc` to continue later.
+Run the same command to continue later.
 
-## Server-Side Supabase Keys
+## Optional Smoke Test
 
-For the local `npm run poc` flow, Supabase keys are not required.
+The deterministic `offline-demo` runner is available for credential-free smoke
+tests, but it is not the real Codex/Ark execution path.
 
-If this POC is later shared from a server, keep Supabase keys on that server
-instead of giving them to evaluators. Evaluators should receive only the URL and
-the assigned demo accounts. For this demo, the account emails match the
-identities above and the password is `test-password`.
-
-Server-only `.env.production` values:
-
-```dotenv
-AUTH_MODE=supabase
-SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_PUBLISHABLE_KEY=your-publishable-key
-SUPABASE_SECRET_KEY=your-secret-or-service-role-key
-AUTH_COOKIE_SECURE=true
-```
-
-The React app calls only this application's `/api/*` routes. It does not receive
-`SUPABASE_SECRET_KEY`; the backend uses that key to validate profiles, read
-protected resources, and append audit decisions.
-
-## How it works
+## How It Works
 
 ```mermaid
 flowchart LR
     UI["React Web UI"] --> Auth["Identity + authorization middleware"]
     Auth --> API["Fastify control plane"]
     Auth --> Policy["Protected resources + audit decisions"]
-    Policy --> Supabase["Local fixtures or Supabase + RLS"]
+    Policy --> Store["Local JSON data"]
     API --> Store["JSON metadata and Agent workspaces"]
     API --> Firewall["Runtime Action Firewall"]
     Firewall --> Runtime
     API --> Runtime{"Runtime provider"}
-    Runtime -->|Local isolated POC| Container["Disposable Docker container"]
+    Runtime -->|Full local POC| Container["Disposable Docker container"]
+    Runtime -->|Optional smoke test| Offline["offline-demo runner"]
     Container --> Ark["Volcengine Ark Responses API"]
 ```
 
-The first turn uses `codex exec`; later turns resume the stored Codex thread.
-Engineering roles provide persistent workspace templates, with writable files
-and Codex session state scoped to the exact authenticated owner. Deleting an
-Agent removes its metadata but retains that owner's role workspace.
+Full local POC Runs use `codex exec` inside the disposable Runtime container;
+later turns resume the stored Codex thread. The optional offline runner returns
+deterministic output without calling Ark, Codex cloud services, or any network
+service.
 
 ## Role workspace and Runtime isolation
 
@@ -354,8 +353,8 @@ Agent creation derives Frontend, Backend, or QA from the authenticated backend
 principal. New Agents share one persistent, deterministic workspace profile per
 engineering role, then receive a private writable child keyed by a one-way hash
 of the exact owner ID. Agents owned by the same principal and role share that
-child; a second Supabase principal with the same role receives a different
-workspace and Runtime Codex home. Agent and protected-resource routes still
+child; a different authenticated principal with the same role receives a
+different workspace and Runtime home. Agent and protected-resource routes still
 require an exact human owner-ID match.
 
 The defense-in-depth disposable Runtime receives a filtered projection of only

@@ -28,6 +28,29 @@ describe("identity providers", () => {
     ).rejects.toMatchObject({ statusCode: 401 });
   });
 
+  it("accepts the judge demo password and rejects wrong typed demo passwords", async () => {
+    const provider = new DemoIdentityProvider({
+      host: "127.0.0.1",
+      signingKey: "a-test-signing-key-that-is-at-least-32-bytes",
+      tokenTtlSeconds: 600,
+    });
+
+    await expect(
+      provider.signIn({
+        email: "frontend@bytedance.com",
+        password: "test-password",
+      }),
+    ).resolves.toMatchObject({
+      principal: { email: "frontend@bytedance.com" },
+    });
+    await expect(
+      provider.signIn({
+        email: "frontend@bytedance.com",
+        password: "wrong-password",
+      }),
+    ).rejects.toMatchObject({ statusCode: 401 });
+  });
+
   it("loads the authoritative Supabase profile after validating the token", async () => {
     const fetchMock = vi
       .fn<typeof fetch>()

@@ -118,7 +118,7 @@ audit failure handling, runtime firewall checks, isolated input loading,
 final-output filtering, verified container removal, crash-residue recovery, and
 cleanup.
 
-The local demo stores contracts in JSON and supports one server process. The
-checked-in Supabase migration defines forced-RLS tables and service-only atomic
-RPCs, but the runtime adapter and durable Run outbox are intentionally not
-claimed as complete. See [Supabase Trust Pass persistence](SUPABASE_TRUST_PASS.md).
+The local demo stores contracts in JSON and supports one server process.
+Supabase mode supplies hosted identity, protected resources, and audit evidence,
+but Trust Pass lifecycle state remains local; database-backed delegation and a
+durable Run outbox are not claimed by this POC.

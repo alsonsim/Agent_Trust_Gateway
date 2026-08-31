@@ -462,10 +462,10 @@ terraform fmt -check -recursive deploy/volcengine
 docker compose config
 ```
 
-The checked-in runtime uses a single-process JSON store for the local demo. A
-service-role-only Supabase schema and atomic RPC contract are included as a
-persistence foundation, but they are not wired into the Node.js runtime yet;
-see [Supabase Trust Pass persistence](docs/SUPABASE_TRUST_PASS.md).
+Trust Pass contracts and transition locks use a single-process JSON store in
+this POC. `AUTH_MODE=supabase` moves authentication, protected resources, and
+authorization evidence to Supabase; it does not move Trust Pass lifecycle state
+into PostgreSQL, and no database-backed Trust Pass persistence is claimed.
 
 ## Documentation
 
@@ -475,7 +475,6 @@ see [Supabase Trust Pass persistence](docs/SUPABASE_TRUST_PASS.md).
 - [Deployment](docs/DEPLOYMENT.md)
 - [Hackathon extension guide](docs/HACKATHON_EXTENSION_GUIDE.md)
 - [Trust Pass demo](docs/TRUST_PASS_DEMO.md)
-- [Supabase Trust Pass persistence](docs/SUPABASE_TRUST_PASS.md)
 - [Security policy](SECURITY.md)
 - [Contributing](CONTRIBUTING.md)
 

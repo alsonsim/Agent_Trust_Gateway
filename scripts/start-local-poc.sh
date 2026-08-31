@@ -4,6 +4,11 @@ set -euo pipefail
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_dir"
 
+windows_shell=false
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*) windows_shell=true ;;
+esac
+
 log() {
   printf '[local-poc] %s\n' "$*" >&2
 }
@@ -132,14 +137,26 @@ if [[ ! -d node_modules ]]; then
 fi
 
 local_state_root="$repo_dir/.local"
-export APP_DATA_DIR="$local_state_root/data"
-export AGENT_WORKSPACE_ROOT="$local_state_root/workspaces"
-export CODEX_HOME="$local_state_root/codex-home"
+state_data_dir="$local_state_root/data"
+state_workspace_dir="$local_state_root/workspaces"
+state_codex_dir="$local_state_root/codex-home"
 export RUNTIME_INSTANCE_ID="${RUNTIME_INSTANCE_ID:-local-$(id -u)-$(printf '%s' "$repo_dir" | cksum | awk '{print $1}')}"
 
-mkdir -p "$APP_DATA_DIR" "$AGENT_WORKSPACE_ROOT" "$CODEX_HOME"
+mkdir -p "$state_data_dir" "$state_workspace_dir" "$state_codex_dir"
+if [[ "$windows_shell" == true ]]; then
+  export APP_DATA_DIR="$(cygpath -am "$state_data_dir")"
+  export AGENT_WORKSPACE_ROOT="$(cygpath -am "$state_workspace_dir")"
+  export CODEX_HOME="$(cygpath -am "$state_codex_dir")"
+  export CONTAINER_USER="${CONTAINER_USER:-1000:1000}"
+  # Prevent MSYS from rewriting Linux container paths such as /workspace.
+  export MSYS_NO_PATHCONV=1
+else
+  export APP_DATA_DIR="$state_data_dir"
+  export AGENT_WORKSPACE_ROOT="$state_workspace_dir"
+  export CODEX_HOME="$state_codex_dir"
+  export CONTAINER_USER="${CONTAINER_USER:-$(id -u):$(id -g)}"
+fi
 log "Persistent state: $local_state_root"
-export CONTAINER_USER="${CONTAINER_USER:-$(id -u):$(id -g)}"
 
 if [[ "$requested_runtime_provider" != "offline-demo" ]]; then
   log "Building $runtime_image from Dockerfile.runtime (base: $runtime_base_image)."

@@ -15,8 +15,6 @@ credentials, personal data, or exploit details in an issue.
 - Supabase sessions are not automatically refreshed in this hackathon POC
 - SameSite=Strict cookies reduce CSRF exposure, but there is no separate CSRF token
 - Local Trust Pass state and transition locks remain a single-process JSON store
-- The checked-in Supabase Trust Pass RPCs are a persistence foundation and are
-  not wired into the Node.js runtime
 - When `AUTH_MODE=supabase`, Trust Pass state remains local while audit evidence
   uses Supabase, so the two systems do not form one crash-atomic transaction
 - No per-Agent container boundary in ECS mode

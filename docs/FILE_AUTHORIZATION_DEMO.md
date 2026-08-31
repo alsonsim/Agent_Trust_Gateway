@@ -87,9 +87,10 @@ they never include file contents.
    events. Consecutive repeated decisions are grouped without discarding their
    audit evidence.
 
-This implementation does not include Trust Pass delegation. The Backend identity
-cannot borrow, inherit, or temporarily invoke the Frontend Agent; the denial in
-step 7 is the intended policy result.
+The denial in step 7 remains the intended default policy. Trust Pass delegation
+does not grant direct access to the foreign Agent: it permits only one exact,
+owner-approved task through the separate **Trust passes** flow, while the
+underlying Agent, workspace, resources, settings, and history remain private.
 
 ## Security console presentation
 

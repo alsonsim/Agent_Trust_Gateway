@@ -3,29 +3,22 @@
 Agent Trust Gateway is a single-node control plane with an identity and
 authorization middleware boundary for hackathon use.
 
+The [one-page submission diagram](assets/agent-trust-gateway-architecture.svg)
+shows the request path, trust boundaries, enforcement, instrumentation, and
+recovery points at a glance. The compact Mermaid view below mirrors that flow.
+
+[![Agent Trust Gateway one-page architecture](assets/agent-trust-gateway-architecture.png)](assets/agent-trust-gateway-architecture.svg)
+
 ```mermaid
 flowchart LR
-    UI["React Web UI"] --> AuthN["Authentication middleware"]
-    AuthN --> AuthZ["Human → Agent authorization"]
-    AuthZ --> API["Fastify API"]
-    API --> Service["AgentService"]
-    Service --> Store["JSON store"]
-    Service --> Workspace["Agent workspace"]
-    AuthZ --> Resource["Protected resource policy"]
-    Resource --> Evidence["ALLOW / DENY evidence"]
-    Resource --> Supabase["Local fixtures or Supabase RLS"]
-    UI --> FileRead["POST /api/agents/:id/files/read"]
-    FileRead --> FilePolicy["Workspace file policy"]
-    FilePolicy --> Evidence
-    FilePolicy --> Workspace
-    API --> Firewall["Runtime Action Firewall"]
-    Firewall --> Evidence
-    Firewall --> Runner
-    Service --> Runner{"AgentRunner"}
-    Runner -->|Local POC| Container["Disposable Runtime container"]
-    Runner -->|ECS| Process["Codex child process"]
-    Container --> Ark["Volcengine Ark"]
-    Process --> Ark
+    UI["Requester / grantee + Agent owner<br/>React UI"] -->|Request| API["Fastify API<br/>session identity"]
+    API --> Gateway["Trust Gateway middleware<br/>owner gate · Trust Pass · action firewall"]
+    Gateway -->|Authorized request| Service["AgentService<br/>atomic admission · lifecycle"]
+    Service --> Runtime["Disposable Runtime<br/>approved inputs · Codex · verified cleanup"]
+    Runtime -.->|Explicit local POC opt-in| Model["BytePlus ModelArk"]
+    Runtime -->|Delegated final output only, via backend| UI
+    Gateway --> Evidence["State + evidence<br/>ALLOW / DENY · reason · request ID"]
+    Service --> Evidence
 ```
 
 ## Components
@@ -46,9 +39,10 @@ legacy shared-token mode remains available only for starter-kit compatibility.
 ### TrustGateway
 
 Derives the Agent principal from the stored Agent, compares human/Agent/resource
-ownership, fails closed before protected content is returned, and persists
-attributed `ALLOW`/`DENY` evidence. The same policy contract uses local
-synthetic files in demo mode or Supabase Auth, tables, and RLS in Supabase mode.
+ownership, fails closed before unauthorized protected content is returned, and
+persists attributed `ALLOW`/`DENY` evidence. The same policy contract uses local
+synthetic files in demo mode or Supabase Auth and adapter-backed resource/audit
+tables in Supabase mode.
 
 The engineering fixtures form one coherent profile-feature workflow while
 remaining separately owned:

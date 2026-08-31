@@ -13,10 +13,12 @@ Backend needs an interface implementation but cannot normally invoke
 Frontend's Agent or read that resource. A consent-based Trust Pass authorizes
 exactly one approved Run and nothing else.
 
-Start the local POC with a container engine and a model key:
+Copy `.env.example` to `.env`; set `AUTH_MODE=demo`, the Ark key and model, and
+the two local direct-Ark opt-ins described in [Local POC](LOCAL_POC.md). Then
+start the disposable-container profile:
 
 ```bash
-AUTH_MODE=demo ARK_API_KEY=your-key ARK_MODEL=your-model npm run poc
+npm run poc
 ```
 
 ## 0:00 — Establish the owner boundary
@@ -116,7 +118,7 @@ audit failure handling, runtime firewall checks, isolated input loading,
 final-output filtering, verified container removal, crash-residue recovery, and
 cleanup.
 
-The local demo stores contracts in JSON and supports one server process. The
-checked-in Supabase migration defines forced-RLS tables and service-only atomic
-RPCs, but the runtime adapter and durable Run outbox are intentionally not
-claimed as complete. See [Supabase Trust Pass persistence](SUPABASE_TRUST_PASS.md).
+The local demo stores contracts in JSON and supports one server process.
+Supabase mode supplies hosted identity, protected resources, and audit evidence,
+but Trust Pass lifecycle state remains local; database-backed delegation and a
+durable Run outbox are not claimed by this POC.

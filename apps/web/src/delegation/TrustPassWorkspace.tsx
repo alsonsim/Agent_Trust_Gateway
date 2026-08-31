@@ -1184,7 +1184,7 @@ export function TrustPassWorkspace({
                       </details>
 
                       {request.status === "approved" && (
-                        <p className="allowed-copy approval-complete" role="status">
+                        <p className="allowed-copy approval-complete">
                           <strong>Trust Pass issued.</strong> This approval is complete. The
                           pass remains available under Issued passes below.
                         </p>

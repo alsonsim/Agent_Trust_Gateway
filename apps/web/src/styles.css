@@ -3203,6 +3203,31 @@ textarea:focus {
   box-shadow: 0 0 0 3px rgba(70, 149, 118, 0.12);
 }
 
+.approval-card {
+  scroll-margin-block: 12px;
+}
+
+.approval-card:focus {
+  border-color: #78b89e;
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(70, 149, 118, 0.12);
+}
+
+.approval-complete {
+  margin: 14px 0 0;
+  border: 1px solid #bde0d1;
+  border-left: 3px solid #469576;
+  border-radius: 8px;
+  padding: 10px 11px;
+  background: #edf7f2;
+  line-height: 1.45;
+}
+
+.approval-complete strong {
+  display: block;
+  margin-bottom: 2px;
+}
+
 .compact-trust-card p {
   margin: 9px 0 0;
   color: #70716a;

@@ -744,22 +744,22 @@ export function TrustPassWorkspace({
   const trustPassTabs = [
     {
       value: "need-access",
-      label: "Access I need",
+      label: "Request access",
       description: "My requests and approved tasks",
       firstMetric: countLabel(pendingOutgoingRequestCount, "pending", "pending"),
       secondMetric: countLabel(activeTaskCount, "approved", "approved"),
       ariaLabel:
-        `Access I need. ${countLabel(pendingOutgoingRequestCount, "pending request")}. ` +
+        `Request access. ${countLabel(pendingOutgoingRequestCount, "pending request")}. ` +
         `${countLabel(activeTaskCount, "approved task")} ready.`,
     },
     {
       value: "grant-access",
-      label: "Access I grant",
+      label: "Grant access",
       description: "Requests to review and passes I’ve issued",
       firstMetric: countLabel(pendingApprovalCount, "to review", "to review"),
       secondMetric: countLabel(activeIssuedPassCount, "issued", "issued"),
       ariaLabel:
-        `Access I grant. ${countLabel(pendingApprovalCount, "request to review", "requests to review")}. ` +
+        `Grant access. ${countLabel(pendingApprovalCount, "request to review", "requests to review")}. ` +
         `${countLabel(activeIssuedPassCount, "active issued pass", "active issued passes")}.`,
     },
   ] satisfies Array<{
@@ -801,7 +801,7 @@ export function TrustPassWorkspace({
             aria-label={view.ariaLabel}
             aria-selected={tab === view.value}
             tabIndex={tab === view.value ? 0 : -1}
-            className={tab === view.value ? "active" : ""}
+            className={`trust-tab-${view.value}${tab === view.value ? " active" : ""}`}
             onClick={() => setTab(view.value)}
             onKeyDown={(event) => handleTabKeyDown(event, view.value)}
             ref={(node) => {

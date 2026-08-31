@@ -2437,9 +2437,24 @@ textarea:focus {
   cursor: pointer;
 }
 
-.trust-pass-tabs button:hover {
-  border-color: #cbc5e7;
-  background: rgba(255, 255, 255, 0.75);
+.trust-pass-tabs .trust-tab-need-access {
+  border-color: #d9d2f2;
+  background: #f6f3ff;
+}
+
+.trust-pass-tabs .trust-tab-grant-access {
+  border-color: #cfe3d9;
+  background: #f1f8f4;
+}
+
+.trust-pass-tabs .trust-tab-need-access:hover {
+  border-color: #c1b5eb;
+  background: #fbfaff;
+}
+
+.trust-pass-tabs .trust-tab-grant-access:hover {
+  border-color: #acd2c1;
+  background: #f8fcfa;
 }
 
 .trust-pass-tabs button:focus-visible {
@@ -2447,11 +2462,18 @@ textarea:focus {
   outline-offset: 2px;
 }
 
-.trust-pass-tabs button.active {
+.trust-pass-tabs .trust-tab-need-access.active {
   color: #4e3ca5;
-  border-color: #bcb1ed;
-  background: white;
-  box-shadow: 0 4px 14px rgba(49, 45, 70, 0.12);
+  border-color: #ad9fe6;
+  background: #ffffff;
+  box-shadow: 0 4px 14px rgba(78, 60, 165, 0.14);
+}
+
+.trust-pass-tabs .trust-tab-grant-access.active {
+  color: #286f56;
+  border-color: #8fc5ae;
+  background: #ffffff;
+  box-shadow: 0 4px 14px rgba(40, 111, 86, 0.14);
 }
 
 .trust-tab-copy {
@@ -2469,8 +2491,12 @@ textarea:focus {
   white-space: nowrap;
 }
 
-.trust-pass-tabs button.active .trust-tab-copy strong {
+.trust-pass-tabs .trust-tab-need-access.active .trust-tab-copy strong {
   color: #4e3ca5;
+}
+
+.trust-pass-tabs .trust-tab-grant-access.active .trust-tab-copy strong {
+  color: #286f56;
 }
 
 .trust-tab-copy small {
@@ -2499,9 +2525,14 @@ textarea:focus {
   white-space: nowrap;
 }
 
-.trust-pass-tabs button.active .trust-tab-metrics > span {
+.trust-pass-tabs .trust-tab-need-access.active .trust-tab-metrics > span {
   color: #5b49b4;
   background: #eeeafb;
+}
+
+.trust-pass-tabs .trust-tab-grant-access.active .trust-tab-metrics > span {
+  color: #286f56;
+  background: #e3f2eb;
 }
 
 .trust-pass-scroll {

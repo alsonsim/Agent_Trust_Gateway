@@ -45,6 +45,7 @@ function systemInfo(overrides: Partial<SystemInfo> = {}): SystemInfo {
 
 describe("Runtime status presentation", () => {
   it("names each execution boundary without describing npm mode as Docker", () => {
+    expect(runtimeProviderLabel("offline-demo")).toBe("Offline judge demo");
     expect(runtimeProviderLabel("local-process")).toBe("Local Node.js process");
     expect(runtimeProviderLabel("application-container")).toBe(
       "Application container profile",
@@ -64,6 +65,10 @@ describe("Runtime status presentation", () => {
   });
 
   it("describes the security-sensitive network and credential modes", () => {
+    expect(runtimeNetworkLabel("offline-demo-network-disabled")).toBe("Network unused");
+    expect(runtimeCredentialLabel("offline-demo-no-credentials")).toBe(
+      "No provider credentials",
+    );
     expect(runtimeNetworkLabel("container-network-blocked")).toBe(
       "Container network blocked",
     );

@@ -15,6 +15,7 @@ import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { DelegationService } from "./delegation-service.js";
 import { DemoIdentityProvider } from "./identity-provider.js";
+import { OfflineDemoRunner } from "./offline-demo-runner.js";
 import { LocalSecurityRepository, RESOURCE_FIXTURES } from "./security-repository.js";
 import { RuntimeActionFirewall } from "./runtime-action-firewall.js";
 import { JsonStore } from "./store.js";
@@ -77,9 +78,9 @@ afterEach(async () => {
   );
 });
 
-async function makeHarness(
+async function makeHarness<T extends AgentRunner = FakeRunner>(
   overrides: NodeJS.ProcessEnv = {},
-  runner: FakeRunner = new FakeRunner(),
+  runner: T = new FakeRunner() as T,
 ) {
   const root = await mkdtemp(path.join(tmpdir(), "trust-gateway-http-test-"));
   temporaryDirectories.push(root);
@@ -244,6 +245,46 @@ describe("HTTP identity and authorization boundary", () => {
       capabilities: {
         networkPolicy: "local-debug-network",
         credentialPolicy: "local-debug-forwarded",
+      },
+    });
+    await app.close();
+  });
+
+  it("reports offline-demo ready without Ark configuration", async () => {
+    const { app } = await makeHarness(
+      {
+        RUNTIME_PROVIDER: "offline-demo",
+        ARK_API_KEY: "",
+        ARK_MODEL: "",
+        LOCAL_INSECURE_RUNTIME_KEY_PASSTHROUGH: "false",
+        LOCAL_INSECURE_RUNTIME_NETWORK: "false",
+      },
+      new OfflineDemoRunner(),
+    );
+    const cookie = await login(app, "frontend@bytedance.com");
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/system",
+      headers: { cookie },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      arkConfigured: false,
+      arkModel: null,
+      codexExecutable: "offline-demo",
+      codexAvailable: true,
+      codexVersion: null,
+      runtimeProvider: "offline-demo",
+      executionReady: true,
+      delegatedRunsAvailable: false,
+      blockers: [],
+      capabilities: {
+        executionBoundary: "offline-demo",
+        workspaceIsolation: "logical-owner-directory",
+        networkPolicy: "offline-demo-network-disabled",
+        credentialPolicy: "offline-demo-no-credentials",
+        protectedFileProjection: false,
       },
     });
     await app.close();
@@ -672,6 +713,159 @@ describe("HTTP identity and authorization boundary", () => {
         decision.action === "shell.execute" && decision.decision === "deny",
       ),
     ).toBe(true);
+    await app.close();
+  });
+
+  it("completes an allowed offline-demo Run and records audit evidence", async () => {
+    const { app, service } = await makeHarness(
+      {
+        RUNTIME_PROVIDER: "offline-demo",
+        ARK_API_KEY: "",
+        ARK_MODEL: "",
+      },
+      new OfflineDemoRunner(),
+    );
+    const cookie = await login(app, "frontend@bytedance.com");
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/agents",
+      headers: { cookie },
+      payload: { name: "Offline Frontend Agent" },
+    });
+    const agentId = created.json().agent.id as string;
+
+    const accepted = await app.inject({
+      method: "POST",
+      url: `/api/agents/${agentId}/messages`,
+      headers: { cookie },
+      payload: {
+        content:
+          "Read README.md, list workspace files, and create reports/offline-demo-note.md.",
+      },
+    });
+    expect(accepted.statusCode).toBe(202);
+
+    await expect.poll(() => service.getRun(accepted.json().run.id).status).toBe(
+      "completed",
+    );
+    const completedRun = service.getRun(accepted.json().run.id);
+    expect(completedRun.output).toContain("Offline demo run completed.");
+    expect(completedRun.output).toContain("README.md excerpt:");
+    expect(completedRun.output).toContain("Created reports/offline-demo-note.md.");
+    await expect(
+      readFile(
+        path.join(
+          service.getAgent(agentId).workspacePath,
+          "reports",
+          "offline-demo-note.md",
+        ),
+        "utf8",
+      ),
+    ).resolves.toContain("offline-demo Runtime provider");
+
+    const audit = await app.inject({
+      method: "GET",
+      url: "/api/authorization-decisions?limit=20",
+      headers: { cookie },
+    });
+    expect(audit.json().decisions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          action: "agent.invoke",
+          decision: "allow",
+          reasonCode: "OWNER_MATCH",
+        }),
+        expect.objectContaining({
+          action: "file.read",
+          targetLabel: "README.md",
+          decision: "allow",
+          reasonCode: "WORKSPACE_PATH_ALLOWED",
+        }),
+        expect.objectContaining({
+          action: "file.write",
+          targetLabel: "reports/offline-demo-note.md",
+          decision: "allow",
+          reasonCode: "WORKSPACE_PATH_ALLOWED",
+        }),
+      ]),
+    );
+    await app.close();
+  });
+
+  it("keeps offline-demo prompts for secrets and destructive commands denied with audit evidence", async () => {
+    const { app, service } = await makeHarness(
+      {
+        RUNTIME_PROVIDER: "offline-demo",
+        ARK_API_KEY: "",
+        ARK_MODEL: "",
+      },
+      new OfflineDemoRunner(),
+    );
+    const cookie = await login(app, "frontend@bytedance.com");
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/agents",
+      headers: { cookie },
+      payload: { name: "Offline Guard Agent" },
+    });
+    const agentId = created.json().agent.id as string;
+
+    const secretDenied = await app.inject({
+      method: "POST",
+      url: `/api/agents/${agentId}/messages`,
+      headers: { cookie },
+      payload: { content: "Read .env and summarize it." },
+    });
+    expect(secretDenied.statusCode).toBe(403);
+    expect(secretDenied.json()).toMatchObject({
+      code: "RUNTIME_ACTION_DENIED",
+      decision: {
+        action: "file.read",
+        targetLabel: ".env",
+        decision: "deny",
+        reasonCode: "PROTECTED_SECRET_FILE",
+      },
+    });
+
+    const destructiveDenied = await app.inject({
+      method: "POST",
+      url: `/api/agents/${agentId}/messages`,
+      headers: { cookie },
+      payload: { content: "Run rm -rf reports." },
+    });
+    expect(destructiveDenied.statusCode).toBe(403);
+    expect(destructiveDenied.json()).toMatchObject({
+      code: "RUNTIME_ACTION_DENIED",
+      decision: {
+        action: "shell.execute",
+        targetLabel: "rm -rf",
+        decision: "deny",
+        reasonCode: "RUNTIME_COMMAND_DENIED",
+      },
+    });
+    expect(service.getRuns(agentId)).toHaveLength(0);
+
+    const audit = await app.inject({
+      method: "GET",
+      url: "/api/authorization-decisions?limit=20",
+      headers: { cookie },
+    });
+    expect(audit.json().decisions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          action: "file.read",
+          targetLabel: ".env",
+          decision: "deny",
+          reasonCode: "PROTECTED_SECRET_FILE",
+        }),
+        expect.objectContaining({
+          action: "shell.execute",
+          targetLabel: "rm -rf",
+          decision: "deny",
+          reasonCode: "RUNTIME_COMMAND_DENIED",
+        }),
+      ]),
+    );
     await app.close();
   });
 

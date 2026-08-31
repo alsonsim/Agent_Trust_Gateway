@@ -1,16 +1,28 @@
 # Local POC
 
-The local profile runs the React/Fastify control plane on macOS or Linux and
-starts every Codex turn in a disposable Docker, Colima, or Podman container.
-Only the Volcengine Ark model API is remote.
+The local profile runs the React/Fastify control plane on macOS or Linux. It
+can either use the credential-free offline-demo Runtime or start every Codex
+turn in a disposable Docker, Colima, or Podman container. Only the optional
+Volcengine Ark model API is remote.
 
 ## Start
 
 Requirements:
 
 - Node.js 22+
-- Docker, Colima, or Podman
-- An Ark API key and Responses-capable endpoint
+- Docker, Colima, or Podman for disposable container Runs
+- Optional: an Ark API key and Responses-capable endpoint for Codex/Ark Runs
+
+Credential-free offline mode:
+
+```bash
+RUNTIME_PROVIDER=offline-demo bash scripts/start-local-poc.sh
+```
+
+This mode uses `AUTH_MODE=demo`, local JSON state under `.local/`, and no Ark,
+Supabase, Codex cloud, or Runtime container.
+
+Disposable container mode:
 
 ```bash
 bash scripts/start-local-poc.sh

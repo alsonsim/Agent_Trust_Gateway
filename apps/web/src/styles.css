@@ -2840,21 +2840,31 @@ textarea:focus {
   overscroll-behavior: contain;
   padding: 16px 18px 22px;
   scrollbar-gutter: stable;
-  transition: background 180ms ease, box-shadow 180ms ease;
+  background:
+    radial-gradient(circle at 94% 0%, rgba(105, 84, 217, 0.07), transparent 25%),
+    #f8f7f3;
 }
 
-.trust-pass-scroll-need-access {
-  background:
-    radial-gradient(circle at 94% 0%, rgba(105, 84, 217, 0.12), transparent 28%),
-    #f6f3ff;
-  box-shadow: inset 0 3px 0 rgba(105, 84, 217, 0.12);
+.trust-pass-scroll-need-access .trust-list-section,
+.trust-pass-scroll-need-access .trust-form-card {
+  border-color: #d5cbef;
+  background: #f8f5ff;
 }
 
-.trust-pass-scroll-grant-access {
-  background:
-    radial-gradient(circle at 94% 0%, rgba(139, 79, 158, 0.13), transparent 28%),
-    #fbf3fc;
-  box-shadow: inset 0 3px 0 rgba(139, 79, 158, 0.13);
+.trust-pass-scroll-need-access .trust-section-heading {
+  border-bottom-color: #ddd5f1;
+  background: #f1edff;
+}
+
+.trust-pass-scroll-grant-access .trust-list-section,
+.trust-pass-scroll-grant-access .trust-form-card {
+  border-color: #dfc9e5;
+  background: #fcf4fd;
+}
+
+.trust-pass-scroll-grant-access .trust-section-heading {
+  border-bottom-color: #e6d4ea;
+  background: #f6eafa;
 }
 
 .trust-banner {

@@ -1,8 +1,8 @@
 # Local POC
 
-The local profile runs the React/Fastify control plane on macOS or Linux and
-starts every Codex turn in a disposable Docker, Colima, or Podman container.
-Only the Volcengine Ark model API is remote.
+The local profile runs the React/Fastify control plane on Windows, macOS, or
+Linux and starts every Codex turn in a disposable Docker, Colima, or Podman
+container. Only the Volcengine Ark model API is remote.
 
 ## Start
 
@@ -11,16 +11,30 @@ Requirements:
 - Node.js 22+
 - Docker, Colima, or Podman
 - An Ark API key and Responses-capable endpoint
+- Git for Windows when starting from Windows PowerShell or Git Bash
+
+Copy `.env.example` to `.env`, then set `AUTH_MODE=demo`, `HOST=127.0.0.1`,
+`ARK_API_KEY`, and `ARK_MODEL`. For a real model Run, also set:
+
+```dotenv
+LOCAL_INSECURE_RUNTIME_KEY_PASSTHROUGH=true
+LOCAL_INSECURE_RUNTIME_NETWORK=true
+```
 
 ```bash
-bash scripts/start-local-poc.sh
+npm run poc
 ```
 
 Open <http://localhost:3000>. Press `Ctrl+C` to stop the server and remove this
 instance's remaining Runtime containers.
 
 Force an engine with `CONTAINER_ENGINE=docker` or
-`CONTAINER_ENGINE=podman`. Colima uses the Docker CLI.
+`CONTAINER_ENGINE=podman` in `.env`. Colima uses the Docker CLI.
+
+On Windows, the Node launcher deliberately selects Git for Windows Bash rather
+than an unrelated WSL installation. Set `LOCAL_POC_BASH` to the full path of
+`bash.exe` only for a nonstandard Git installation. WSL works when Node.js 22
+and Docker integration are installed inside that distribution.
 
 ## Data and Runtime
 
@@ -48,11 +62,7 @@ The Runtime has no network and receives no Ark key by default. If a disposable
 local demo must call ModelArk directly, explicitly accept both reduced
 boundaries:
 
-```bash
-LOCAL_INSECURE_RUNTIME_KEY_PASSTHROUGH=true \
-LOCAL_INSECURE_RUNTIME_NETWORK=true \
-bash scripts/start-local-poc.sh
-```
+Set both values in `.env`, then run `npm run poc`.
 
 These flags are rejected in production. Prefer a trusted model proxy with
 short-lived credentials for a deployed system.
@@ -101,12 +111,8 @@ podman info
 podman run --rm docker.io/library/alpine:3.20 echo PODMAN_OK
 ```
 
-`podman info` must report `rootless: true`. Start the POC:
-
-```bash
-CONTAINER_ENGINE=podman \
-bash scripts/start-local-poc.sh
-```
+`podman info` must report `rootless: true`. Set `CONTAINER_ENGINE=podman` in
+`.env`, then run `npm run poc`.
 
 This flow was verified on veLinux 2 with rootless Podman 4.3.1. A `vfs` storage
 driver works but needs more disk space; keep at least 5 GiB free for a cold
@@ -114,9 +120,10 @@ build.
 
 ## Common options
 
-```bash
-CONTAINER_RUNTIME_APT_PACKAGES='ca-certificates git ripgrep python3 build-essential' \
-bash scripts/start-local-poc.sh
+Set the following in `.env`, then run `npm run poc`:
+
+```dotenv
+CONTAINER_RUNTIME_APT_PACKAGES=ca-certificates git ripgrep python3 build-essential
 ```
 
 For restricted networks, configure:

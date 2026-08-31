@@ -55,7 +55,10 @@ Volcengine ECS.
 - Node.js 22+
 - npm 10+
 - Docker, Colima, or Podman for container-backed Runs or the packaged web image
-- A Volcengine Ark API key and endpoint that supports the Responses API
+- A Volcengine Ark API key and Responses-compatible endpoint for real model Runs
+
+The login, ownership, protected-file, Runtime-firewall, and audit demos require
+only Node.js. Docker and Ark are required only for a real isolated Agent Run.
 
 `npm ci` installs the exact Codex CLI version pinned by this repository. Both
 Docker images derive their CLI version from the same package entry, so host and
@@ -175,16 +178,27 @@ during its build.
 ### 2. Clone the repository
 
 ```bash
-git clone <repository-url> volc-agent-launchpad
-cd volc-agent-launchpad
+git clone https://github.com/alsonsim/Agent_Trust_Gateway.git
+cd Agent_Trust_Gateway
 ```
 
 Skip this step when already working from the repository root.
 
 ### 3. Start the POC
 
+Copy `.env.example` to `.env`, then set `AUTH_MODE=demo`, `HOST=127.0.0.1`,
+`ARK_API_KEY`, and `ARK_MODEL`. A real local model Run also requires explicit
+acceptance of the disposable Runtime's direct-key and network tradeoff:
+
+```dotenv
+LOCAL_INSECURE_RUNTIME_KEY_PASSTHROUGH=true
+LOCAL_INSECURE_RUNTIME_NETWORK=true
+```
+
+Start the complete POC from PowerShell, Git Bash, macOS, or Linux:
+
 ```bash
-bash scripts/start-local-poc.sh
+npm run poc
 ```
 
 The script reads the root `.env` as dotenv data without executing it, so it
@@ -194,6 +208,12 @@ override `.env`; the host-run control plane always stores POC state under
 Node.js dependencies and builds the Runtime image. The script automatically
 selects Docker, Colima, or Podman.
 
+On Windows, install Docker Desktop and Git for Windows. The Node launcher finds
+Git for Windows Bash without accidentally selecting a separate WSL toolchain.
+Set `LOCAL_POC_BASH` only when `bash.exe` is installed in a nonstandard
+location. WSL is also supported when Node.js 22 and Docker integration are
+installed inside that distribution.
+
 ### 4. Open the browser
 
 Visit <http://localhost:3000>, or open it from the terminal:
@@ -202,6 +222,9 @@ Visit <http://localhost:3000>, or open it from the terminal:
 open http://localhost:3000       # macOS
 xdg-open http://localhost:3000   # Linux desktop
 ```
+
+On Windows, open the URL directly or run `Start-Process http://localhost:3000`
+from PowerShell.
 
 In the Web UI:
 
@@ -224,16 +247,12 @@ containers but keeps Agent workspaces and conversations.
 
 - POC state: `.local/`
 
-Run the same Bash command to continue later.
+Run `npm run poc` to continue later.
 
 ### Select a specific container engine
 
-Force Podman when multiple engines are installed:
-
-```bash
-CONTAINER_ENGINE=podman \
-bash scripts/start-local-poc.sh
-```
+Force Podman when multiple engines are installed by setting
+`CONTAINER_ENGINE=podman` in `.env`, then run `npm run poc`.
 
 Colima uses `CONTAINER_ENGINE=docker` because it exposes the Docker CLI.
 
@@ -269,7 +288,7 @@ one-use Trust Pass execution stays blocked and the Runtime panel says so.
 Compose requests dropped Linux capabilities, no-new-privileges, and CPU, memory,
 and PID limits; because the application cannot attest its orchestrator launch
 flags, the UI deliberately does not mark those controls as backend-verified. Use
-`scripts/start-local-poc.sh` when the disposable per-Run boundary is required.
+`npm run poc` when the disposable per-Run boundary is required.
 
 Stop it without deleting Agent data:
 

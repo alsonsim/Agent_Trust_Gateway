@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import type { AppConfig } from "./config.js";
-import { isArkConfigured } from "./config.js";
+import { isArkConfigured, readPinnedCodexVersion } from "./config.js";
 import { ContainerRemovalUnverifiedError } from "./container-codex-runner.js";
 import { DelegatedCodexHomeManager } from "./delegated-codex-home.js";
 import { HttpError, RunCancelledError } from "./errors.js";
@@ -18,6 +18,8 @@ import {
   type Department,
   type Message,
   type RuntimeAuthorizationContext,
+  type RuntimeBlocker,
+  type SystemInfo,
   type UpdateAgentInput,
 } from "./types.js";
 import { runtimeWorkspaceStateId, WorkspaceManager } from "./workspace.js";
@@ -322,12 +324,7 @@ export class AgentService {
     prompt: string,
     runtimeAuthorization?: RuntimeAuthorizationContext,
   ): Promise<{ run: AgentRun; message: Message }> {
-    if (!isArkConfigured(this.config)) {
-      throw new HttpError(
-        503,
-        "Ark is not configured. Set ARK_API_KEY and ARK_MODEL, then restart.",
-      );
-    }
+    await this.assertExecutionReady();
     const agent = this.getAgent(agentId);
     this.assertNotRevoked(agent);
     if (this.runtimeFirewall) {
@@ -425,12 +422,6 @@ export class AgentService {
       agent: Agent,
     ) => boolean;
   }): Promise<{ run: AgentRun; contract: DelegationContract }> {
-    if (!isArkConfigured(this.config)) {
-      throw new HttpError(
-        503,
-        "Ark is not configured. Set ARK_API_KEY and ARK_MODEL, then restart.",
-      );
-    }
     if (this.config.runtimeProvider !== "container") {
       throw new HttpError(
         503,
@@ -438,6 +429,7 @@ export class AgentService {
         { code: "DELEGATED_RUNTIME_ISOLATION_REQUIRED" },
       );
     }
+    await this.assertExecutionReady();
     const initialContract = this.store
       .snapshot()
       .delegationContracts.find((candidate) => candidate.id === input.contractId);
@@ -652,10 +644,74 @@ export class AgentService {
     return this.runtimeFirewall.evaluateShell(agent, command, runtimeAuthorization);
   }
 
-  async systemInfo(): Promise<Record<string, unknown>> {
+  async systemInfo(): Promise<SystemInfo> {
     const isContainerRuntime = this.config.runtimeProvider === "container";
+    const isApplicationContainer =
+      this.config.runtimeProvider === "application-container";
+    const inspection = this.runner.inspect
+      ? await this.runner.inspect()
+      : {
+          available: await this.runner.isAvailable(),
+          codexVersion: null,
+        };
+    const codexExpectedVersion = await readPinnedCodexVersion();
+    const arkConfigured = isArkConfigured(this.config);
+    const blockers: RuntimeBlocker[] = [];
+
+    if (!arkConfigured) {
+      blockers.push({
+        code: "ARK_NOT_CONFIGURED",
+        message: "Set ARK_API_KEY and ARK_MODEL before running an Agent.",
+      });
+    }
+    if (!inspection.available) {
+      blockers.push({
+        code: isContainerRuntime
+          ? "CONTAINER_RUNTIME_UNAVAILABLE"
+          : "CODEX_CLI_UNAVAILABLE",
+        message: isContainerRuntime
+          ? "The container engine, Runtime image, or Codex executable in that image could not be verified."
+          : "The configured Codex CLI executable could not be started.",
+      });
+    }
+    if (inspection.available && this.runner.inspect && !inspection.codexVersion) {
+      blockers.push({
+        code: "CODEX_VERSION_UNVERIFIED",
+        message: "The Codex CLI started, but its version could not be verified.",
+      });
+    }
+    if (
+      inspection.codexVersion &&
+      inspection.codexVersion !== codexExpectedVersion
+    ) {
+      blockers.push({
+        code: "CODEX_VERSION_MISMATCH",
+        message:
+          "Codex CLI " +
+          inspection.codexVersion +
+          " is active, but this project pins " +
+          codexExpectedVersion +
+          ".",
+      });
+    }
+    if (isContainerRuntime && !this.config.localInsecureRuntimeKeyPassthrough) {
+      blockers.push({
+        code: "RUNTIME_CREDENTIALS_NOT_FORWARDED",
+        message:
+          "The disposable Runtime does not receive Ark credentials. Enable the local-only passthrough or use a trusted model proxy.",
+      });
+    }
+    if (isContainerRuntime && !this.config.localInsecureRuntimeNetwork) {
+      blockers.push({
+        code: "RUNTIME_NETWORK_BLOCKED",
+        message:
+          "The disposable Runtime has no outbound network. Enable the local-only network opt-in or use a trusted model proxy.",
+      });
+    }
+
+    const executionReady = blockers.length === 0;
     return {
-      arkConfigured: isArkConfigured(this.config),
+      arkConfigured,
       arkBaseUrl: this.config.arkBaseUrl,
       arkModel: this.config.arkModel || null,
       codexExecutable: isContainerRuntime
@@ -664,18 +720,75 @@ export class AgentService {
       codexExecutableSource: isContainerRuntime
         ? this.config.containerCodexBinSource
         : this.config.codexBinSource,
-      codexAvailable: await this.runner.isAvailable(),
+      codexAvailable: inspection.available,
+      codexVersion: inspection.codexVersion,
+      codexExpectedVersion,
       codexSandboxMode: this.config.codexSandboxMode,
       runtimeProvider: this.config.runtimeProvider,
       containerEngine:
         isContainerRuntime
           ? this.config.containerEngine
           : null,
+      containerRuntimeImage: isContainerRuntime
+        ? this.config.containerRuntimeImage
+        : null,
       runtime:
         isContainerRuntime
-          ? "Codex CLI in " + this.config.containerEngine + " Runtime"
-          : "Codex CLI in application container",
+          ? this.config.containerEngine + " per-Run container · Codex CLI"
+          : isApplicationContainer
+            ? "Application container profile · Codex CLI"
+            : "Host process · Codex CLI",
+      executionReady,
+      delegatedRunsAvailable: isContainerRuntime && executionReady,
+      blockers,
+      capabilities: {
+        executionBoundary: isContainerRuntime
+          ? "disposable-container"
+          : isApplicationContainer
+            ? "application-container"
+            : "host-process",
+        workspaceIsolation: isContainerRuntime
+          ? "filtered-owner-projection"
+          : "logical-owner-directory",
+        networkPolicy: isContainerRuntime
+          ? this.config.localInsecureRuntimeNetwork
+            ? "local-debug-network"
+            : "container-network-blocked"
+          : isApplicationContainer
+            ? "application-container-network"
+            : "middleware-and-codex-policy",
+        credentialPolicy: isContainerRuntime
+          ? this.config.localInsecureRuntimeKeyPassthrough
+            ? "local-debug-forwarded"
+            : "not-forwarded"
+          : isApplicationContainer
+            ? "application-container-environment"
+            : "server-process-environment",
+        readOnlyRoot: isContainerRuntime,
+        // The server constructs and can therefore attest these controls only
+        // for disposable Runs. Docker Compose requests equivalent controls for
+        // the application container, but an environment label cannot prove how
+        // the current process was launched.
+        capabilitiesDropped: isContainerRuntime,
+        noNewPrivileges: isContainerRuntime,
+        resourceLimits: isContainerRuntime,
+        protectedFileProjection: isContainerRuntime,
+      },
     };
+  }
+
+  private async assertExecutionReady(): Promise<void> {
+    const system = await this.systemInfo();
+    if (system.executionReady) return;
+    const summary = system.blockers.map((blocker) => blocker.message).join(" ");
+    throw new HttpError(
+      503,
+      summary || "The selected Agent Runtime is not ready for execution.",
+      {
+        code: "RUNTIME_NOT_READY",
+        details: { blockers: system.blockers },
+      },
+    );
   }
 
   private async executeRun(

@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
+import path from "node:path";
 import {
   buildCodexArgs,
   buildCodexChildEnvironment,
   buildWindowsCmdCommand,
+  parseCodexVersion,
   parseCodexEventLine,
   resolveRunnerCodexHome,
 } from "./codex-runner.js";
@@ -11,6 +13,12 @@ import { scopedCodexHome } from "./runtime-state.js";
 import { runtimeWorkspaceStateId } from "./workspace.js";
 
 describe("Codex runner protocol", () => {
+  it("parses the pinned CLI version from Codex version output", () => {
+    expect(parseCodexVersion("codex-cli 0.151.0\n")).toBe("0.151.0");
+    expect(parseCodexVersion("OpenAI Codex v0.151.0")).toBe("0.151.0");
+    expect(parseCodexVersion("unexpected output")).toBeNull();
+  });
+
   it("builds a new-session invocation", () => {
     const args = buildCodexArgs(
       {
@@ -91,7 +99,7 @@ describe("Codex runner protocol", () => {
 
     expect(
       resolveRunnerCodexHome({ codexHome: delegatedHome }, config),
-    ).toBe(delegatedHome);
+    ).toBe(path.resolve(delegatedHome));
     const environment = buildCodexChildEnvironment(config, delegatedHome);
     expect(environment.CODEX_HOME).toBe(delegatedHome);
     expect(environment.HOME).toBe(delegatedHome);
@@ -105,6 +113,25 @@ describe("Codex runner protocol", () => {
 
     expect(resolveRunnerCodexHome({}, config)).toBe(config.codexHome);
     expect(buildCodexChildEnvironment(config).CODEX_HOME).toBe(config.codexHome);
+  });
+
+  it("does not expose Runtime credentials to a version probe", () => {
+    const config = loadConfig({
+      NODE_ENV: "test",
+      ARK_API_KEY: "probe-must-not-receive-this",
+      CODEX_HOME: "/tmp/configured-codex-home",
+    });
+
+    const environment = buildCodexChildEnvironment(
+      config,
+      config.codexHome,
+      { PATH: "/usr/bin" },
+      false,
+    );
+
+    expect(environment.ARK_API_KEY).toBeUndefined();
+    expect(environment.PATH).toBe("/usr/bin");
+    expect(environment.CODEX_HOME).toBe(config.codexHome);
   });
 
   it("rejects a relative per-Run Codex home", () => {

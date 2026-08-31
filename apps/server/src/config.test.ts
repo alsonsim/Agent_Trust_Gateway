@@ -2,12 +2,16 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { CodexRunner } from "./codex-runner.js";
+import { ContainerCodexRunner } from "./container-codex-runner.js";
 import {
   loadConfig,
+  readPinnedCodexVersion,
   resolveCodexExecutable,
   resolveContainerCodexExecutable,
   writeCodexConfig,
 } from "./config.js";
+import { createRunner } from "./runner-factory.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -46,6 +50,10 @@ describe("generated Codex configuration", () => {
 });
 
 describe("Codex executable configuration", () => {
+  it("reads the exact Codex version shared by npm and both Docker images", async () => {
+    await expect(readPinnedCodexVersion()).resolves.toBe("0.151.0");
+  });
+
   it("uses codex.cmd by default on Windows", () => {
     expect(resolveCodexExecutable(undefined, "win32")).toEqual({
       executable: "codex.cmd",
@@ -129,12 +137,59 @@ describe("Codex executable configuration", () => {
         NODE_ENV: "production",
         LOCAL_INSECURE_RUNTIME_KEY_PASSTHROUGH: "true",
       }),
-    ).toThrow("development-only escape hatches");
+    ).toThrow("loopback local-POC escape hatches");
     expect(() =>
       loadConfig({
         NODE_ENV: "production",
         LOCAL_INSECURE_RUNTIME_NETWORK: "true",
       }),
-    ).toThrow("development-only escape hatches");
+    ).toThrow("loopback local-POC escape hatches");
+  });
+
+  it("allows explicit Ark access only for the loopback disposable-container POC", () => {
+    const config = loadConfig({
+      NODE_ENV: "production",
+      HOST: "127.0.0.1",
+      RUNTIME_PROVIDER: "container",
+      LOCAL_POC_MODE: "true",
+      LOCAL_INSECURE_RUNTIME_KEY_PASSTHROUGH: "true",
+      LOCAL_INSECURE_RUNTIME_NETWORK: "true",
+    });
+
+    expect(config.localPocMode).toBe(true);
+    expect(config.localInsecureRuntimeKeyPassthrough).toBe(true);
+    expect(config.localInsecureRuntimeNetwork).toBe(true);
+    expect(() =>
+      loadConfig({
+        NODE_ENV: "production",
+        HOST: "0.0.0.0",
+        RUNTIME_PROVIDER: "container",
+        LOCAL_POC_MODE: "true",
+      }),
+    ).toThrow("LOCAL_POC_MODE requires a loopback HOST");
+  });
+});
+
+describe("Runtime provider selection", () => {
+  it("keeps host processes out of production while supporting the application image", () => {
+    expect(() =>
+      createRunner(loadConfig({
+        NODE_ENV: "production",
+        HOST: "127.0.0.1",
+        RUNTIME_PROVIDER: "local-process",
+      })),
+    ).toThrow("not permitted");
+    expect(
+      createRunner(
+        loadConfig({
+          NODE_ENV: "production",
+          HOST: "127.0.0.1",
+          RUNTIME_PROVIDER: "application-container",
+        }),
+      ),
+    ).toBeInstanceOf(CodexRunner);
+    expect(
+      createRunner(loadConfig({ NODE_ENV: "test", RUNTIME_PROVIDER: "container" })),
+    ).toBeInstanceOf(ContainerCodexRunner);
   });
 });

@@ -254,9 +254,61 @@ export interface RuntimeAuthorizationContext {
   requestId: string;
 }
 
+export interface RuntimeInspection {
+  available: boolean;
+  codexVersion: string | null;
+}
+
+export interface RuntimeBlocker {
+  code: string;
+  message: string;
+}
+
+export interface SystemInfo {
+  arkConfigured: boolean;
+  arkBaseUrl: string;
+  arkModel: string | null;
+  codexExecutable: string;
+  codexExecutableSource: "configured" | "platform-default";
+  codexAvailable: boolean;
+  codexVersion: string | null;
+  codexExpectedVersion: string;
+  codexSandboxMode: string;
+  runtimeProvider: "local-process" | "application-container" | "container";
+  containerEngine: string | null;
+  containerRuntimeImage: string | null;
+  runtime: string;
+  executionReady: boolean;
+  delegatedRunsAvailable: boolean;
+  blockers: RuntimeBlocker[];
+  capabilities: {
+    executionBoundary:
+      | "host-process"
+      | "application-container"
+      | "disposable-container";
+    workspaceIsolation: "logical-owner-directory" | "filtered-owner-projection";
+    networkPolicy:
+      | "middleware-and-codex-policy"
+      | "application-container-network"
+      | "container-network-blocked"
+      | "local-debug-network";
+    credentialPolicy:
+      | "server-process-environment"
+      | "application-container-environment"
+      | "not-forwarded"
+      | "local-debug-forwarded";
+    readOnlyRoot: boolean;
+    capabilitiesDropped: boolean;
+    noNewPrivileges: boolean;
+    resourceLimits: boolean;
+    protectedFileProjection: boolean;
+  };
+}
+
 export interface AgentRunner {
   run(request: RunnerRequest): Promise<RunnerResult>;
   cancel(agentId: string): Promise<boolean>;
   isAvailable(): Promise<boolean>;
+  inspect?(): Promise<RuntimeInspection>;
   removeStaleContainers?(): Promise<void>;
 }

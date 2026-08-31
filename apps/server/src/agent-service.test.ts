@@ -97,6 +97,8 @@ async function makeDelegatedHarness(runner: AgentRunner) {
     ARK_API_KEY: "test-provider-key",
     ARK_MODEL: "ep-test",
     RUNTIME_PROVIDER: "container",
+    LOCAL_INSECURE_RUNTIME_KEY_PASSTHROUGH: "true",
+    LOCAL_INSECURE_RUNTIME_NETWORK: "true",
   });
   const store = new JsonStore(path.join(root, "data", "db.json"));
   const workspaces = new WorkspaceManager(path.join(root, "workspaces"));

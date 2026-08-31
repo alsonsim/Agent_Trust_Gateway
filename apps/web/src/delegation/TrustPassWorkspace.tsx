@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError } from "../api";
+import { runtimePrimaryBlocker } from "../runtime-status";
 import type {
   Agent,
   AuthorizationDecision,
@@ -14,6 +15,7 @@ import type {
   HumanPrincipal,
   OwnerDelegationContractView,
   ProtectedResourceSummary,
+  SystemInfo,
 } from "../types";
 
 type TrustPassTab = "need-access" | "grant-access";
@@ -37,6 +39,7 @@ interface TrustPassWorkspaceProps {
   principal: HumanPrincipal;
   agents: Agent[];
   resources: ProtectedResourceSummary[];
+  system: SystemInfo | null;
   requestSeed?: CapabilityRequestSeed | null;
   onRequestSeedCleared?: () => void;
   onCountsChange?: (counts: TrustPassCounts) => void;
@@ -229,6 +232,7 @@ export function TrustPassWorkspace({
   principal,
   agents,
   resources,
+  system,
   requestSeed = null,
   onRequestSeedCleared,
   onCountsChange,
@@ -261,6 +265,13 @@ export function TrustPassWorkspace({
   const [clockMs, setClockMs] = useState(Date.now());
   const mountedRef = useRef(true);
   const pollingRef = useRef(new Set<string>());
+  const delegatedExecutionReady =
+    system?.executionReady === true && system.delegatedRunsAvailable;
+  const delegatedExecutionBlocker =
+    runtimePrimaryBlocker(system) ??
+    (system?.runtimeProvider !== "container"
+      ? "Approved tasks require the disposable container Runtime."
+      : "Delegated Agent execution is unavailable in the selected Runtime.");
   const discoveryRequestRef = useRef(0);
   const requestPromptRef = useRef(requestExampleByDepartment[principal.department]);
   const tabButtonRefs = useRef<Partial<Record<TrustPassTab, HTMLButtonElement | null>>>({});
@@ -1009,7 +1020,8 @@ export function TrustPassWorkspace({
                 {approvedTasks.map((contract) => {
                   const result = results[contract.id];
                   const visuallyExpired = isExpired(contract.expiresAt, serverNowMs);
-                  const canRun = contract.status === "active" && !visuallyExpired;
+                  const passCanRun = contract.status === "active" && !visuallyExpired;
+                  const canRun = passCanRun && delegatedExecutionReady;
                   return (
                     <article className="trust-card approved-task-card" key={contract.id}>
                       <div className="trust-card-heading">
@@ -1034,13 +1046,25 @@ export function TrustPassWorkspace({
                         }}
                       />
                       <PolicyExplanation status={visuallyExpired && contract.status === "active" ? "expired" : contract.status} reasonCode={visuallyExpired && contract.status === "active" ? "DELEGATION_EXPIRED" : contract.policyReasonCode} />
+                      {passCanRun && !delegatedExecutionReady && (
+                        <div className="trust-runtime-blocker" role="status">
+                          <strong>Delegated execution unavailable</strong>
+                          <span>{delegatedExecutionBlocker}</span>
+                        </div>
+                      )}
                       <button
                         type="button"
                         className="button button-primary trust-primary-action run-approved-button"
                         onClick={() => void invokeContract(contract)}
                         disabled={busyKey !== null || !canRun}
                       >
-                        {busyKey === "invoke-" + contract.id ? <Loading /> : canRun ? "Run approved task" : "Pass unavailable"}
+                        {busyKey === "invoke-" + contract.id
+                          ? <Loading />
+                          : !passCanRun
+                            ? "Pass unavailable"
+                            : !delegatedExecutionReady
+                              ? "Runtime unavailable"
+                              : "Run approved task"}
                       </button>
 
                       {((contract.status === "active" && !visuallyExpired) ||

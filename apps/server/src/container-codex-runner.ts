@@ -1,4 +1,5 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { copyFile, mkdir, readdir, rm } from "node:fs/promises";
 import { promisify } from "node:util";
 import path from "node:path";
@@ -6,6 +7,7 @@ import type { AppConfig } from "./config.js";
 import {
   buildCodexArgs,
   parseCodexEventLine,
+  parseCodexVersion,
   resolveRunnerCodexHome,
 } from "./codex-runner.js";
 import { RunCancelledError } from "./errors.js";
@@ -13,12 +15,24 @@ import { prepareScopedCodexHome, runtimeStateKey } from "./runtime-state.js";
 import { isProtectedWorkspacePath } from "./workspace-file-policy.js";
 import type {
   AgentRunner,
+  RuntimeInspection,
   RunUsage,
   RunnerRequest,
   RunnerResult,
 } from "./types.js";
 
 const execFileAsync = promisify(execFile);
+
+function commandOutput(result: unknown): string {
+  if (typeof result === "string") return result;
+  if (Buffer.isBuffer(result)) return result.toString("utf8");
+  if (typeof result === "object" && result !== null && "stdout" in result) {
+    const stdout = (result as { stdout?: unknown }).stdout;
+    if (typeof stdout === "string") return stdout;
+    if (Buffer.isBuffer(stdout)) return stdout.toString("utf8");
+  }
+  return "";
+}
 
 interface ActiveContainer {
   child: ChildProcess;
@@ -109,12 +123,73 @@ export function buildContainerRunArgs(
   ];
 }
 
+export function buildContainerProbeArgs(
+  config: AppConfig,
+  probeName: string,
+): string[] {
+  const engineName = config.containerEngine.split(/[\\/]/).at(-1)?.toLowerCase();
+  return [
+    "run",
+    "--rm",
+    "--init",
+    "--name",
+    probeName,
+    "--label",
+    "io.codejam.launchpad=agent-runtime",
+    "--label",
+    "io.codejam.agent-id=runtime-readiness-probe",
+    "--label",
+    "io.codejam.instance-id=" + config.runtimeInstanceId,
+    ...(engineName === "podman" ? ["--userns", "keep-id"] : []),
+    "--network",
+    "none",
+    "--security-opt",
+    "no-new-privileges",
+    "--cap-drop",
+    "ALL",
+    "--read-only",
+    "--tmpfs",
+    "/tmp:rw,noexec,nosuid,size=64m",
+    "--cpus",
+    String(config.containerCpuLimit),
+    "--memory",
+    config.containerMemoryLimit,
+    "--pids-limit",
+    String(config.containerPidsLimit),
+    "--user",
+    config.containerUser,
+    "--env",
+    "CODEX_HOME=/tmp/codex-home",
+    "--env",
+    "HOME=/tmp",
+    "--env",
+    "NO_COLOR=1",
+    "--entrypoint",
+    config.containerCodexBin,
+    config.containerRuntimeImage,
+    "--version",
+  ];
+}
+
 export class ContainerCodexRunner implements AgentRunner {
   private readonly active = new Map<string, ActiveContainer>();
 
   constructor(private readonly config: AppConfig) {}
 
   async isAvailable(): Promise<boolean> {
+    return (await this.inspect()).available;
+  }
+
+  async inspect(): Promise<RuntimeInspection> {
+    const probeName = containerName(
+      "runtime-probe-" + randomUUID(),
+      this.config.runtimeInstanceId,
+    );
+    let cleanupNeeded = false;
+    let inspection: RuntimeInspection = {
+      available: false,
+      codexVersion: null,
+    };
     try {
       await execFileAsync(this.config.containerEngine, ["version"], {
         timeout: 5_000,
@@ -125,10 +200,26 @@ export class ContainerCodexRunner implements AgentRunner {
         ["image", "inspect", this.config.containerRuntimeImage],
         { timeout: 5_000, env: buildContainerCliEnvironment(this.config, false) },
       );
-      return true;
+      cleanupNeeded = true;
+      const result = await execFileAsync(
+        this.config.containerEngine,
+        buildContainerProbeArgs(this.config, probeName),
+        { timeout: 10_000, env: buildContainerCliEnvironment(this.config, false) },
+      );
+      const output = commandOutput(result);
+      inspection = { available: true, codexVersion: parseCodexVersion(output) };
     } catch {
-      return false;
+      inspection = { available: false, codexVersion: null };
+    } finally {
+      if (cleanupNeeded) {
+        try {
+          await this.forceRemoveAndVerify(probeName);
+        } catch {
+          inspection = { available: false, codexVersion: null };
+        }
+      }
     }
+    return inspection;
   }
 
   async removeStaleContainers(): Promise<void> {

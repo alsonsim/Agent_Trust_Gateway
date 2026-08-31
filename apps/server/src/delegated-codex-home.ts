@@ -138,6 +138,15 @@ export class DelegatedCodexHomeManager {
     }
 
     const sourcePath = path.join(this.sourceCodexHome, ...relativeSegments);
+    try {
+      const pathStat = await lstat(sourcePath);
+      if (!pathStat.isFile() || pathStat.isSymbolicLink()) {
+        throw new Error("Allowed Codex configuration source must be a real file");
+      }
+    } catch (error) {
+      if (isMissingFileError(error)) return;
+      throw error;
+    }
     let sourceHandle;
     try {
       sourceHandle = await open(sourcePath, constants.O_RDONLY | constants.O_NOFOLLOW);

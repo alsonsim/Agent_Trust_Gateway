@@ -2742,8 +2742,8 @@ textarea:focus {
 }
 
 .trust-pass-tabs .trust-tab-grant-access {
-  border-color: #cfe3d9;
-  background: #f1f8f4;
+  border-color: #e4cfea;
+  background: #fbf3fc;
 }
 
 .trust-pass-tabs .trust-tab-need-access:hover {
@@ -2752,8 +2752,8 @@ textarea:focus {
 }
 
 .trust-pass-tabs .trust-tab-grant-access:hover {
-  border-color: #acd2c1;
-  background: #f8fcfa;
+  border-color: #cfa8da;
+  background: #fdf9fe;
 }
 
 .trust-pass-tabs button:focus-visible {
@@ -2769,10 +2769,10 @@ textarea:focus {
 }
 
 .trust-pass-tabs .trust-tab-grant-access.active {
-  color: #286f56;
-  border-color: #8fc5ae;
+  color: #744080;
+  border-color: #c493cf;
   background: #ffffff;
-  box-shadow: 0 4px 14px rgba(40, 111, 86, 0.14);
+  box-shadow: 0 4px 14px rgba(116, 64, 128, 0.14);
 }
 
 .trust-tab-copy {
@@ -2795,7 +2795,7 @@ textarea:focus {
 }
 
 .trust-pass-tabs .trust-tab-grant-access.active .trust-tab-copy strong {
-  color: #286f56;
+  color: #744080;
 }
 
 .trust-tab-copy small {
@@ -2830,8 +2830,8 @@ textarea:focus {
 }
 
 .trust-pass-tabs .trust-tab-grant-access.active .trust-tab-metrics > span {
-  color: #286f56;
-  background: #e3f2eb;
+  color: #744080;
+  background: #f3e3f5;
 }
 
 .trust-pass-scroll {
@@ -2843,6 +2843,28 @@ textarea:focus {
   background:
     radial-gradient(circle at 94% 0%, rgba(105, 84, 217, 0.07), transparent 25%),
     #f8f7f3;
+}
+
+.trust-pass-scroll-need-access .trust-list-section,
+.trust-pass-scroll-need-access .trust-form-card {
+  border-color: #d5cbef;
+  background: #f8f5ff;
+}
+
+.trust-pass-scroll-need-access .trust-section-heading {
+  border-bottom-color: #ddd5f1;
+  background: #f1edff;
+}
+
+.trust-pass-scroll-grant-access .trust-list-section,
+.trust-pass-scroll-grant-access .trust-form-card {
+  border-color: #dfc9e5;
+  background: #fcf4fd;
+}
+
+.trust-pass-scroll-grant-access .trust-section-heading {
+  border-bottom-color: #e6d4ea;
+  background: #f6eafa;
 }
 
 .trust-banner {

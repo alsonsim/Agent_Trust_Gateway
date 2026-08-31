@@ -832,7 +832,7 @@ export function TrustPassWorkspace({
       </nav>
 
       <div
-        className="trust-pass-scroll"
+        className={`trust-pass-scroll trust-pass-scroll-${tab}`}
         role="tabpanel"
         id="trust-pass-content-panel"
         aria-labelledby={`trust-${tab}-tab`}

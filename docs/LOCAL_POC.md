@@ -9,17 +9,19 @@ container. Only the Volcengine Ark model API is remote.
 Requirements:
 
 - Node.js 22+
-- Docker, Colima, or Podman
-- An Ark API key and Responses-capable endpoint
-- Git for Windows when starting from Windows PowerShell or Git Bash
+- Docker, Colima, or Podman for disposable container Runs
+- Optional: an Ark API key and Responses-capable endpoint for Codex/Ark Runs
 
-Copy `.env.example` to `.env`, then set `AUTH_MODE=demo`, `HOST=127.0.0.1`,
-`ARK_API_KEY`, and `ARK_MODEL`. For a real model Run, also set:
+Credential-free offline mode:
 
-```dotenv
-LOCAL_INSECURE_RUNTIME_KEY_PASSTHROUGH=true
-LOCAL_INSECURE_RUNTIME_NETWORK=true
+```bash
+RUNTIME_PROVIDER=offline-demo bash scripts/start-local-poc.sh
 ```
+
+This mode uses `AUTH_MODE=demo`, local JSON state under `.local/`, and no Ark,
+Supabase, Codex cloud, or Runtime container.
+
+Disposable container mode:
 
 ```bash
 npm run poc

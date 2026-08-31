@@ -645,6 +645,7 @@ export class AgentService {
   }
 
   async systemInfo(): Promise<SystemInfo> {
+    const isOfflineDemoRuntime = this.config.runtimeProvider === "offline-demo";
     const isContainerRuntime = this.config.runtimeProvider === "container";
     const isApplicationContainer =
       this.config.runtimeProvider === "application-container";
@@ -658,7 +659,7 @@ export class AgentService {
     const arkConfigured = isArkConfigured(this.config);
     const blockers: RuntimeBlocker[] = [];
 
-    if (!arkConfigured) {
+    if (!isOfflineDemoRuntime && !arkConfigured) {
       blockers.push({
         code: "ARK_NOT_CONFIGURED",
         message: "Set ARK_API_KEY and ARK_MODEL before running an Agent.",
@@ -674,13 +675,19 @@ export class AgentService {
           : "The configured Codex CLI executable could not be started.",
       });
     }
-    if (inspection.available && this.runner.inspect && !inspection.codexVersion) {
+    if (
+      !isOfflineDemoRuntime &&
+      inspection.available &&
+      this.runner.inspect &&
+      !inspection.codexVersion
+    ) {
       blockers.push({
         code: "CODEX_VERSION_UNVERIFIED",
         message: "The Codex CLI started, but its version could not be verified.",
       });
     }
     if (
+      !isOfflineDemoRuntime &&
       inspection.codexVersion &&
       inspection.codexVersion !== codexExpectedVersion
     ) {
@@ -714,9 +721,11 @@ export class AgentService {
       arkConfigured,
       arkBaseUrl: this.config.arkBaseUrl,
       arkModel: this.config.arkModel || null,
-      codexExecutable: isContainerRuntime
-        ? this.config.containerCodexBin
-        : this.config.codexBin,
+      codexExecutable: isOfflineDemoRuntime
+        ? "offline-demo"
+        : isContainerRuntime
+          ? this.config.containerCodexBin
+          : this.config.codexBin,
       codexExecutableSource: isContainerRuntime
         ? this.config.containerCodexBinSource
         : this.config.codexBinSource,
@@ -733,7 +742,9 @@ export class AgentService {
         ? this.config.containerRuntimeImage
         : null,
       runtime:
-        isContainerRuntime
+        isOfflineDemoRuntime
+          ? "Offline demo simulator"
+          : isContainerRuntime
           ? this.config.containerEngine + " per-Run container · Codex CLI"
           : isApplicationContainer
             ? "Application container profile · Codex CLI"
@@ -742,7 +753,9 @@ export class AgentService {
       delegatedRunsAvailable: isContainerRuntime && executionReady,
       blockers,
       capabilities: {
-        executionBoundary: isContainerRuntime
+        executionBoundary: isOfflineDemoRuntime
+          ? "offline-demo"
+          : isContainerRuntime
           ? "disposable-container"
           : isApplicationContainer
             ? "application-container"
@@ -750,14 +763,18 @@ export class AgentService {
         workspaceIsolation: isContainerRuntime
           ? "filtered-owner-projection"
           : "logical-owner-directory",
-        networkPolicy: isContainerRuntime
+        networkPolicy: isOfflineDemoRuntime
+          ? "offline-demo-network-disabled"
+          : isContainerRuntime
           ? this.config.localInsecureRuntimeNetwork
             ? "local-debug-network"
             : "container-network-blocked"
           : isApplicationContainer
             ? "application-container-network"
             : "middleware-and-codex-policy",
-        credentialPolicy: isContainerRuntime
+        credentialPolicy: isOfflineDemoRuntime
+          ? "offline-demo-no-credentials"
+          : isContainerRuntime
           ? this.config.localInsecureRuntimeKeyPassthrough
             ? "local-debug-forwarded"
             : "not-forwarded"

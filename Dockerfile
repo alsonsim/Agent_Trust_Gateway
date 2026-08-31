@@ -17,18 +17,21 @@ WORKDIR /app
 
 ARG DEBIAN_MIRROR=""
 ARG DEBIAN_SECURITY_MIRROR=""
+ARG OFFLINE_DEMO="false"
 
-RUN if [ -n "$DEBIAN_SECURITY_MIRROR" ]; then \
-      find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) \
-        -exec sed -i "s|http://deb.debian.org/debian-security|$DEBIAN_SECURITY_MIRROR|g" {} +; \
-    fi \
-    && if [ -n "$DEBIAN_MIRROR" ]; then \
-      find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) \
-        -exec sed -i "s|http://deb.debian.org/debian|$DEBIAN_MIRROR|g" {} +; \
-    fi \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates git ripgrep \
-    && rm -rf /var/lib/apt/lists/*
+RUN if [ "$OFFLINE_DEMO" != "true" ]; then \
+      if [ -n "$DEBIAN_SECURITY_MIRROR" ]; then \
+        find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) \
+          -exec sed -i "s|http://deb.debian.org/debian-security|$DEBIAN_SECURITY_MIRROR|g" {} +; \
+      fi; \
+      if [ -n "$DEBIAN_MIRROR" ]; then \
+        find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) \
+          -exec sed -i "s|http://deb.debian.org/debian|$DEBIAN_MIRROR|g" {} +; \
+      fi; \
+      apt-get update; \
+      apt-get install -y --no-install-recommends ca-certificates git ripgrep; \
+      rm -rf /var/lib/apt/lists/*; \
+    fi
 
 ENV PATH="/app/node_modules/.bin:${PATH}"
 
@@ -39,8 +42,8 @@ COPY --from=build /app/apps/server/dist ./apps/server/dist
 COPY --from=build /app/apps/web/dist ./apps/web/dist
 
 # The application image and host npm workflow use the same exact Codex package
-# from package-lock.json. Fail the image build if its native binary is missing.
-RUN codex --version
+# from package-lock.json. Offline-demo does not execute Codex.
+RUN if [ "$OFFLINE_DEMO" != "true" ]; then codex --version; fi
 
 RUN mkdir -p /app/data /app/workspaces /app/codex-home \
     && chown -R node:node /app

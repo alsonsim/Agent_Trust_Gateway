@@ -6,6 +6,8 @@ export function runtimeProviderLabel(
   provider: SystemInfo["runtimeProvider"] | undefined,
 ): string {
   switch (provider) {
+    case "offline-demo":
+      return "Offline judge demo";
     case "container":
       return "Disposable Agent container";
     case "application-container":
@@ -43,6 +45,8 @@ export function runtimeExecutionBoundaryLabel(
   value: RuntimeCapabilities["executionBoundary"],
 ): string {
   switch (value) {
+    case "offline-demo":
+      return "Offline deterministic runner";
     case "disposable-container":
       return "Disposable container per Run";
     case "application-container":
@@ -64,6 +68,8 @@ export function runtimeNetworkLabel(
   value: RuntimeCapabilities["networkPolicy"],
 ): string {
   switch (value) {
+    case "offline-demo-network-disabled":
+      return "Network unused";
     case "container-network-blocked":
       return "Container network blocked";
     case "local-debug-network":
@@ -79,6 +85,8 @@ export function runtimeCredentialLabel(
   value: RuntimeCapabilities["credentialPolicy"],
 ): string {
   switch (value) {
+    case "offline-demo-no-credentials":
+      return "No provider credentials";
     case "not-forwarded":
       return "Credentials not forwarded";
     case "local-debug-forwarded":
@@ -91,6 +99,7 @@ export function runtimeCredentialLabel(
 }
 
 export function codexVersionMatches(system: SystemInfo): boolean {
+  if (system.runtimeProvider === "offline-demo") return true;
   if (!system.codexVersion || !system.codexExpectedVersion) return false;
   return system.codexVersion === system.codexExpectedVersion;
 }

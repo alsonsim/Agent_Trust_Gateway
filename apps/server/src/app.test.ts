@@ -1658,6 +1658,196 @@ describe("HTTP identity and authorization boundary", () => {
     await app.close();
   });
 
+  it("denies an expired Trust Pass without consuming it", async () => {
+    const { app, runner, store } = await makeHarness();
+    const frontendCookie = await login(app, "frontend@bytedance.com");
+    const createdAgent = await app.inject({
+      method: "POST",
+      url: "/api/agents",
+      headers: { cookie: frontendCookie },
+      payload: { name: "Frontend Agent" },
+    });
+    const exactPrompt = "Implement the approved profile interface.";
+    const issued = await app.inject({
+      method: "POST",
+      url: "/api/delegation-contracts",
+      headers: { cookie: frontendCookie },
+      payload: {
+        requiredCapability: "frontend.interface-implementation",
+        granteeHumanId: "22222222-2222-4222-8222-222222222222",
+        agentId: createdAgent.json().agent.id,
+        exactPrompt,
+        approvedResourceIds: [],
+        expiresInSeconds: 600,
+      },
+    });
+    expect(issued.statusCode).toBe(201);
+    const contractId = issued.json().contract.id as string;
+
+    await store.mutate((database) => {
+      const contract = database.delegationContracts.find(
+        (candidate) => candidate.id === contractId,
+      );
+      if (!contract) throw new Error("Expected issued contract");
+      contract.expiresAt = new Date(Date.now() - 1_000).toISOString();
+    });
+
+    const backendCookie = await login(app, "backend@bytedance.com");
+    const denied = await app.inject({
+      method: "POST",
+      url: `/api/delegation-contracts/${contractId}/invoke`,
+      headers: { cookie: backendCookie },
+      payload: { content: exactPrompt },
+    });
+
+    expect(denied.statusCode).toBe(403);
+    expect(denied.json()).toMatchObject({
+      code: "AUTHORIZATION_DENIED",
+      decision: {
+        decision: "deny",
+        action: "agent.invoke",
+        targetType: "delegation",
+        reasonCode: "DELEGATION_EXPIRED",
+        agentId: null,
+        agentName: null,
+      },
+    });
+    expect(runner.requests).toHaveLength(0);
+    expect(
+      store.snapshot().delegationContracts.find(
+        (candidate) => candidate.id === contractId,
+      ),
+    ).toMatchObject({
+      status: "expired",
+      usesConsumed: 0,
+      runId: null,
+      consumedAt: null,
+    });
+
+    const result = await app.inject({
+      method: "GET",
+      url: `/api/delegation-contracts/${contractId}/result`,
+      headers: { cookie: backendCookie },
+    });
+    expect(result.json()).toMatchObject({
+      contractStatus: "expired",
+      result: null,
+    });
+    const audit = await app.inject({
+      method: "GET",
+      url: "/api/authorization-decisions?limit=100",
+      headers: { cookie: backendCookie },
+    });
+    expect(audit.json().decisions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          decision: "deny",
+          reasonCode: "DELEGATION_EXPIRED",
+        }),
+      ]),
+    );
+    await app.close();
+  });
+
+  it("fails closed when an approved input changes without consuming the pass", async () => {
+    const { app, config, runner, store } = await makeHarness();
+    const frontendCookie = await login(app, "frontend@bytedance.com");
+    const createdAgent = await app.inject({
+      method: "POST",
+      url: "/api/agents",
+      headers: { cookie: frontendCookie },
+      payload: { name: "Frontend Agent" },
+    });
+    const frontendResource = RESOURCE_FIXTURES.find(
+      (resource) => resource.ownerDepartment === "frontend",
+    )!;
+    const exactPrompt = "Implement the approved profile interface.";
+    const issued = await app.inject({
+      method: "POST",
+      url: "/api/delegation-contracts",
+      headers: { cookie: frontendCookie },
+      payload: {
+        requiredCapability: "frontend.interface-implementation",
+        granteeHumanId: "22222222-2222-4222-8222-222222222222",
+        agentId: createdAgent.json().agent.id,
+        exactPrompt,
+        approvedResourceIds: [frontendResource.id],
+        expiresInSeconds: 600,
+      },
+    });
+    expect(issued.statusCode).toBe(201);
+    const contractId = issued.json().contract.id as string;
+    const storedResource = store.snapshot().protectedResources.find(
+      (resource) => resource.id === frontendResource.id,
+    );
+    if (!storedResource) throw new Error("Expected approved resource");
+
+    await writeFile(
+      path.join(
+        config.dataDirectory,
+        "protected-resources",
+        storedResource.storageKey,
+      ),
+      frontendResource.content + "\nChanged after approval.\n",
+    );
+
+    const backendCookie = await login(app, "backend@bytedance.com");
+    const denied = await app.inject({
+      method: "POST",
+      url: `/api/delegation-contracts/${contractId}/invoke`,
+      headers: { cookie: backendCookie },
+      payload: { content: exactPrompt },
+    });
+
+    expect(denied.statusCode).toBe(403);
+    expect(denied.json()).toMatchObject({
+      code: "AUTHORIZATION_DENIED",
+      decision: {
+        decision: "deny",
+        action: "agent.invoke",
+        targetType: "delegation",
+        reasonCode: "DELEGATION_RESOURCE_CHANGED",
+        agentId: null,
+        agentName: null,
+      },
+    });
+    expect(runner.requests).toHaveLength(0);
+    expect(
+      store.snapshot().delegationContracts.find(
+        (candidate) => candidate.id === contractId,
+      ),
+    ).toMatchObject({
+      status: "active",
+      usesConsumed: 0,
+      runId: null,
+      consumedAt: null,
+    });
+
+    const result = await app.inject({
+      method: "GET",
+      url: `/api/delegation-contracts/${contractId}/result`,
+      headers: { cookie: backendCookie },
+    });
+    expect(result.json()).toMatchObject({
+      contractStatus: "active",
+      result: null,
+    });
+    const audit = await app.inject({
+      method: "GET",
+      url: "/api/authorization-decisions?limit=100",
+      headers: { cookie: backendCookie },
+    });
+    expect(audit.json().decisions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          decision: "deny",
+          reasonCode: "DELEGATION_RESOURCE_CHANGED",
+        }),
+      ]),
+    );
+    await app.close();
+  });
+
   it("refuses delegated execution without the isolated container boundary", async () => {
     const { app, runner } = await makeHarness({ RUNTIME_PROVIDER: "local-process" });
     const frontendCookie = await login(app, "frontend@bytedance.com");

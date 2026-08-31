@@ -93,7 +93,15 @@ keys are not required for this local POC.
 
 Enter the assigned email on the login page. In Supabase mode, use `test-password` for these demo accounts.
 
-## Security Demo
+## Selected Track: Bouncer — Identity and Authorization
+
+Agent Trust Gateway demonstrates identity and authorization middleware through
+two connected flows: direct owner policy enforcement, and scoped owner-approved
+delegation. The first flow proves the Human -> Agent ownership boundary; the
+second shows how that boundary can be extended through a narrow, revocable Trust
+Pass without exposing the underlying Agent.
+
+### 1. Ownership and Policy Enforcement
 
 Create one ready Agent for each identity, open **Access & audit**, and read that
 identity's protected resource through middleware. Foreign resource summaries are
@@ -161,7 +169,7 @@ denied totals plus its latest decision. Use the **Allowed**, **Denied**,
 evidence. See [the file authorization demo](docs/FILE_AUTHORIZATION_DEMO.md)
 for the security boundary and walkthrough.
 
-## Selected track: Bouncer — Identity and Authorization
+### 2. Scoped Delegation with Trust Pass
 
 **The Trust Gateway lets a user privately discover a missing capability and
 request a narrowly scoped, owner-approved Agent Pass without exposing or sharing

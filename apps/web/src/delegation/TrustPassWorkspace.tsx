@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { api, ApiError } from "../api";
 import { runtimePrimaryBlocker } from "../runtime-status";
 import type {
@@ -265,6 +272,8 @@ export function TrustPassWorkspace({
   const [clockMs, setClockMs] = useState(Date.now());
   const mountedRef = useRef(true);
   const pollingRef = useRef(new Set<string>());
+  const approvalCardRefs = useRef(new Map<string, HTMLElement>());
+  const pendingApprovedRequestIdRef = useRef<string | null>(null);
   const delegatedExecutionReady =
     system?.executionReady === true && system.delegatedRunsAvailable;
   const delegatedExecutionBlocker =
@@ -421,6 +430,20 @@ export function TrustPassWorkspace({
     const timer = window.setInterval(() => setClockMs(Date.now()), 1_000);
     return () => window.clearInterval(timer);
   }, []);
+
+  useLayoutEffect(() => {
+    const requestId = pendingApprovedRequestIdRef.current;
+    if (!requestId) return;
+    const approvedRequest = incomingRequests.find(
+      (request) => request.id === requestId && request.status === "approved",
+    );
+    const approvalCard = approvalCardRefs.current.get(requestId);
+    if (!approvedRequest || !approvalCard) return;
+
+    pendingApprovedRequestIdRef.current = null;
+    approvalCard.scrollIntoView({ behavior: "auto", block: "nearest" });
+    approvalCard.focus({ preventScroll: true });
+  }, [incomingRequests]);
 
   useEffect(() => {
     if (!requestSeed) return;
@@ -628,6 +651,7 @@ export function TrustPassWorkspace({
       });
       setLatestDecision(response.decision);
       setNotice("One-use Trust Pass issued. The underlying Agent remains private.");
+      pendingApprovedRequestIdRef.current = request.id;
       await refreshAll();
     } catch (reason) {
       handleError(reason);
@@ -1129,7 +1153,15 @@ export function TrustPassWorkspace({
                   );
                   const pending = request.status === "pending" && !isExpired(request.expiresAt, serverNowMs);
                   return (
-                    <article className="trust-card approval-card" key={request.id}>
+                    <article
+                      className="trust-card approval-card"
+                      key={request.id}
+                      ref={(node) => {
+                        if (node) approvalCardRefs.current.set(request.id, node);
+                        else approvalCardRefs.current.delete(request.id);
+                      }}
+                      tabIndex={-1}
+                    >
                       <div className="trust-card-heading">
                         <div>
                           <span className="eyebrow">{request.capabilityLabel}</span>
@@ -1150,6 +1182,13 @@ export function TrustPassWorkspace({
                         <summary>Technical details</summary>
                         <code>Task digest: {request.taskDigest}</code>
                       </details>
+
+                      {request.status === "approved" && (
+                        <p className="allowed-copy approval-complete" role="status">
+                          <strong>Trust Pass issued.</strong> This approval is complete. The
+                          pass remains available under Issued passes below.
+                        </p>
+                      )}
 
                       {pending && (
                         <div className="approval-controls">

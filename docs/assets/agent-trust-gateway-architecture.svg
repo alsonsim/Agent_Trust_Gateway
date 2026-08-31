@@ -72,10 +72,10 @@
     <text class="body" x="90" y="416">Separate Agent owner</text>
     <rect x="88" y="438" width="174" height="1" fill="#E7E3EC"/>
     <text class="body" x="90" y="474">Create and test Agents</text>
-    <text class="body" x="90" y="508">Request or approve access</text>
+    <text class="body" x="90" y="508">Request / approve access</text>
     <text class="body" x="90" y="542">View audit evidence</text>
-    <rect x="88" y="565" width="151" height="24" rx="12" fill="#FFF0F0"/>
-    <text class="tiny" x="100" y="582" fill="#B43A43">UI IS NOT THE BOUNDARY</text>
+    <rect x="78" y="565" width="194" height="24" rx="12" fill="#FFF0F0"/>
+    <text class="tiny" x="175" y="582" text-anchor="middle" fill="#B43A43">UI IS NOT THE BOUNDARY</text>
   </g>
 
   <g>
@@ -100,7 +100,7 @@
     <rect x="611" y="395" width="278" height="72" rx="12" fill="#FFFFFF" stroke="#DDD5F8"/>
     <text class="tiny" x="627" y="419" fill="#5D3CD3">TRUST PASS</text>
     <text class="small" x="627" y="442">Owner-approved task + inputs</text>
-    <text class="small" x="627" y="461">Grantee · expiry · revoke · one use</text>
+    <text class="small" x="627" y="458">Grantee · expiry · revoke · one use</text>
 
     <rect x="611" y="480" width="278" height="66" rx="12" fill="#FFF9E9" stroke="#E5C86B"/>
     <text class="tiny" x="627" y="504" fill="#A26A00">ACTION FIREWALL</text>
@@ -150,7 +150,6 @@
   <path class="arrow" d="M915 400 H945"/>
   <path class="arrow" d="M1190 400 H1280"/>
   <path class="provider-line" d="M1635 400 H1700"/>
-  <text class="tiny" x="1643" y="383" fill="#8A6724">OPT-IN</text>
 
   <!-- State and instrumentation -->
   <g>
@@ -160,7 +159,7 @@
     <text class="body" x="842" y="677">ALLOW / DENY · reason · request ID</text>
     <text class="small" x="611" y="701">Local JSON POC · Supabase adapter for identity, resources, and audit</text>
   </g>
-  <path class="data-line" d="M750 573 V610"/>
+  <path class="data-line" d="M750 593 V610"/>
   <path class="data-line" d="M1068 500 V610"/>
   <path class="result-line" d="M1457 573 V746 H175 V600"/>
   <text class="tiny" x="713" y="739" fill="#08775C">DELEGATED FINAL OUTPUT ONLY · VIA BACKEND</text>

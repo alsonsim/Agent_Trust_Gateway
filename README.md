@@ -54,7 +54,6 @@ Runtime and delegation:
 - Explicit Agent revocation that cancels active work and fail-closes future
   actions
 - Disposable Docker container for each real Codex/Ark Run
-- Optional deterministic offline runner for credential-free smoke tests
 - Private capability discovery that never reveals another team's Agent
 - Requester- and owner-initiated Trust Passes backed by one delegation contract
 - Exact-task, exact-Agent, resource-scoped, expiring, revocable one-use Runs
@@ -85,12 +84,6 @@ ARK_API_KEY=your-ark-api-key ARK_MODEL=ep-your-endpoint-id npm run poc
 Open <http://localhost:3000>. The launcher stores local POC state under
 `.local/`, uses demo identities by default, builds the Docker Runtime image, and
 starts each Run in a disposable container.
-
-For a credential-free smoke test only, the repository also has an offline runner:
-
-```bash
-RUNTIME_PROVIDER=offline-demo npm run poc
-```
 
 ## Selected Track: Bouncer — Identity and Authorization
 
@@ -271,14 +264,6 @@ No `.env` file is needed for this judge path. The launcher stores local POC
 state under `.local/`, uses demo identities, builds the Docker Runtime image on
 first launch, and starts each Run in a disposable container.
 
-Credential-free smoke-test mode:
-
-```bash
-RUNTIME_PROVIDER=offline-demo npm run poc
-```
-
-This does not call Ark, Codex cloud services, or a Runtime container.
-
 On Windows, install Docker Desktop and Git for Windows. The Node launcher finds
 Git for Windows Bash without accidentally selecting a separate WSL toolchain.
 Set `LOCAL_POC_BASH` only when `bash.exe` is installed in a nonstandard
@@ -320,11 +305,6 @@ conversations.
 
 Run the same command to continue later.
 
-## Optional Smoke Test
-
-The deterministic `offline-demo` runner is available for credential-free smoke
-tests, but it is not the real Codex/Ark execution path.
-
 ## How It Works
 
 ```mermaid
@@ -338,14 +318,11 @@ flowchart LR
     Firewall --> Runtime
     API --> Runtime{"Runtime provider"}
     Runtime -->|Full local POC| Container["Disposable Docker container"]
-    Runtime -->|Optional smoke test| Offline["offline-demo runner"]
     Container --> Ark["Volcengine Ark Responses API"]
 ```
 
 Full local POC Runs use `codex exec` inside the disposable Runtime container;
-later turns resume the stored Codex thread. The optional offline runner returns
-deterministic output without calling Ark, Codex cloud services, or any network
-service.
+later turns resume the stored Codex thread.
 
 ## Role workspace and Runtime isolation
 

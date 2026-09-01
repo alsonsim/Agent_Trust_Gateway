@@ -362,7 +362,7 @@ boundaries.
 ## Documentation
 
 - [Architecture](docs/ARCHITECTURE.md)
-- [Demo workflow and script](docs/DEMO_WORKFLOW_AND_SCRIPT.md)
+- [Hackathon extension guide](docs/HACKATHON_EXTENSION_GUIDE.md)
 - [File authorization demo](docs/FILE_AUTHORIZATION_DEMO.md)
 - [Local POC](docs/LOCAL_POC.md)
 - [Trust Pass demo](docs/TRUST_PASS_DEMO.md)

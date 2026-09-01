@@ -5,9 +5,11 @@ authorization middleware boundary for hackathon use.
 
 The [one-page submission diagram](assets/agent-trust-gateway-architecture.svg)
 shows the request path, trust boundaries, enforcement, instrumentation, and
-recovery points at a glance. The compact Mermaid view below mirrors that flow.
+recovery points at a glance. 
 
 [![Agent Trust Gateway one-page architecture](assets/agent-trust-gateway-architecture.png)](assets/agent-trust-gateway-architecture.svg)
+
+The compact Mermaid view below mirrors that flow.
 
 ```mermaid
 flowchart LR

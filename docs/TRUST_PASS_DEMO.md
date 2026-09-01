@@ -1,5 +1,7 @@
 # Three-minute Trust Pass demo
 
+**Public Youtube Link**: https://youtu.be/1Nv25rB8So0
+
 ## Story
 
 This demo stays entirely inside **Bouncer — Identity and Authorization**.

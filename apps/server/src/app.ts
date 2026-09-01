@@ -58,7 +58,7 @@ const runtimeActionEvaluationBody = z.object({
 });
 const loginBody = z.object({
   email: z.string().trim().email().max(320),
-  password: z.string().max(4_096).optional(),
+  password: z.string().min(1).max(4_096),
 });
 const capabilityDiscoveryBody = z
   .object({
@@ -168,10 +168,7 @@ export async function createApp(
       throw new HttpError(400, "Legacy mode uses the deployment access token");
     }
     const credentials = loginBody.parse(request.body);
-    const session = await gateway.signIn({
-      email: credentials.email,
-      ...(credentials.password === undefined ? {} : { password: credentials.password }),
-    });
+    const session = await gateway.signIn(credentials);
     await delegations.observePrincipal(session.principal);
     const expiresInSeconds = Math.max(
       60,

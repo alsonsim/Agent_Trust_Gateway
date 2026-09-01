@@ -127,7 +127,7 @@ async function login(app: Awaited<ReturnType<typeof createApp>>, email: string) 
   const response = await app.inject({
     method: "POST",
     url: "/api/auth/login",
-    payload: { email },
+    payload: { email, password: "test-password" },
   });
   expect(response.statusCode).toBe(200);
   const cookie = response.headers["set-cookie"];
@@ -136,6 +136,18 @@ async function login(app: Awaited<ReturnType<typeof createApp>>, email: string) 
 }
 
 describe("HTTP identity and authorization boundary", () => {
+  it("requires the public demo password at the API boundary", async () => {
+    const { app } = await makeHarness();
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/auth/login",
+      payload: { email: "frontend@bytedance.com" },
+    });
+
+    expect(response.statusCode).toBe(400);
+    await app.close();
+  });
+
   it(
     "reports disposable Runtime capabilities and honest direct-Ark blockers",
     async () => {

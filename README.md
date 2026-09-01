@@ -95,13 +95,16 @@ Pass without exposing the underlying Agent.
 
 ### Demo identities
 
-| Identity | Login email | Owned protected resource |
-| --- | --- | --- |
-| Frontend | `frontend@bytedance.com` | **Profile page requirements** (`profile-page-requirements.md`) |
-| Backend | `backend@bytedance.com` | **Profile API contract** (`profile-api-contract.md`) |
-| QA | `qa@bytedance.com` | **Profile release test plan** (`profile-release-test-plan.md`) |
+These are intentional public fixtures for local POC and hackathon review use;
+they are not production credentials.
 
-Enter the assigned email on the login page with password `test-password`.
+| Identity | Login email | Password | Owned protected resource |
+| --- | --- | --- | --- |
+| Frontend | `frontend@bytedance.com` | `test-password` | **Profile page requirements** (`profile-page-requirements.md`) |
+| Backend | `backend@bytedance.com` | `test-password` | **Profile API contract** (`profile-api-contract.md`) |
+| QA | `qa@bytedance.com` | `test-password` | **Profile release test plan** (`profile-release-test-plan.md`) |
+
+Sign in with any row above to create and test an Agent owned by that identity.
 
 ### 1. Ownership and Policy Enforcement
 

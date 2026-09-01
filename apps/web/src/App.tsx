@@ -1436,40 +1436,42 @@ export default function App() {
   if (!principal && authConfig.mode === "demo") {
     return (
       <main className="auth-screen">
-        <section className="auth-card auth-card-wide" aria-labelledby="team-picker-title">
+        <form className="auth-card" onSubmit={submitCredentials}>
           <div className="brand-mark">A</div>
           <span className="eyebrow">Agent Trust Gateway</span>
-          <h1 id="team-picker-title">Choose a demo team</h1>
-          <p>
-            Each identity can create and use only its own Agents. Pick a team to test
-            real allow and deny decisions.
-          </p>
+          <h1>Sign in to your team</h1>
+          <p>Use a demo account to test ownership, policy checks, and Trust Pass flows.</p>
           {authError && <div className="error-banner" role="alert">{authError}</div>}
-          <div className="demo-user-grid">
-            {authConfig.demoUsers.map((user) => (
-              <button
-                type="button"
-                className="demo-user-card"
-                key={user.id}
-                onClick={() => void loginAs(user.email)}
-                disabled={authBusy}
-                aria-label={"Sign in as " + user.displayName}
-              >
-                <span className={"team-avatar team-" + user.department}>
-                  {initials(user.displayName)}
-                </span>
-                <strong>{user.displayName}</strong>
-                <span>{departmentLabel(user.department)} identity</span>
-                <small>{user.email}</small>
-              </button>
-            ))}
-          </div>
-          {authBusy && (
-            <div className="auth-progress" aria-live="polite">
-              <Spinner /> Signing in…
-            </div>
-          )}
-        </section>
+          <label>
+            Email
+            <input
+              autoFocus
+              type="email"
+              placeholder={authConfig.demoUsers[0]?.email ?? "frontend@bytedance.com"}
+              value={loginEmail}
+              onChange={(event) => setLoginEmail(event.target.value)}
+              autoComplete="username"
+              required
+            />
+          </label>
+          <label>
+            Password
+            <input
+              type="password"
+              placeholder="test-password"
+              value={loginPassword}
+              onChange={(event) => setLoginPassword(event.target.value)}
+              autoComplete="current-password"
+              required
+            />
+          </label>
+          <button
+            className="button button-primary"
+            disabled={authBusy || !loginEmail.trim() || !loginPassword}
+          >
+            {authBusy ? <Spinner /> : "Sign in"}
+          </button>
+        </form>
       </main>
     );
   }

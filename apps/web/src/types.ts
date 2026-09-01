@@ -102,7 +102,11 @@ export interface SystemInfo {
   codexVersion: string | null;
   codexExpectedVersion: string;
   codexSandboxMode: string;
-  runtimeProvider: "local-process" | "application-container" | "container";
+  runtimeProvider:
+    | "offline-demo"
+    | "local-process"
+    | "application-container"
+    | "container";
   containerEngine: string | null;
   containerRuntimeImage: string | null;
   executionReady: boolean;
@@ -119,16 +123,19 @@ export interface RuntimeBlocker {
 
 export interface RuntimeCapabilities {
   executionBoundary:
+    | "offline-demo"
     | "host-process"
     | "application-container"
     | "disposable-container";
   workspaceIsolation: "logical-owner-directory" | "filtered-owner-projection";
   networkPolicy:
+    | "offline-demo-network-disabled"
     | "middleware-and-codex-policy"
     | "application-container-network"
     | "container-network-blocked"
     | "local-debug-network";
   credentialPolicy:
+    | "offline-demo-no-credentials"
     | "server-process-environment"
     | "application-container-environment"
     | "not-forwarded"

@@ -11,6 +11,7 @@ import {
   resolveContainerCodexExecutable,
   writeCodexConfig,
 } from "./config.js";
+import { OfflineDemoRunner } from "./offline-demo-runner.js";
 import { createRunner } from "./runner-factory.js";
 
 const temporaryDirectories: string[] = [];
@@ -171,6 +172,22 @@ describe("Codex executable configuration", () => {
 });
 
 describe("Runtime provider selection", () => {
+  it("defaults demo authentication without requiring Supabase configuration", () => {
+    const config = loadConfig({
+      NODE_ENV: "production",
+      HOST: "0.0.0.0",
+      AUTH_MODE: "demo",
+      ALLOW_INSECURE_DEMO_AUTH: "true",
+      RUNTIME_PROVIDER: "offline-demo",
+    });
+
+    expect(config.authMode).toBe("demo");
+    expect(config.runtimeProvider).toBe("offline-demo");
+    expect(config.supabaseUrl).toBe("");
+    expect(config.supabasePublicKey).toBe("");
+    expect(config.supabaseSecretKey).toBe("");
+  });
+
   it("keeps host processes out of production while supporting the application image", () => {
     expect(() =>
       createRunner(loadConfig({
@@ -191,5 +208,16 @@ describe("Runtime provider selection", () => {
     expect(
       createRunner(loadConfig({ NODE_ENV: "test", RUNTIME_PROVIDER: "container" })),
     ).toBeInstanceOf(ContainerCodexRunner);
+    expect(
+      createRunner(
+        loadConfig({
+          NODE_ENV: "production",
+          HOST: "0.0.0.0",
+          AUTH_MODE: "demo",
+          ALLOW_INSECURE_DEMO_AUTH: "true",
+          RUNTIME_PROVIDER: "offline-demo",
+        }),
+      ),
+    ).toBeInstanceOf(OfflineDemoRunner);
   });
 });

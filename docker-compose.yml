@@ -7,19 +7,18 @@ services:
         NODE_IMAGE: ${CONTAINER_RUNTIME_BASE_IMAGE:-node:22-bookworm-slim}
         DEBIAN_MIRROR: ${CONTAINER_APT_MIRROR:-}
         DEBIAN_SECURITY_MIRROR: ${CONTAINER_APT_SECURITY_MIRROR:-}
+        OFFLINE_DEMO: "true"
     image: volc-agent-launchpad:local
     restart: unless-stopped
-    env_file:
-      - ${LAUNCHPAD_ENV_FILE:-.env}
     environment:
       NODE_ENV: production
       HOST: 0.0.0.0
       PORT: 3000
-      # The whole application is already inside this image. Per-Run disposable
-      # containers are provided by scripts/start-local-poc.sh, not by nesting a
-      # privileged Docker daemon or socket inside the web container.
-      RUNTIME_PROVIDER: application-container
-      CODEX_BIN: codex
+      AUTH_MODE: demo
+      ALLOW_INSECURE_DEMO_AUTH: "true"
+      # The judge path is fully offline: no Supabase, Ark, Codex cloud, or
+      # service-role credentials are required or passed to the application.
+      RUNTIME_PROVIDER: offline-demo
       LOCAL_POC_MODE: "false"
       LOCAL_INSECURE_RUNTIME_KEY_PASSTHROUGH: "false"
       LOCAL_INSECURE_RUNTIME_NETWORK: "false"

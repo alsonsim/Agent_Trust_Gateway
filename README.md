@@ -309,16 +309,14 @@ Run the same command to continue later.
 
 ```mermaid
 flowchart LR
-    UI["React Web UI"] --> Auth["Identity + authorization middleware"]
-    Auth --> API["Fastify control plane"]
-    Auth --> Policy["Protected resources + audit decisions"]
-    Policy --> Store["Local JSON data"]
-    API --> Store["JSON metadata and Agent workspaces"]
-    API --> Firewall["Runtime Action Firewall"]
-    Firewall --> Runtime
-    API --> Runtime{"Runtime provider"}
-    Runtime -->|Full local POC| Container["Disposable Docker container"]
-    Container --> Ark["Volcengine Ark Responses API"]
+    UI["Requester / grantee + Agent owner<br/>React UI"] -->|Request| API["Fastify API<br/>session identity"]
+    API --> Gateway["Trust Gateway middleware<br/>owner gate · Trust Pass · action firewall"]
+    Gateway -->|Authorized request| Service["AgentService<br/>atomic admission · lifecycle"]
+    Service --> Runtime["Disposable Runtime<br/>approved inputs · Codex · verified cleanup"]
+    Runtime -.->|Explicit local POC opt-in| Model["BytePlus ModelArk"]
+    Runtime -->|Delegated final output only, via backend| UI
+    Gateway --> Evidence["State + evidence<br/>ALLOW / DENY · reason · request ID"]
+    Service --> Evidence
 ```
 
 Full local POC Runs use `codex exec` inside the disposable Runtime container;

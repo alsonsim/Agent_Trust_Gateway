@@ -17,7 +17,7 @@ export interface HumanPrincipal {
 
 export interface LoginCredentials {
   email: string;
-  password?: string;
+  password: string;
 }
 
 export interface IdentitySession {
@@ -218,7 +218,7 @@ export class DemoIdentityProvider implements IdentityProvider {
     const email = normalizeEmail(credentials.email);
     const principal = DEMO_PRINCIPALS.find((candidate) => candidate.email === email);
     if (!principal) throw authenticationFailed();
-    if (credentials.password !== undefined && credentials.password !== DEMO_PASSWORD) {
+    if (credentials.password !== DEMO_PASSWORD) {
       throw authenticationFailed();
     }
 

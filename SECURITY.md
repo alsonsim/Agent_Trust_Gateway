@@ -11,7 +11,8 @@ credentials, personal data, or exploit details in an issue.
 
 ## Known limitations
 
-- Passwordless demo identities are loopback-only fixtures, not production auth
+- Fixed-password demo identities are loopback-only public fixtures, not
+  production authentication
 - Supabase sessions are not automatically refreshed in this hackathon POC
 - SameSite=Strict cookies reduce CSRF exposure, but there is no separate CSRF token
 - Local Trust Pass state and transition locks remain a single-process JSON store

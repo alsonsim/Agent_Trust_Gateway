@@ -11,7 +11,10 @@ describe("identity providers", () => {
       signingKey: "a-test-signing-key-that-is-at-least-32-bytes",
       tokenTtlSeconds: 600,
     });
-    const session = await provider.signIn({ email: "Frontend@bytedance.com" });
+    const session = await provider.signIn({
+      email: "Frontend@bytedance.com",
+      password: "test-password",
+    });
     await expect(provider.verifyAccessToken(session.accessToken)).resolves.toMatchObject({
       displayName: "Frontend",
       department: "frontend",
@@ -24,7 +27,10 @@ describe("identity providers", () => {
       statusCode: 401,
     });
     await expect(
-      provider.signIn({ email: "unknown@bytedance.com" }),
+      provider.signIn({
+        email: "unknown@bytedance.com",
+        password: "test-password",
+      }),
     ).rejects.toMatchObject({ statusCode: 401 });
   });
 

@@ -95,13 +95,16 @@ Pass without exposing the underlying Agent.
 
 ### Demo identities
 
-| Identity | Login email | Owned protected resource |
-| --- | --- | --- |
-| Frontend | `frontend@bytedance.com` | **Profile page requirements** (`profile-page-requirements.md`) |
-| Backend | `backend@bytedance.com` | **Profile API contract** (`profile-api-contract.md`) |
-| QA | `qa@bytedance.com` | **Profile release test plan** (`profile-release-test-plan.md`) |
+These are intentional public fixtures for local POC and hackathon review use;
+they are not production credentials.
 
-Enter the assigned email on the login page with password `test-password`.
+| Identity | Login email | Password | Owned protected resource |
+| --- | --- | --- | --- |
+| Frontend | `frontend@bytedance.com` | `test-password` | **Profile page requirements** (`profile-page-requirements.md`) |
+| Backend | `backend@bytedance.com` | `test-password` | **Profile API contract** (`profile-api-contract.md`) |
+| QA | `qa@bytedance.com` | `test-password` | **Profile release test plan** (`profile-release-test-plan.md`) |
+
+Sign in with any row above to create and test an Agent owned by that identity.
 
 ### 1. Ownership and Policy Enforcement
 
@@ -309,16 +312,14 @@ Run the same command to continue later.
 
 ```mermaid
 flowchart LR
-    UI["React Web UI"] --> Auth["Identity + authorization middleware"]
-    Auth --> API["Fastify control plane"]
-    Auth --> Policy["Protected resources + audit decisions"]
-    Policy --> Store["Local JSON data"]
-    API --> Store["JSON metadata and Agent workspaces"]
-    API --> Firewall["Runtime Action Firewall"]
-    Firewall --> Runtime
-    API --> Runtime{"Runtime provider"}
-    Runtime -->|Full local POC| Container["Disposable Docker container"]
-    Container --> Ark["Volcengine Ark Responses API"]
+    UI["Requester / grantee + Agent owner<br/>React UI"] -->|Request| API["Fastify API<br/>session identity"]
+    API --> Gateway["Trust Gateway middleware<br/>owner gate · Trust Pass · action firewall"]
+    Gateway -->|Authorized request| Service["AgentService<br/>atomic admission · lifecycle"]
+    Service --> Runtime["Disposable Runtime<br/>approved inputs · Codex · verified cleanup"]
+    Runtime -.->|Explicit local POC opt-in| Model["BytePlus ModelArk"]
+    Runtime -->|Delegated final output only, via backend| UI
+    Gateway --> Evidence["State + evidence<br/>ALLOW / DENY · reason · request ID"]
+    Service --> Evidence
 ```
 
 Full local POC Runs use `codex exec` inside the disposable Runtime container;
@@ -361,7 +362,7 @@ boundaries.
 ## Documentation
 
 - [Architecture](docs/ARCHITECTURE.md)
-- [Demo workflow and script](docs/DEMO_WORKFLOW_AND_SCRIPT.md)
+- [Hackathon extension guide](docs/HACKATHON_EXTENSION_GUIDE.md)
 - [File authorization demo](docs/FILE_AUTHORIZATION_DEMO.md)
 - [Local POC](docs/LOCAL_POC.md)
 - [Trust Pass demo](docs/TRUST_PASS_DEMO.md)

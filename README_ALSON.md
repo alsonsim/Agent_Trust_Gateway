@@ -333,7 +333,8 @@ key, secret key, or service-role key.
 | `ARK_API_KEY` | unset | Optional Ark integration only |
 | `ARK_MODEL` | unset | Optional Ark integration only |
 
-See [.env.example](.env.example) for the optional connected-mode settings.
+See the [Local POC guide](docs/LOCAL_POC.md) for optional connected-mode
+settings.
 
 ## Validation
 
